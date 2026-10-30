@@ -4,7 +4,6 @@
 package daemon
 
 import (
-	"context"
 	"errors"
 	"path/filepath"
 	"time"
@@ -13,42 +12,17 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
 
-// DefaultMigrationReadyTimeout bounds the wait for the Kubernetes Node to
-// report Ready after the target node stack starts.
+// DefaultMigrationReadyTimeout bounds the wait for the target node stack to come
+// up on the host.
 const DefaultMigrationReadyTimeout = 5 * time.Minute
 
-// nodeScheduler is what an isolation migration needs from the cluster: take the
-// Node out of service and see it come back. internal/kube/nodedrain implements
-// it with the daemon's own credentials.
-type nodeScheduler interface {
-	Cordon(ctx context.Context, node string) (changed bool, err error)
-	Uncordon(ctx context.Context, node string) error
-	Drain(ctx context.Context, node string) error
-	WaitReady(ctx context.Context, node string, since time.Time, timeout time.Duration) error
-}
-
-// migrationEnv is everything an IsolationMigrate needs besides the host: the
-// operation it belongs to and the cluster. A nil Nodes means the daemon has no
-// cluster client, and a migration, which must drain, is refused before it
-// changes anything.
+// migrationEnv is what an IsolationMigrate needs besides the host. Cordoning,
+// draining and uncordoning the Kubernetes Node are the operator's job; the
+// daemon does not touch Node objects for a migration.
 type migrationEnv struct {
 	// Operation is the MachineOperation name, recorded in the journal so a
 	// restarted daemon can report the outcome on the right object.
 	Operation string
-	// NodeName is the Kubernetes Node to drain and watch.
-	NodeName string
-	Nodes    nodeScheduler
-	// ReadyTimeout bounds the wait for Ready. Zero means
-	// DefaultMigrationReadyTimeout.
-	ReadyTimeout time.Duration
-}
-
-func (e migrationEnv) readyTimeout() time.Duration {
-	if e.ReadyTimeout > 0 {
-		return e.ReadyTimeout
-	}
-
-	return DefaultMigrationReadyTimeout
 }
 
 // ErrMigrationHandedOff is returned by MigrateIsolation when the migration

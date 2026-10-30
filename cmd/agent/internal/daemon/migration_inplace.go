@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/containerops"
 	"github.com/Azure/unbounded/cmd/agent/internal/nspawnops"
@@ -169,10 +168,6 @@ type inPlaceMigration struct {
 // record is the write-ahead hook: the step is on disk before it runs.
 func (m *inPlaceMigration) record(_ context.Context, step migrate.Step) error {
 	m.journal.Step = step
-	if step == migrate.StepStartingTarget {
-		m.journal.TargetStartedAt = time.Now()
-	}
-
 	if err := m.store.Save(m.journal); err != nil {
 		return err
 	}
@@ -221,7 +216,6 @@ func newInPlaceMigration(
 		},
 		// The target's artifacts for the same configuration a repave would use.
 		Download: func(ctx context.Context) error { return stageMigrationArchives(ctx, log, archives) },
-		Drain:    m.drain,
 		// As a repave does, after the source is stopped.
 		CleanupNetwork: func(ctx context.Context) error { return cleanupMigrationNetwork(ctx, log) },
 		PersistTarget: func(ctx context.Context, _ isolation.NodeRoot) error {
@@ -249,41 +243,17 @@ func newInPlaceMigration(
 	return m, nil
 }
 
-// drain cordons the node, remembering whether this migration did it, and
-// evicts its pods.
-func (m *inPlaceMigration) drain(ctx context.Context) error {
-	changed, err := m.env.Nodes.Cordon(ctx, m.env.NodeName)
-	if err != nil {
-		return err
-	}
-
-	m.journal.Cordoned = changed
-
-	if err := m.store.Save(m.journal); err != nil {
-		return err
-	}
-
-	return m.env.Nodes.Drain(ctx, m.env.NodeName)
-}
-
 // waitReady is the repave readiness check for the mode (kubelet active on the
-// host with its credentials), then the Node's Ready condition through the API,
-// reported after the target started, within a bounded time.
+// host with its credentials), within a bounded time.
 func (m *inPlaceMigration) waitReady(ctx context.Context) error {
-	timeout := m.env.readyTimeout()
-
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, DefaultMigrationReadyTimeout)
 	defer cancel()
 
-	if err := waitKubeletOnHost(ctx, m.log, m.journal.To, m.journal.TargetSlot); err != nil {
-		return err
-	}
-
-	return m.env.Nodes.WaitReady(ctx, m.env.NodeName, m.journal.TargetStartedAt, timeout)
+	return waitKubeletOnHost(ctx, m.log, m.journal.To, m.journal.TargetSlot)
 }
 
 // conclude turns the outcome of a run or a resume into the journal's terminal
-// state and the node's scheduling state.
+// state.
 func (m *inPlaceMigration) conclude(ctx context.Context, res migrate.Result, runErr error) error {
 	ctx = context.WithoutCancel(ctx)
 
@@ -291,8 +261,6 @@ func (m *inPlaceMigration) conclude(ctx context.Context, res migrate.Result, run
 	case runErr == nil, res.Target != nil:
 		// The node runs in the target mode. A cleanup error leaves the journal
 		// at its last step so the next start finishes the cleanup.
-		m.uncordon(ctx)
-
 		if runErr != nil {
 			m.log.Warn("migration succeeded but cleaning up the source did not; it is retried at the next daemon start", "error", runErr)
 		}
@@ -301,9 +269,8 @@ func (m *inPlaceMigration) conclude(ctx context.Context, res migrate.Result, run
 	case errors.Is(runErr, migrate.ErrRollbackFailed):
 		m.finishJournal(migrate.StepFailed, runErr)
 
-		return fmt.Errorf("%w; the node is left cordoned and needs attention", runErr)
+		return fmt.Errorf("%w; the node needs attention", runErr)
 	default:
-		m.uncordon(ctx)
 		m.finishJournal(migrate.StepRolledBack, runErr)
 
 		if res.RolledBack {
@@ -311,16 +278,6 @@ func (m *inPlaceMigration) conclude(ctx context.Context, res migrate.Result, run
 		}
 
 		return fmt.Errorf("%w (the %s node was not changed)", runErr, m.journal.From)
-	}
-}
-
-func (m *inPlaceMigration) uncordon(ctx context.Context) {
-	if !m.journal.Cordoned {
-		return
-	}
-
-	if err := m.env.Nodes.Uncordon(ctx, m.env.NodeName); err != nil {
-		m.log.Warn("could not uncordon the node; uncordon it manually", "node", m.env.NodeName, "error", err)
 	}
 }
 

@@ -181,8 +181,8 @@ func TestNoneOperatorLifecycleMigrationIsANoOp(t *testing.T) {
 	require.NoError(t, noneNodeOperator{}.EnsureLifecycleMigration(t.Context(), discardLogger(), noneActive()))
 }
 
-func TestNoneOperatorMigrationIsNotWiredAndNamesTheMode(t *testing.T) {
-	err := noneNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), noneActive(), migrate.Request{Target: isolation.ModeNSpawn}, migrate.Strategy("reprovision"), migrationEnv{})
+func TestNoneOperatorMigrationToAnUnknownTargetNamesTheMode(t *testing.T) {
+	err := noneNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), noneActive(), migrate.Request{Target: isolation.Mode("bogus")}, migrate.Strategy("reprovision"), migrationEnv{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "none")
 }

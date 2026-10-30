@@ -246,8 +246,8 @@ func TestContainerOperatorRepaveSetupAndRecordFailures(t *testing.T) {
 	assert.NotContains(t, strings.Join(*s.events, ","), "destroy", "the old slot's files stay while its record does")
 }
 
-func TestContainerOperatorMigrationIsNotWiredAndNamesTheMode(t *testing.T) {
-	err := containerNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), containerActive("kube1"), migrate.Request{Target: isolation.ModeNSpawn}, migrate.Strategy("reprovision"), migrationEnv{})
+func TestContainerOperatorMigrationToAnUnknownTargetNamesTheMode(t *testing.T) {
+	err := containerNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), containerActive("kube1"), migrate.Request{Target: isolation.Mode("bogus")}, migrate.Strategy("reprovision"), migrationEnv{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "container")
 }

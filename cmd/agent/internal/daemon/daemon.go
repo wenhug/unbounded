@@ -87,10 +87,6 @@ type runOptions struct {
 	// NodeOperator performs host-local node operations. Defaults to an operator
 	// that dispatches on the active machine's isolation mode.
 	NodeOperator nodeOperator
-
-	// NewNodeScheduler builds the cluster side of an isolation migration.
-	// Defaults to a client-go drainer on the daemon's credentials.
-	NewNodeScheduler func(cfg *rest.Config, log *slog.Logger) (nodeScheduler, error)
 }
 
 func (o *runOptions) validate() error {
@@ -104,10 +100,6 @@ func (o *runOptions) validate() error {
 
 	if o.NodeOperator == nil {
 		o.NodeOperator = newNodeOperator()
-	}
-
-	if o.NewNodeScheduler == nil {
-		o.NewNodeScheduler = newNodeScheduler
 	}
 
 	if o.installation == nil {
@@ -194,16 +186,11 @@ func run(ctx context.Context, log *slog.Logger, opts runOptions) error {
 		return ErrRestartRequested
 	}
 
-	nodes, err := runOpts.NewNodeScheduler(controllerCfg, log)
-	if err != nil {
-		return fmt.Errorf("build node scheduler: %w", err)
-	}
-
 	// An isolation migration the previous daemon did not finish is resolved
 	// before this one takes work.
-	recoverIsolationMigration(ctx, log, kubeClient, runOpts.installation, nodes, active.Config.MachineName, active.Config.NodeName)
+	recoverIsolationMigration(ctx, log, kubeClient, runOpts.installation, active.Config.MachineName)
 
-	return runController(ctx, log, controllerCfg, active.Config.MachineName, active.Config.NodeName, runOpts.NodeOperator, runOpts.installation, nodes)
+	return runController(ctx, log, controllerCfg, active.Config.MachineName, active.Config.NodeName, runOpts.NodeOperator, runOpts.installation)
 }
 
 func discoverAndMigrate(ctx context.Context, log *slog.Logger, store *installstate.Store, operator nodeOperator) (*ActiveMachine, error) {

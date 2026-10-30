@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
 
 	"github.com/google/renameio/v2"
 
@@ -87,7 +86,7 @@ WantedBy=multi-user.target
 `, dir, ReprovisionJournalName, ReprovisionBinaryName)
 }
 
-// migrateReprovision stages the handoff, drains the node and starts the unit.
+// migrateReprovision stages the handoff and starts the unit.
 // Nothing is reset here. It returns ErrMigrationHandedOff on success.
 func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMachine, req migrate.Request, env migrationEnv) error {
 	targetCfg := active.Config.DeepCopy()
@@ -108,14 +107,7 @@ func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMac
 	j := migrate.Journal{Operation: env.Operation, Strategy: migrate.Reprovision, From: active.Mode, To: req.Target}
 
 	cleanup := func(cause error) error {
-		// Nothing was reset, so the handoff is thrown away and the node is
-		// schedulable again if this migration cordoned it.
-		if j.Cordoned {
-			if err := env.Nodes.Uncordon(context.WithoutCancel(ctx), env.NodeName); err != nil {
-				log.Warn("could not uncordon the node; uncordon it manually", "node", env.NodeName, "error", err)
-			}
-		}
-
+		// Nothing was reset, so the handoff is thrown away.
 		removeReprovisionFiles(log)
 
 		return cause
@@ -126,34 +118,14 @@ func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMac
 	}
 
 	// The staged binary validates the configuration and that a bootstrap plan
-	// exists for the mode, so an unsupported target fails before the drain.
+	// exists for the mode, so an unsupported target fails before anything is reset.
 	if err := runHandoffCommand(ctx, filepath.Join(dir, ReprovisionBinaryName), "isolation-reprovision", "--check", "--handoff-dir", dir); err != nil {
 		return cleanup(fmt.Errorf("the target configuration cannot be bootstrapped: %w", err))
-	}
-
-	j.Step = migrate.StepDraining
-	if err := store.Save(j); err != nil {
-		return cleanup(err)
-	}
-
-	changed, err := env.Nodes.Cordon(ctx, env.NodeName)
-	if err != nil {
-		return cleanup(err)
-	}
-
-	j.Cordoned = changed
-	if err := store.Save(j); err != nil {
-		return cleanup(err)
-	}
-
-	if err := env.Nodes.Drain(ctx, env.NodeName); err != nil {
-		return cleanup(fmt.Errorf("drain node: %w", err))
 	}
 
 	// From here the node is going away. The journal says so before the unit
 	// can reset anything.
 	j.Step = migrate.StepReprovisioning
-	j.TargetStartedAt = time.Now()
 
 	if err := store.Save(j); err != nil {
 		return cleanup(err)
@@ -247,37 +219,19 @@ func removeReprovisionFiles(log *slog.Logger) {
 	}
 }
 
-// resolveReprovision is resolveJournal for a reprovision. Before the reset
-// nothing but the drain happened, so it is undone. After it, the handoff is in
+// resolveReprovision is resolveJournal for a reprovision. A journal still at the
+// legacy draining step means the host was not reset, so the handoff is undone. After it, the handoff is in
 // charge: the outcome is success once the applied config records the target
 // mode, and still in progress until then.
-func resolveReprovision(ctx context.Context, log *slog.Logger, env migrationEnv, j migrate.Journal) error {
+func resolveReprovision(_ context.Context, log *slog.Logger, _ migrationEnv, j migrate.Journal) error {
 	switch j.Step {
-	case migrate.StepDraining:
-		if j.Cordoned {
-			if err := env.Nodes.Uncordon(ctx, env.NodeName); err != nil {
-				log.Warn("could not uncordon the node; uncordon it manually", "node", env.NodeName, "error", err)
-			}
-		}
-
+	case migrate.StepLegacyDraining:
 		removeReprovisionFiles(log)
 
 		return fmt.Errorf("%w before the host was reset; the %s node was not changed", migrate.ErrInterrupted, j.From)
 	case migrate.StepReprovisioning, migrate.StepBootstrapping:
 		if !appliedInMode(log, j.To) {
 			return ErrMigrationHandedOff
-		}
-
-		timeout := env.readyTimeout()
-
-		if err := env.Nodes.WaitReady(ctx, env.NodeName, j.TargetStartedAt, timeout); err != nil {
-			return fmt.Errorf("the host was reprovisioned in mode %s but the node is not Ready: %w", j.To, err)
-		}
-
-		if j.Cordoned {
-			if err := env.Nodes.Uncordon(ctx, env.NodeName); err != nil {
-				log.Warn("could not uncordon the node; uncordon it manually", "node", env.NodeName, "error", err)
-			}
 		}
 
 		j.Step = migrate.StepBootstrapped

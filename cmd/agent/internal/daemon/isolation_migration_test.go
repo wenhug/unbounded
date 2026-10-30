@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,50 +22,12 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
 
-// fakeNodes is the cluster side of a migration.
-type fakeNodes struct {
-	events         *[]string
-	cordonChanged  bool
-	cordonErr      error
-	drainErr       error
-	readyErr       error
-	uncordonErr    error
-	readySince     time.Time
-	readyTimeout   time.Duration
-	uncordonCalled bool
-}
-
-func (n *fakeNodes) Cordon(_ context.Context, node string) (bool, error) {
-	*n.events = append(*n.events, "cordon "+node)
-	return n.cordonChanged, n.cordonErr
-}
-
-func (n *fakeNodes) Uncordon(_ context.Context, node string) error {
-	n.uncordonCalled = true
-	*n.events = append(*n.events, "uncordon "+node)
-
-	return n.uncordonErr
-}
-
-func (n *fakeNodes) Drain(_ context.Context, node string) error {
-	*n.events = append(*n.events, "drain "+node)
-	return n.drainErr
-}
-
-func (n *fakeNodes) WaitReady(_ context.Context, node string, since time.Time, timeout time.Duration) error {
-	*n.events = append(*n.events, "ready "+node)
-	n.readySince, n.readyTimeout = since, timeout
-
-	return n.readyErr
-}
-
 // migHarness replaces every host-touching seam of a migration with a recorder.
 type migHarness struct {
 	t      *testing.T
 	events []string
 
 	source, target *isolation.FakeBackend
-	nodes          *fakeNodes
 	applied        map[string]*provision.AgentConfig
 	failAt         map[string]error
 	active         *ActiveMachine
@@ -87,7 +48,6 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 
 	h.source = &isolation.FakeBackend{FakeMode: from}
 	h.target = &isolation.FakeBackend{FakeMode: isolation.ModeContainer}
-	h.nodes = &fakeNodes{events: &h.events, cordonChanged: true}
 
 	cfg := baseConfig()
 	cfg.Isolation = string(from)
@@ -254,7 +214,7 @@ func (h *migHarness) replace(target any, value any) {
 }
 
 func (h *migHarness) env() migrationEnv {
-	return migrationEnv{Operation: "op-1", NodeName: testNode, Nodes: h.nodes, ReadyTimeout: time.Minute}
+	return migrationEnv{Operation: "op-1"}
 }
 
 func (h *migHarness) run(target isolation.Mode, strategy migrate.Strategy) error {
@@ -282,13 +242,10 @@ func TestMigrateInPlace_BothDirections(t *testing.T) {
 			assert.Equal(t, []string{
 				"preflight " + string(tt.to),
 				"download",
-				"cordon node-1", "drain node-1",
 				"cleanup-network",
 				"persist kube2",
 				"kubelet-on-host kube2",
-				"ready node-1",
 				"remove-config kube1",
-				"uncordon node-1",
 			}, h.events)
 
 			// Target: leftovers removed, built in the alternate slot, started.
@@ -304,13 +261,9 @@ func TestMigrateInPlace_BothDirections(t *testing.T) {
 			assert.Equal(t, testNode, h.applied["kube2"].NodeName)
 			assert.Equal(t, map[string]string{"role": "gpu"}, h.applied["kube2"].Kubelet.Labels)
 
-			// Readiness is the API check, reported after the target started.
 			j, err := h.journal()
 			require.NoError(t, err)
 			assert.Equal(t, migrate.StepComplete, j.Step)
-			assert.False(t, j.TargetStartedAt.IsZero())
-			assert.True(t, j.TargetStartedAt.Equal(h.nodes.readySince))
-			assert.Equal(t, time.Minute, h.nodes.readyTimeout)
 		})
 	}
 }
@@ -334,7 +287,7 @@ func TestMigrateInPlace_PreflightFailureChangesNothing(t *testing.T) {
 	err := h.run(isolation.ModeContainer, migrate.InPlace)
 	require.ErrorContains(t, err, "no runtime")
 
-	assert.Equal(t, []string{"preflight container"}, h.events, "no drain, no download, no config change")
+	assert.Equal(t, []string{"preflight container"}, h.events, "no download, no config change")
 	assert.Empty(t, h.source.Calls())
 	assert.Empty(t, h.target.Calls())
 
@@ -349,7 +302,6 @@ func TestMigrateInPlace_DownloadFailureChangesNothing(t *testing.T) {
 	require.ErrorContains(t, h.run(isolation.ModeContainer, migrate.InPlace), "offline")
 	assert.Empty(t, h.source.Calls())
 	assert.Empty(t, h.target.Calls())
-	assert.False(t, h.nodes.uncordonCalled)
 }
 
 func TestMigrateInPlace_ResolveDownloadsFailureChangesNothing(t *testing.T) {
@@ -383,30 +335,7 @@ func TestMigrateInPlace_PrepareFailureLeavesTheSourceRunning(t *testing.T) {
 
 	require.ErrorContains(t, h.run(isolation.ModeContainer, migrate.InPlace), "unpack failed")
 	assert.Empty(t, h.source.Calls())
-	assert.NotContains(t, h.events, "cordon node-1", "the node is not drained before the target is built")
-}
-
-func TestMigrateInPlace_DrainFailureUncordonsAndTouchesNoSource(t *testing.T) {
-	h := newMigHarness(t, isolation.ModeNSpawn)
-	h.nodes.drainErr = errors.New("pdb blocked")
-
-	err := h.run(isolation.ModeContainer, migrate.InPlace)
-	require.ErrorContains(t, err, "pdb blocked")
-	assert.Empty(t, h.source.Calls())
-	assert.True(t, h.nodes.uncordonCalled)
-
-	j, jerr := h.journal()
-	require.NoError(t, jerr)
-	assert.Equal(t, migrate.StepRolledBack, j.Step)
-	assert.Contains(t, j.Message, "pdb blocked")
-}
-
-func TestMigrateInPlace_LeavesAnOperatorsCordonAlone(t *testing.T) {
-	h := newMigHarness(t, isolation.ModeNSpawn)
-	h.nodes.cordonChanged = false
-
-	require.NoError(t, h.run(isolation.ModeContainer, migrate.InPlace))
-	assert.False(t, h.nodes.uncordonCalled, "the node was already cordoned before the migration")
+	assert.NotContains(t, h.events, "cleanup-network", "the source is not touched before the target is built")
 }
 
 func TestMigrateInPlace_TargetStartFailureRollsBackToTheSource(t *testing.T) {
@@ -421,7 +350,6 @@ func TestMigrateInPlace_TargetStartFailureRollsBackToTheSource(t *testing.T) {
 	assert.Equal(t, []string{"destroy kube2", "prepare kube2", "start kube2", "stop kube2", "destroy kube2"}, h.target.Calls())
 	assert.NotContains(t, h.applied, "kube2")
 	assert.Contains(t, h.applied, "kube1")
-	assert.True(t, h.nodes.uncordonCalled)
 
 	j, jerr := h.journal()
 	require.NoError(t, jerr)
@@ -437,21 +365,19 @@ func TestMigrateInPlace_PersistFailureRestoresTheSourceConfig(t *testing.T) {
 	assert.Contains(t, h.events, "remove-config kube2")
 	assert.Contains(t, h.events, "persist kube1", "the source's applied config is written back")
 	assert.Equal(t, []string{"stop kube1", "start kube1"}, h.source.Calls())
-	assert.True(t, h.nodes.uncordonCalled)
 }
 
-func TestMigrateInPlace_ReadinessTimeoutRollsBack(t *testing.T) {
+func TestMigrateInPlace_ReadinessFailureRollsBack(t *testing.T) {
 	h := newMigHarness(t, isolation.ModeNSpawn)
-	h.nodes.readyErr = errors.New("node node-1 is not Ready: Ready=Unknown")
+	h.failAt["kubelet-on-host"] = errors.New("kubelet inactive")
 
 	err := h.run(isolation.ModeContainer, migrate.InPlace)
-	require.ErrorContains(t, err, "wait for kubelet Ready")
+	require.ErrorContains(t, err, "wait for the target node stack")
 	require.ErrorContains(t, err, "rolled back to nspawn")
 
 	assert.Equal(t, []string{"stop kube1", "start kube1"}, h.source.Calls())
 	assert.NotContains(t, h.applied, "kube2")
-	assert.NotContains(t, h.events, "remove-config kube1", "the source record survives until Ready")
-	assert.True(t, h.nodes.uncordonCalled)
+	assert.NotContains(t, h.events, "remove-config kube1", "the source record survives until the target is up")
 }
 
 func TestMigrateInPlace_LocalKubeletFailureRollsBack(t *testing.T) {
@@ -459,11 +385,10 @@ func TestMigrateInPlace_LocalKubeletFailureRollsBack(t *testing.T) {
 	h.failAt["kubelet-on-host"] = errors.New("kubelet inactive")
 
 	require.ErrorContains(t, h.run(isolation.ModeContainer, migrate.InPlace), "kubelet inactive")
-	assert.NotContains(t, h.events, "ready node-1", "the API is not asked when the kubelet is not even active")
 	assert.Equal(t, []string{"stop kube1", "start kube1"}, h.source.Calls())
 }
 
-func TestMigrateInPlace_RollbackFailureLeavesTheNodeCordonedAndJournalsIt(t *testing.T) {
+func TestMigrateInPlace_RollbackFailureIsJournaled(t *testing.T) {
 	h := newMigHarness(t, isolation.ModeNSpawn)
 	h.target.StartErr = errors.New("container did not start")
 	h.source.StartErr = errors.New("machine will not start")
@@ -471,7 +396,6 @@ func TestMigrateInPlace_RollbackFailureLeavesTheNodeCordonedAndJournalsIt(t *tes
 	err := h.run(isolation.ModeContainer, migrate.InPlace)
 	require.ErrorIs(t, err, migrate.ErrRollbackFailed)
 	require.ErrorContains(t, err, "needs attention")
-	assert.False(t, h.nodes.uncordonCalled)
 
 	j, jerr := h.journal()
 	require.NoError(t, jerr)
@@ -487,16 +411,6 @@ func TestMigrateInPlace_CleanupFailureStillSucceedsAndKeepsTheJournalToRetry(t *
 	j, err := h.journal()
 	require.NoError(t, err)
 	assert.Equal(t, migrate.StepReady, j.Step, "the next daemon start finishes the cleanup")
-	assert.True(t, h.nodes.uncordonCalled)
-}
-
-func TestMigrateIsolation_RefusesWithoutAClusterClient(t *testing.T) {
-	h := newMigHarness(t, isolation.ModeNSpawn)
-	h.nodes = nil
-
-	err := migrateIsolation(context.Background(), discardLogger(), h.active, migrate.Request{Target: isolation.ModeContainer}, migrate.InPlace, migrationEnv{})
-	require.ErrorContains(t, err, "no Kubernetes client")
-	assert.Empty(t, h.events)
 }
 
 // ---------------------------------------------------------------------------
@@ -509,8 +423,7 @@ func writeJournal(t *testing.T, step migrate.Step, mutate ...func(*migrate.Journ
 	j := migrate.Journal{
 		Operation: "op-1", Strategy: migrate.InPlace,
 		From: isolation.ModeNSpawn, To: isolation.ModeContainer,
-		SourceSlot: "kube1", TargetSlot: "kube2", Step: step, Cordoned: true,
-		TargetStartedAt: time.Now().Add(-time.Minute),
+		SourceSlot: "kube1", TargetSlot: "kube2", Step: step,
 	}
 	for _, m := range mutate {
 		m(&j)
@@ -530,41 +443,40 @@ func TestMigrateInPlace_ResumeAtEveryStep(t *testing.T) {
 		target     []string
 		wantEvents []string
 		final      migrate.Step
-		uncordon   bool
 		wantConfig []string // applied slots afterwards
 	}{
 		{
 			step: migrate.StepPreparing, wantErr: "interrupted",
-			target: []string{"destroy kube2"}, wantEvents: []string{"uncordon node-1"}, final: migrate.StepRolledBack, uncordon: true, wantConfig: []string{"kube1"},
+			target: []string{"destroy kube2"}, final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
 		},
 		{
-			step: migrate.StepDraining, wantErr: "interrupted",
-			target: []string{"destroy kube2"}, wantEvents: []string{"uncordon node-1"}, final: migrate.StepRolledBack, uncordon: true, wantConfig: []string{"kube1"},
+			step: migrate.StepLegacyDraining, wantErr: "interrupted",
+			target: []string{"destroy kube2"}, final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
 		},
 		{
 			step: migrate.StepStoppingSource, wantErr: "interrupted",
 			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"},
-			wantEvents: []string{"uncordon node-1"}, final: migrate.StepRolledBack, uncordon: true, wantConfig: []string{"kube1"},
+			final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
 		},
 		{
 			step: migrate.StepStartingTarget, wantErr: "interrupted",
 			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"},
-			wantEvents: []string{"uncordon node-1"}, final: migrate.StepRolledBack, uncordon: true, wantConfig: []string{"kube1"},
+			final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
 		},
 		{
 			step: migrate.StepPersisting, persisted: true, wantErr: "interrupted",
 			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"},
-			wantEvents: []string{"remove-config kube2", "persist kube1", "uncordon node-1"}, final: migrate.StepRolledBack, uncordon: true, wantConfig: []string{"kube1"},
+			wantEvents: []string{"remove-config kube2", "persist kube1"}, final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
 		},
 		{
 			step: migrate.StepAwaitingReady, persisted: true,
-			source: []string{"destroy kube1"}, wantEvents: []string{"kubelet-on-host kube2", "ready node-1", "remove-config kube1", "uncordon node-1"},
-			final: migrate.StepComplete, uncordon: true, wantConfig: []string{"kube2"},
+			source: []string{"destroy kube1"}, wantEvents: []string{"kubelet-on-host kube2", "remove-config kube1"},
+			final: migrate.StepComplete, wantConfig: []string{"kube2"},
 		},
 		{
 			step: migrate.StepReady, persisted: true,
-			source: []string{"destroy kube1"}, wantEvents: []string{"remove-config kube1", "uncordon node-1"},
-			final: migrate.StepComplete, uncordon: true, wantConfig: []string{"kube2"},
+			source: []string{"destroy kube1"}, wantEvents: []string{"remove-config kube1"},
+			final: migrate.StepComplete, wantConfig: []string{"kube2"},
 		},
 	}
 
@@ -590,7 +502,6 @@ func TestMigrateInPlace_ResumeAtEveryStep(t *testing.T) {
 			assert.Equal(t, tt.source, nilIfEmpty(h.source.Calls()))
 			assert.Equal(t, tt.target, nilIfEmpty(h.target.Calls()))
 			assert.Equal(t, tt.wantEvents, h.events)
-			assert.Equal(t, tt.uncordon, h.nodes.uncordonCalled)
 
 			var slots []string
 			for slot := range h.applied {
@@ -614,14 +525,14 @@ func nilIfEmpty(s []string) []string {
 	return s
 }
 
-func TestMigrateInPlace_ResumeAwaitingReadyRollsBackOnTimeout(t *testing.T) {
+func TestMigrateInPlace_ResumeAwaitingReadyRollsBackWhenTheTargetIsNotUp(t *testing.T) {
 	h := newMigHarness(t, isolation.ModeNSpawn)
 	writeJournal(t, migrate.StepAwaitingReady)
 
 	target := h.active.Config.DeepCopy()
 	target.Isolation = string(isolation.ModeContainer)
 	h.applied["kube2"] = target
-	h.nodes.readyErr = errors.New("timed out")
+	h.failAt["kubelet-on-host"] = errors.New("timed out")
 
 	err := h.run(isolation.ModeContainer, migrate.InPlace)
 	require.ErrorContains(t, err, "timed out")
@@ -652,7 +563,7 @@ func TestMigrateInPlace_AnotherOperationsInterruptedJournalIsResolvedFirst(t *te
 	err := h.run(isolation.ModeContainer, migrate.InPlace)
 	require.ErrorContains(t, err, "earlier isolation migration (op-0) was interrupted")
 	assert.Equal(t, []string{"start kube1"}, h.source.Calls(), "the earlier migration was rolled back")
-	assert.NotContains(t, h.events, "cordon node-1", "the new request did not start")
+	assert.NotContains(t, h.events, "preflight container", "the new request did not start")
 }
 
 func TestMigrateInPlace_AnotherOperationsFinishedJournalIsDropped(t *testing.T) {
@@ -695,7 +606,7 @@ func TestActiveSlotOrderFollowsTheJournal(t *testing.T) {
 	// Slot two as the source.
 	writeJournal(t, migrate.StepReady, func(j *migrate.Journal) { j.SourceSlot, j.TargetSlot = "kube2", "kube1" })
 	assert.Equal(t, []string{"kube1", "kube2"}, activeSlotOrder())
-	writeJournal(t, migrate.StepDraining, func(j *migrate.Journal) { j.SourceSlot, j.TargetSlot = "kube2", "kube1" })
+	writeJournal(t, migrate.StepStoppingSource, func(j *migrate.Journal) { j.SourceSlot, j.TargetSlot = "kube2", "kube1" })
 	assert.Equal(t, []string{"kube2", "kube1"}, activeSlotOrder())
 
 	// A reprovision journal does not reorder anything.
@@ -723,12 +634,11 @@ func TestMigrateReprovision_StagesTheHandoffAndStartsTheUnit(t *testing.T) {
 			err := h.run(tt.to, migrate.Reprovision)
 			require.ErrorIs(t, err, ErrMigrationHandedOff)
 
-			// Preflight and the staged binary's check come before the drain,
-			// and the unit starts only after the drain.
+			// Preflight and the staged binary's check come before the unit
+			// starts, and nothing drains or cordons the node.
 			assert.Equal(t, []string{
 				"preflight " + string(tt.to),
 				"handoff unbounded-agent isolation-reprovision --check",
-				"cordon node-1", "drain node-1",
 				"systemctl daemon-reload",
 				"systemctl enable " + ReprovisionUnit,
 				"systemctl start --no-block " + ReprovisionUnit,
@@ -753,7 +663,6 @@ func TestMigrateReprovision_StagesTheHandoffAndStartsTheUnit(t *testing.T) {
 			assert.Equal(t, migrate.StepReprovisioning, j.Step)
 			assert.Equal(t, migrate.Reprovision, j.Strategy)
 			assert.Equal(t, tt.to, j.To)
-			assert.True(t, j.Cordoned)
 
 			unit, uerr := os.ReadFile(reprovisionUnitPath())
 			require.NoError(t, uerr)
@@ -764,7 +673,6 @@ func TestMigrateReprovision_StagesTheHandoffAndStartsTheUnit(t *testing.T) {
 			// Nothing is reset by the daemon: the source node is untouched.
 			assert.Empty(t, h.source.Calls())
 			assert.Empty(t, h.target.Calls())
-			assert.False(t, h.nodes.uncordonCalled)
 		})
 	}
 }
@@ -774,12 +682,10 @@ func TestMigrateReprovision_FailureBeforeTheUnitUndoesEverything(t *testing.T) {
 		name    string
 		fail    func(h *migHarness)
 		wantErr string
-		drained bool
 	}{
 		{name: "preflight", fail: func(h *migHarness) { h.failAt["preflight"] = errors.New("read-only /opt") }, wantErr: "read-only /opt"},
 		{name: "staged check", fail: func(h *migHarness) { h.failAt["handoff"] = errors.New("no plan") }, wantErr: "cannot be bootstrapped"},
-		{name: "drain", fail: func(h *migHarness) { h.nodes.drainErr = errors.New("pdb blocked") }, wantErr: "pdb blocked", drained: true},
-		{name: "unit start", fail: func(h *migHarness) { h.failAt["systemctl"] = errors.New("boom") }, wantErr: "boom", drained: true},
+		{name: "unit start", fail: func(h *migHarness) { h.failAt["systemctl"] = errors.New("boom") }, wantErr: "boom"},
 	}
 
 	for _, tt := range tests {
@@ -790,7 +696,6 @@ func TestMigrateReprovision_FailureBeforeTheUnitUndoesEverything(t *testing.T) {
 			require.ErrorContains(t, h.run(isolation.ModeNone, migrate.Reprovision), tt.wantErr)
 
 			assert.NoDirExists(t, reprovisionDir(), "no handoff is left behind")
-			assert.Equal(t, tt.drained, h.nodes.uncordonCalled, "a node the migration cordoned is uncordoned")
 			assert.Empty(t, h.source.Calls(), "the node stack was never stopped")
 		})
 	}
@@ -809,19 +714,18 @@ func TestResolveReprovision(t *testing.T) {
 	stage := func(h *migHarness, step migrate.Step) {
 		require.NoError(t, reprovisionJournalFor().Save(migrate.Journal{
 			Operation: "op-1", Strategy: migrate.Reprovision, From: isolation.ModeNSpawn, To: isolation.ModeNone,
-			Step: step, Cordoned: true, TargetStartedAt: time.Now(),
+			Step: step,
 		}))
 		require.NoError(t, os.MkdirAll(reprovisionDir(), 0o700))
 	}
 
 	t.Run("interrupted before the reset is undone", func(t *testing.T) {
 		h := newMigHarness(t, isolation.ModeNSpawn)
-		stage(h, migrate.StepDraining)
+		stage(h, migrate.StepLegacyDraining)
 
 		j, _ := reprovisionJournalFor().Load() //nolint:errcheck // staged above
 		err := resolveJournal(context.Background(), discardLogger(), h.env(), j)
 		require.ErrorIs(t, err, migrate.ErrInterrupted)
-		assert.True(t, h.nodes.uncordonCalled)
 		assert.NoDirExists(t, reprovisionDir())
 	})
 
@@ -834,7 +738,7 @@ func TestResolveReprovision(t *testing.T) {
 		assert.DirExists(t, reprovisionDir())
 	})
 
-	t.Run("reported once the target mode is applied and the node is Ready", func(t *testing.T) {
+	t.Run("reported once the target mode is applied", func(t *testing.T) {
 		h := newMigHarness(t, isolation.ModeNSpawn)
 		stage(h, migrate.StepReprovisioning)
 
@@ -844,25 +748,12 @@ func TestResolveReprovision(t *testing.T) {
 
 		j, _ := reprovisionJournalFor().Load() //nolint:errcheck // staged above
 		require.NoError(t, resolveJournal(context.Background(), discardLogger(), h.env(), j))
-		assert.True(t, h.nodes.uncordonCalled)
 
 		got, err := reprovisionJournalFor().Load()
 		require.NoError(t, err)
 		assert.Equal(t, migrate.StepBootstrapped, got.Step)
 	})
 
-	t.Run("a node that never becomes Ready is a failed operation", func(t *testing.T) {
-		h := newMigHarness(t, isolation.ModeNSpawn)
-		stage(h, migrate.StepReprovisioning)
-
-		none := h.active.Config.DeepCopy()
-		none.Isolation = string(isolation.ModeNone)
-		h.applied = map[string]*provision.AgentConfig{"kube1": none}
-		h.nodes.readyErr = errors.New("Ready=False")
-
-		j, _ := reprovisionJournalFor().Load() //nolint:errcheck // staged above
-		require.ErrorContains(t, resolveJournal(context.Background(), discardLogger(), h.env(), j), "not Ready")
-	})
 }
 
 func TestRenderReprovisionUnit(t *testing.T) {

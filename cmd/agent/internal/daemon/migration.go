@@ -33,10 +33,6 @@ func migrateIsolation(ctx context.Context, log *slog.Logger, active *ActiveMachi
 		return fmt.Errorf("cannot migrate %s to %s: %w", active.Mode, req.Target, err)
 	}
 
-	if env.Nodes == nil {
-		return fmt.Errorf("cannot migrate %s to %s: the daemon has no Kubernetes client to drain the node", active.Mode, req.Target)
-	}
-
 	if handled, err := resumePending(ctx, log, env); handled || err != nil {
 		return err
 	}

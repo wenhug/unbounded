@@ -34,7 +34,7 @@ func TestRunInPlaceRecordsStepsInOrder(t *testing.T) {
 	_, err := RunInPlace(context.Background(), h.spec)
 	require.NoError(t, err)
 	require.Equal(t, []Step{
-		StepPreparing, StepDraining, StepStoppingSource, StepStartingTarget,
+		StepPreparing, StepStoppingSource, StepStartingTarget,
 		StepPersisting, StepAwaitingReady, StepReady, StepComplete,
 	}, steps)
 }
@@ -98,7 +98,7 @@ func TestResumeInPlace(t *testing.T) {
 			target: []string{"destroy kube2"},
 		},
 		{
-			name: "draining removes the target and leaves the source", at: StepDraining, wantErr: ErrInterrupted,
+			name: "legacy draining removes the target and leaves the source", at: StepLegacyDraining, wantErr: ErrInterrupted,
 			target: []string{"destroy kube2"},
 		},
 		{
@@ -206,7 +206,7 @@ func TestJournalStoreRoundTrip(t *testing.T) {
 
 	in := Journal{
 		Operation: "op-1", Strategy: InPlace, From: isolation.ModeNSpawn, To: isolation.ModeContainer,
-		SourceSlot: "kube1", TargetSlot: "kube2", Step: StepDraining, Cordoned: true,
+		SourceSlot: "kube1", TargetSlot: "kube2", Step: StepStoppingSource,
 	}
 	require.NoError(t, s.Save(in))
 
@@ -214,8 +214,7 @@ func TestJournalStoreRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, JournalVersion, out.Version)
 	require.Equal(t, "op-1", out.Operation)
-	require.Equal(t, StepDraining, out.Step)
-	require.True(t, out.Cordoned)
+	require.Equal(t, StepStoppingSource, out.Step)
 	require.False(t, out.StartedAt.IsZero())
 	require.False(t, out.Terminal())
 
@@ -253,4 +252,19 @@ func TestJournalStoreRejectsDamagedFile(t *testing.T) {
 
 	_, err = JournalStore{Path: path}.Load()
 	require.ErrorContains(t, err, "unsupported version")
+}
+
+func TestJournalLoadToleratesLegacyFields(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "journal.json")
+	legacy := `{"version":1,"operation":"op-1","strategy":"inPlace","from":"nspawn","to":"container",` +
+		`"sourceSlot":"kube1","targetSlot":"kube2","step":"draining","cordoned":true,` +
+		`"startedAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","targetStartedAt":"2026-01-01T00:00:00Z"}`
+	require.NoError(t, os.WriteFile(path, []byte(legacy), 0o600))
+
+	j, err := JournalStore{Path: path}.Load()
+	require.NoError(t, err)
+	require.Equal(t, StepLegacyDraining, j.Step)
+	require.False(t, j.Terminal())
 }

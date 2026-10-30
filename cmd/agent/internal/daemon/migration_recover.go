@@ -10,27 +10,13 @@ import (
 	"log/slog"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
 	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
-	"github.com/Azure/unbounded/internal/kube/nodedrain"
 	daemon "github.com/Azure/unbounded/pkg/agent/daemon"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
-
-// newNodeScheduler builds the cluster side of a migration from the daemon's own
-// credentials. See nodedrain.Drainer for the RBAC it needs.
-var newNodeScheduler = func(cfg *rest.Config, log *slog.Logger) (nodeScheduler, error) {
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("build kubernetes clientset: %w", err)
-	}
-
-	return &nodedrain.Drainer{Client: clientset, Log: log}, nil
-}
 
 // recoverIsolationMigration runs at daemon start. A migration whose journal is
 // still on disk was interrupted by a restart or handed off by a reprovision,
@@ -44,8 +30,7 @@ func recoverIsolationMigration(
 	log *slog.Logger,
 	c client.Client,
 	store *installstate.Store,
-	nodes nodeScheduler,
-	machineName, nodeName string,
+	machineName string,
 ) {
 	var pending []migrate.Journal
 
@@ -75,7 +60,7 @@ func recoverIsolationMigration(
 	defer releaseInstallationLock(log, lock)
 
 	for _, j := range pending {
-		env := migrationEnv{Operation: j.Operation, NodeName: nodeName, Nodes: nodes}
+		env := migrationEnv{Operation: j.Operation}
 
 		outcome := resolveJournal(ctx, log, env, j)
 		if errors.Is(outcome, ErrMigrationHandedOff) {

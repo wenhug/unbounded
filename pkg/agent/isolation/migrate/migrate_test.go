@@ -104,7 +104,6 @@ func newHarness() *harness {
 			return h.fail["preflight"]
 		},
 		Download:       hook("download"),
-		Drain:          hook("drain"),
 		CleanupNetwork: hook("cleanup-network"),
 		PersistTarget: func(context.Context, isolation.NodeRoot) error {
 			log = append(log, "persist")
@@ -132,7 +131,7 @@ func TestRunInPlaceSuccess(t *testing.T) {
 	require.False(t, res.RolledBack)
 	require.Equal(t, "kube2", res.Target.Slot())
 
-	require.Equal(t, []string{"preflight", "download", "drain", "cleanup-network", "persist", "wait-ready", "remove-source-config"}, h.hooks())
+	require.Equal(t, []string{"preflight", "download", "cleanup-network", "persist", "wait-ready", "remove-source-config"}, h.hooks())
 	require.Equal(t, []string{"prepare kube2", "start kube2"}, h.target.Calls())
 	require.Equal(t, []string{"stop kube1", "destroy kube1"}, h.source.Calls())
 }
@@ -171,19 +170,19 @@ func TestRunInPlacePrepareFailureLeavesSourceRunning(t *testing.T) {
 	_, err := RunInPlace(context.Background(), h.spec)
 	require.ErrorContains(t, err, "unpack failed")
 	require.Empty(t, h.source.Calls())
-	require.NotContains(t, h.hooks(), "drain")
+	require.NotContains(t, h.hooks(), "cleanup-network")
 }
 
-func TestRunInPlaceDrainFailureDestroysTargetOnly(t *testing.T) {
+func TestRunInPlaceCleanupNetworkFailureRestartsSource(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness()
-	h.fail["drain"] = errors.New("pdb blocked")
+	h.fail["cleanup-network"] = errors.New("link busy")
 
 	res, err := RunInPlace(context.Background(), h.spec)
-	require.ErrorContains(t, err, "pdb blocked")
-	require.False(t, res.RolledBack)
-	require.Empty(t, h.source.Calls(), "the source was never stopped, so it must not be touched")
+	require.ErrorContains(t, err, "link busy")
+	require.True(t, res.RolledBack)
+	require.Equal(t, []string{"stop kube1", "start kube1"}, h.source.Calls())
 	require.Equal(t, []string{"prepare kube2", "destroy kube2"}, h.target.Calls())
 }
 

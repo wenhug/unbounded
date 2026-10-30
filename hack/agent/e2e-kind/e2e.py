@@ -6326,43 +6326,11 @@ def clear_migration_target_fault(path: str) -> None:
         ssh_cmd(f"sudo rmdir {shlex.quote(path)} 2>/dev/null || true")
 
 
-def ensure_migration_drain_rbac() -> None:
-    """Grant the daemon group what the migration drain needs and the product
-    ClusterRole (deploy/machina/07-bootstrapper-rbac.yaml.tmpl) does not yet
-    grant: create on pods/eviction. Pod reads and Node patches come from the
-    Node authorizer. Harness-only; remove when the product role carries it."""
-    manifest = {
-        "apiVersion": "v1",
-        "kind": "List",
-        "items": [
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "ClusterRole",
-                "metadata": {"name": "e2e-daemon-migration-drain"},
-                "rules": [
-                    {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]},
-                    {"apiGroups": [""], "resources": ["pods/eviction"], "verbs": ["create"]},
-                    {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get", "patch"]},
-                ],
-            },
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "ClusterRoleBinding",
-                "metadata": {"name": "e2e-daemon-migration-drain"},
-                "subjects": [{"kind": "Group", "name": "unbounded-agent-daemons", "apiGroup": "rbac.authorization.k8s.io"}],
-                "roleRef": {"kind": "ClusterRole", "name": "e2e-daemon-migration-drain", "apiGroup": "rbac.authorization.k8s.io"},
-            },
-        ],
-    }
-    kubectl(["apply", "-f", "-"], input=json.dumps(manifest).encode())
-
-
 def migrate_isolation(node_config: NodeConfig, target: str, strategy: str) -> None:
     """Run an IsolationMigrate operation and assert the node moved with its
     identity intact: same Node name, labels and taints, new mode recorded, a
     workload still runs."""
     source = applied_isolation()
-    ensure_migration_drain_rbac()
     name = f"e2e-isolation-migrate-{target}-{strategy.lower()}-{int(time.time())}"
     run_quiet([KUBECTL, "delete", _machine_operation_resource(), name, "--ignore-not-found"], check=False)
     create_machine_operation(name, AGENT_MACHINE_NAME, "IsolationMigrate",
@@ -6385,7 +6353,6 @@ def validate_migration_rollback(node_config: NodeConfig, target: str) -> None:
     source is running again, the recorded mode is the source's, and the
     operation reports the failure."""
     source = applied_isolation()
-    ensure_migration_drain_rbac()
     name = f"e2e-isolation-rollback-{int(time.time())}"
     fault = inject_migration_target_fault()
     try:

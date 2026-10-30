@@ -5,7 +5,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 
@@ -53,7 +52,7 @@ func TestRecoverIsolationMigration_NothingToDo(t *testing.T) {
 	h := newMigHarness(t, isolation.ModeNSpawn)
 	c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
 
-	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), h.nodes, "test-machine", testNode)
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
 
 	assert.Empty(t, h.events)
 	assert.Equal(t, v1alpha3.OperationPhaseInProgress, getOp(t, c).Status.Phase)
@@ -86,7 +85,7 @@ func TestRecoverIsolationMigration_ReportsAnInPlaceOutcome(t *testing.T) {
 
 			c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
 
-			recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), h.nodes, "test-machine", testNode)
+			recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
 
 			op := getOp(t, c)
 			assert.Equal(t, tt.wantPhase, op.Status.Phase)
@@ -107,7 +106,7 @@ func TestRecoverIsolationMigration_DoesNotOverwriteAFinishedOperation(t *testing
 
 	c := recoveryClient(t, v1alpha3.OperationPhaseFailed)
 
-	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), h.nodes, "test-machine", testNode)
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
 
 	assert.Equal(t, v1alpha3.OperationPhaseFailed, getOp(t, c).Status.Phase)
 
@@ -120,12 +119,12 @@ func TestRecoverIsolationMigration_ReprovisionReportedByTheNewDaemon(t *testing.
 
 	require.NoError(t, reprovisionJournalFor().Save(migrate.Journal{
 		Operation: "op-1", Strategy: migrate.Reprovision, From: isolation.ModeNSpawn, To: isolation.ModeNone,
-		Step: migrate.StepBootstrapping, Cordoned: true,
+		Step: migrate.StepBootstrapping,
 	}))
 
 	// The bootstrap has not finished: nothing is reported yet.
 	c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
-	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), h.nodes, "test-machine", testNode)
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
 	assert.Equal(t, v1alpha3.OperationPhaseInProgress, getOp(t, c).Status.Phase)
 
 	_, err := reprovisionJournalFor().Load()
@@ -136,37 +135,15 @@ func TestRecoverIsolationMigration_ReprovisionReportedByTheNewDaemon(t *testing.
 	none.Isolation = string(isolation.ModeNone)
 	h.applied = map[string]*provision.AgentConfig{"kube1": none}
 
-	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), h.nodes, "test-machine", testNode)
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
 
 	op := getOp(t, c)
 	assert.Equal(t, v1alpha3.OperationPhaseComplete, op.Status.Phase)
 	assert.Contains(t, op.Status.Message, "reprovision")
-	assert.True(t, h.nodes.uncordonCalled)
 
 	_, err = reprovisionJournalFor().Load()
 	assert.ErrorIs(t, err, migrate.ErrNoJournal)
 	assert.NoDirExists(t, reprovisionDir())
-}
-
-func TestRecoverIsolationMigration_ReprovisionNotReadyFailsTheOperation(t *testing.T) {
-	h := newMigHarness(t, isolation.ModeNSpawn)
-	h.nodes.readyErr = errors.New("Ready=False")
-
-	require.NoError(t, reprovisionJournalFor().Save(migrate.Journal{
-		Operation: "op-1", Strategy: migrate.Reprovision, From: isolation.ModeNSpawn, To: isolation.ModeNone,
-		Step: migrate.StepReprovisioning,
-	}))
-
-	none := h.active.Config.DeepCopy()
-	none.Isolation = string(isolation.ModeNone)
-	h.applied = map[string]*provision.AgentConfig{"kube1": none}
-
-	c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
-	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), h.nodes, "test-machine", testNode)
-
-	op := getOp(t, c)
-	assert.Equal(t, v1alpha3.OperationPhaseFailed, op.Status.Phase)
-	assert.Contains(t, op.Status.Message, "not Ready")
 }
 
 func TestRecoverIsolationMigration_StaysQuietWhileInstallationHoldsTheHost(t *testing.T) {
@@ -183,7 +160,7 @@ func TestRecoverIsolationMigration_StaysQuietWhileInstallationHoldsTheHost(t *te
 	ctx, cancel := context.WithTimeout(context.Background(), 200_000_000)
 	defer cancel()
 
-	recoverIsolationMigration(ctx, discardLogger(), c, store, h.nodes, "test-machine", testNode)
+	recoverIsolationMigration(ctx, discardLogger(), c, store, "test-machine")
 
 	assert.Empty(t, h.source.Calls(), "no host work without installation ownership")
 	assert.Equal(t, v1alpha3.OperationPhaseInProgress, getOp(t, c).Status.Phase)

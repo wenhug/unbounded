@@ -91,8 +91,6 @@ type InPlaceSpec struct {
 	Preflight func(ctx context.Context, target isolation.Backend) error
 	// Download fetches the artifacts the target needs. Optional.
 	Download func(ctx context.Context) error
-	// Drain cordons and drains the node.
-	Drain func(ctx context.Context) error
 	// CleanupNetwork removes host networking the source left behind, as a
 	// repave does.
 	CleanupNetwork func(ctx context.Context) error
@@ -101,7 +99,9 @@ type InPlaceSpec struct {
 	// RestoreSource puts the source's applied config back after PersistTarget
 	// when the migration rolls back. Required whenever PersistTarget is set.
 	RestoreSource func(ctx context.Context) error
-	// WaitReady blocks until kubelet is Ready or a bounded timeout passes.
+	// WaitReady blocks until the target node stack is up on the host or a
+	// bounded timeout passes. Cordoning, draining and uncordoning the Node
+	// belong to the operator, not to the migration.
 	WaitReady func(ctx context.Context) error
 	// RemoveSourceConfig removes the source's applied config after success.
 	RemoveSourceConfig func(ctx context.Context) error
@@ -125,8 +125,6 @@ type Step string
 const (
 	// StepPreparing precedes Prepare: a target slot may be partially built.
 	StepPreparing Step = "preparing"
-	// StepDraining precedes Drain: the node may be cordoned or partly drained.
-	StepDraining Step = "draining"
 	// StepStoppingSource precedes the source stop: the source may be stopped.
 	StepStoppingSource Step = "stopping-source"
 	// StepStartingTarget precedes the target start: the target may be running.
@@ -177,7 +175,7 @@ var ErrRollbackFailed = errors.New("rollback to the source failed")
 // source root is retained until WaitReady succeeds.
 func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 	if s.Source == nil || s.Target == nil || s.SourceRoot == nil || s.Preflight == nil ||
-		s.Drain == nil || s.CleanupNetwork == nil || s.PersistTarget == nil ||
+		s.CleanupNetwork == nil || s.PersistTarget == nil ||
 		s.RestoreSource == nil || s.WaitReady == nil || s.RemoveSourceConfig == nil {
 		return Result{}, errors.New("migrate: incomplete in-place spec")
 	}
@@ -229,7 +227,7 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 // only removes the partial target. Once the source may be stopped it rolls back
 // to the source and returns ErrInterrupted, since repeating a step that crashed
 // the process could loop. When the target was already running and recorded it
-// waits for Ready as the original run would, then finishes or rolls back.
+// waits for the target as the original run would, then finishes or rolls back.
 func ResumeInPlace(ctx context.Context, s InPlaceSpec, at Step) (Result, error) {
 	if s.Source == nil || s.Target == nil || s.SourceRoot == nil || s.TargetRoot == nil ||
 		s.RestoreSource == nil || s.WaitReady == nil || s.RemoveSourceConfig == nil {
@@ -247,7 +245,7 @@ func ResumeInPlace(ctx context.Context, s InPlaceSpec, at Step) (Result, error) 
 		st.sourceStopped, st.targetStarted, st.persisted = true, true, true
 
 		if err := s.WaitReady(ctx); err != nil {
-			return st.rollbackInterrupted(ctx, fmt.Errorf("wait for kubelet Ready: %w", err))
+			return st.rollbackInterrupted(ctx, fmt.Errorf("wait for the target node stack: %w", err))
 		}
 
 		if err := s.record(ctx, StepReady); err != nil {
@@ -255,7 +253,7 @@ func ResumeInPlace(ctx context.Context, s InPlaceSpec, at Step) (Result, error) 
 		}
 
 		return st.finish(ctx)
-	case StepPreparing, StepDraining:
+	case StepPreparing, StepLegacyDraining:
 		return st.rollbackInterrupted(ctx, nil)
 	case StepStoppingSource, StepStartingTarget:
 		st.sourceStopped, st.targetStarted = true, at == StepStartingTarget
@@ -289,7 +287,7 @@ func (st *state) rollbackInterrupted(ctx context.Context, cause error) (Result, 
 	return Result{RolledBack: rolledBack}, err
 }
 
-// finish is step 10: the target is Ready. Failures from here do not undo the
+// finish is the last step: the target is up. Failures from here do not undo the
 // migration.
 func (st *state) finish(ctx context.Context) (Result, error) {
 	s := st.spec
@@ -324,16 +322,7 @@ type state struct {
 func (st *state) run(ctx context.Context) error {
 	s := st.spec
 
-	// 4.
-	if err := s.record(ctx, StepDraining); err != nil {
-		return err
-	}
-
-	if err := s.Drain(ctx); err != nil {
-		return fmt.Errorf("drain node: %w", err)
-	}
-
-	// 5. Record, then mark, then stop: a failed stop may still have stopped
+	// 4. Record, then mark, then stop: a failed stop may still have stopped
 	// part of the source, but a failed record has stopped nothing.
 	if err := s.record(ctx, StepStoppingSource); err != nil {
 		return err
@@ -345,12 +334,12 @@ func (st *state) run(ctx context.Context) error {
 		return fmt.Errorf("stop %s: %w", s.Source.Mode(), err)
 	}
 
-	// 6.
+	// 5.
 	if err := s.CleanupNetwork(ctx); err != nil {
 		return fmt.Errorf("clean up host networking: %w", err)
 	}
 
-	// 7. Fresh kubelet credentials come from the normal bootstrap flow inside
+	// 6. Fresh kubelet credentials come from the normal bootstrap flow inside
 	// Start; none are copied from the source.
 	if err := s.record(ctx, StepStartingTarget); err != nil {
 		return err
@@ -362,7 +351,7 @@ func (st *state) run(ctx context.Context) error {
 		return fmt.Errorf("start %s: %w", s.Target.Mode(), err)
 	}
 
-	// 8.
+	// 7.
 	if err := s.record(ctx, StepPersisting); err != nil {
 		return err
 	}
@@ -377,9 +366,9 @@ func (st *state) run(ctx context.Context) error {
 		return err
 	}
 
-	// 9.
+	// 8.
 	if err := s.WaitReady(ctx); err != nil {
-		return fmt.Errorf("wait for kubelet Ready: %w", err)
+		return fmt.Errorf("wait for the target node stack: %w", err)
 	}
 
 	return s.record(ctx, StepReady)

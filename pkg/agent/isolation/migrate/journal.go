@@ -19,6 +19,11 @@ import (
 // JournalVersion is the schema version of a Journal.
 const JournalVersion = 1
 
+// StepLegacyDraining is the step an earlier agent wrote before it drained the
+// node. Nothing writes it now; a journal that carries it is resolved as if the
+// migration had not started changing the host.
+const StepLegacyDraining Step = "draining"
+
 // StepReprovisioning is the step of a reprovision migration whose reset and
 // bootstrap are carried out by the handoff command; the daemon that started the
 // migration is gone by then.
@@ -53,18 +58,11 @@ type Journal struct {
 	To        isolation.Mode `json:"to"`
 	// SourceSlot and TargetSlot are the blue/green slots of an in-place
 	// migration. Reprovision leaves them empty.
-	SourceSlot string `json:"sourceSlot,omitempty"`
-	TargetSlot string `json:"targetSlot,omitempty"`
-	Step       Step   `json:"step"`
-	// Cordoned is true when this migration cordoned the node, so that it, and
-	// not an operator's earlier cordon, is undone on rollback or success.
-	Cordoned  bool      `json:"cordoned,omitempty"`
-	StartedAt time.Time `json:"startedAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	// TargetStartedAt is when the target was about to be started, so that a
-	// Ready condition the previous kubelet reported is not mistaken for the new
-	// one's.
-	TargetStartedAt time.Time `json:"targetStartedAt,omitzero"`
+	SourceSlot string    `json:"sourceSlot,omitempty"`
+	TargetSlot string    `json:"targetSlot,omitempty"`
+	Step       Step      `json:"step"`
+	StartedAt  time.Time `json:"startedAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 	// Message is the last failure the handoff command saw, for operators.
 	Message string `json:"message,omitempty"`
 }

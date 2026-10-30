@@ -45,7 +45,6 @@ func runController(
 	nodeName string,
 	nodeOperator nodeOperator,
 	installation *installstate.Store,
-	nodes nodeScheduler,
 ) error {
 	mgr, err := ctrl.NewManager(restCfg, manager.Options{
 		Scheme: newScheme(),
@@ -83,8 +82,6 @@ func runController(
 		Client:               c,
 		log:                  log,
 		machineName:          machineName,
-		nodeName:             nodeName,
-		nodes:                nodes,
 		nodeOperator:         nodeOperator,
 		agentUpgradeLockPath: goalstates.DaemonAgentUpgradeLockPath,
 		requestRestart:       func() { stopManager(ErrRestartRequested) },

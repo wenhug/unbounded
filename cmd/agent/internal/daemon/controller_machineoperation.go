@@ -27,12 +27,8 @@ const agentUpgradeLockRetryDelay = 2 * time.Second
 type machineOperationTarget struct {
 	installation *installstate.Store
 	client.Client
-	log         *slog.Logger
-	machineName string
-	// nodeName and nodes are the Kubernetes Node and the way to cordon, drain
-	// and watch it, for IsolationMigrate. Nil nodes refuses a migration.
-	nodeName             string
-	nodes                nodeScheduler
+	log                  *slog.Logger
+	machineName          string
 	nodeOperator         nodeOperator
 	agentUpgradeLockPath string
 	// requestRestart stops the controller so the daemon restarts from the
@@ -277,7 +273,7 @@ func (t *machineOperationTarget) reconcileIsolationMigrate(ctx context.Context, 
 		return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{Phase: v1alpha3.OperationPhaseFailed, Reason: "UnsupportedMigration", Message: err.Error()})
 	}
 
-	env := migrationEnv{Operation: op.Name, NodeName: t.nodeName, Nodes: t.nodes}
+	env := migrationEnv{Operation: op.Name}
 
 	err = t.nodeOperator.MigrateIsolation(ctx, t.log, active, req, strategy, env)
 
