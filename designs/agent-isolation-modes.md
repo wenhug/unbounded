@@ -288,6 +288,21 @@ Provisional until the node facts in section 13 are collected.
 - Exec: via `runc exec` (or equivalent) behind `Backend.Exec`. Logs: container
   journal via `journalctl -M` equivalent or `runc exec journalctl`.
 
+**Implementation status (WP2, all provisional).** Implemented against this
+section and a stub runtime, not against a live Azure Container Linux node:
+`pkg/agent/isolation/container` (Backend, OCI `config.json` generation, the
+supervising unit, preflight, exec and logs through `<runtime> exec`),
+`pkg/agent/nodelifecycle` and the hidden `node-lifecycle` command. The backend
+is not registered with the isolation registry until the daemon is mode aware.
+Unverified assumptions: `spc_t` is accepted by the node policy; `rshared` on
+`/var/lib/kubelet` propagates through the host root mount; the runtime lives at
+`/opt/unbounded/runtime/runc`; `SIGRTMIN+3` through runc stops systemd as PID 1;
+the cgroup, namespace, mount and capability set in `config.json` is sufficient
+for kubelet and containerd. Not done: runtime artifact download wiring and the
+daemon integration. `images/agent-*` already install systemd and the bundle sets
+`process.args`, so no image entrypoint was added. The open items below are
+unchanged.
+
 ## 9. Operation matrix
 
 | Operation | `nspawn` | `none` | `container` |
@@ -550,6 +565,9 @@ operation in section 9, GPU, LocalDNS, limits and troubleshooting; links valid;
 - E2E: the Python QEMU suite parameterized by mode (WP5).
 
 ## 13. Open items and prerequisites
+
+Status: WP2 was implemented without these facts; see the implementation status
+note in section 8.3. Every item below is still open.
 
 1. **Azure Container Linux node facts (blocks WP2).** Run on a live node and
    record the output: `uname -r`, `containerd --version`, `runc --version`,
