@@ -36,8 +36,12 @@ import (
 // the unit ReprovisionUnit, whose command (the hidden isolation-reprovision
 // subcommand) runs the existing reset, then the bootstrap stage plan for the
 // target mode, and is retried by systemd (and run again at boot) until it
-// succeeds or ReprovisionMaxAttempts runs have failed. The daemon that bootstrap installs finds the journal at startup,
-// sees the applied config in the target mode and reports the operation.
+// succeeds. Two limits apply and are different: the command itself gives up
+// after ReprovisionMaxAttempts failed runs (5) and records why in the journal,
+// and the unit's StartLimitBurst (10 in an hour) is only systemd's backstop,
+// kept higher so the command's own record is what an operator finds. The daemon
+// that bootstrap installs finds the journal at startup, sees the applied config
+// in the target mode and reports the operation.
 //
 // The unit and ReprovisionDir are not touched by the reset, so a crash or a
 // reboot at any point leaves the handoff to continue. When the runs are used
@@ -109,7 +113,7 @@ func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMac
 	}
 
 	// Before any mutation.
-	if err := preflightMigrationTarget(ctx, log, req.Target, targetCfg); err != nil {
+	if err := preflightMigrationTarget(ctx, log, req.Target); err != nil {
 		return err
 	}
 

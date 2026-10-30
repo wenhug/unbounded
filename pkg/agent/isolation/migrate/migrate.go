@@ -22,7 +22,7 @@ const (
 	// InPlace prepares the target beside the source on the same host and
 	// switches over, rolling back to the source on failure.
 	InPlace Strategy = "inPlace"
-	// Reprovision drains, resets and bootstraps again in the new mode.
+	// Reprovision resets and bootstraps again in the new mode.
 	Reprovision Strategy = "reprovision"
 )
 

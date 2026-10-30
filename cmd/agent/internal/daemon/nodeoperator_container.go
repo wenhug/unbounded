@@ -116,9 +116,11 @@ func (containerNodeOperator) RestartNode(ctx context.Context, log *slog.Logger, 
 // again, and the error says so. The applied config is persisted only after the
 // new slot is healthy, then the old slot's record and files are removed.
 //
-// The applied config always records the mode the node runs in, not the mode the
-// desired config asks for: a different desired mode moves nothing until an
-// IsolationMigrate operation runs.
+// The applied config records the mode the node runs in. The desired config is
+// derived from the applied one, so it already carries that mode and the repave
+// sets it again only so that a caller passing another config cannot change the
+// mode here: nothing moves to a different mode until an IsolationMigrate
+// operation runs.
 func (containerNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, active *ActiveMachine, newCfg *provision.UnboundedAgentConfig) error {
 	oldSlot := active.Name
 	newSlot := goalstates.AlternateMachine(oldSlot)

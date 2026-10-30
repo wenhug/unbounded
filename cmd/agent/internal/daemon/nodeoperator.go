@@ -56,17 +56,18 @@ func activeMode(cfg *provision.AgentConfig) (isolation.Mode, error) {
 	return mode, nil
 }
 
-// nodeOperator performs host-local nspawn node operations for the daemon.
-// Reconcile code depends on this interface so tests can substitute the
-// host-mutating implementation with a fake.
+// nodeOperator performs host-local node operations for the daemon, for the
+// isolation mode the host runs in (nspawn, none or container). Reconcile code
+// depends on this interface so tests can substitute the host-mutating
+// implementation with a fake.
 type nodeOperator interface {
-	// FindActiveMachine returns the currently active nspawn machine and its
+	// FindActiveMachine returns the currently active node slot and its
 	// applied agent configuration.
 	FindActiveMachine(*slog.Logger) (*ActiveMachine, error)
 	// EnsureLifecycleMigration installs lifecycle hooks for the active machine
 	// without restarting its currently running services.
 	EnsureLifecycleMigration(context.Context, *slog.Logger, *ActiveMachine) error
-	// RestartNode restarts the provided active nspawn-backed node in place.
+	// RestartNode restarts the provided active node in place.
 	RestartNode(context.Context, *slog.Logger, *ActiveMachine) error
 	// ResetAgentResources removes the unbounded-agent and associated resources
 	// without stopping the currently running daemon process.

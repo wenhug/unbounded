@@ -45,7 +45,8 @@ var (
 // noneNodeOperator performs node operations for a host-native node. It embeds
 // the nspawn operator for the operations that are about the host and not the
 // node stack: resetting the agent, stopping the daemon, staging an agent
-// upgrade and isolation migration, whose error already names the active mode.
+// upgrade, and the isolation migration (which finds the source mode in the
+// active machine and so needs nothing mode-specific here).
 //
 // A none node records its applied config under the slot kube1, so the
 // discovery the dispatcher delegates to the default operator finds it with no
@@ -87,9 +88,11 @@ func (noneNodeOperator) RestartNode(ctx context.Context, log *slog.Logger, activ
 // new version is healthy, and the superseded version directories are removed
 // after that.
 //
-// The applied config always records the mode the node runs in, not the mode the
-// desired config asks for: a different desired mode moves nothing until an
-// IsolationMigrate operation runs.
+// The applied config records the mode the node runs in. The desired config is
+// derived from the applied one, so it already carries that mode and the repave
+// sets it again only so that a caller passing another config cannot change the
+// mode here: nothing moves to a different mode until an IsolationMigrate
+// operation runs.
 func (noneNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, active *ActiveMachine, newCfg *provision.UnboundedAgentConfig) error {
 	log.Info("starting node upgrade",
 		"old_version", active.Config.Cluster.Version,

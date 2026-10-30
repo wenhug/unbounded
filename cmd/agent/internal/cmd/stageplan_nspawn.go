@@ -25,7 +25,11 @@ func init() {
 
 // nspawnPlan is the bootstrap plan for the default mode: it unpacks an OS image
 // into the kube1 machine and starts the node stack inside it. The bodies are
-// the original agentStages methods moved here unchanged.
+// the original agentStages methods moved here. The behavior is the same, with
+// two mechanical differences: the machine directory is reached through the
+// node root (Root().Path("/"), equal to the machine directory for nspawn), and
+// credential preparation also records the attestation settings of a host that
+// attests, which a reprovision needs.
 type nspawnPlan struct{}
 
 func (nspawnPlan) EnsureHostClean(ctx context.Context, s *agentStages) error {
