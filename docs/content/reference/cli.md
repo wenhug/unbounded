@@ -299,7 +299,9 @@ kubectl unbounded machine register \
 
 Generate the bootstrap script or cloud-init payload for a host. The
 `--isolation` flag selects where the node stack runs and is written to the
-Machine as `spec.isolation` and to the agent config as `Isolation`.
+Machine as `spec.isolation` and to the agent config as `Isolation`. The table
+lists only that flag; run `kubectl unbounded machine manual-bootstrap --help`
+for the others.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -311,8 +313,7 @@ kubectl unbounded machine manual-bootstrap my-node --site mysite \
 ```
 
 See [Isolation Modes]({{< relref "reference/agent/isolation" >}}). `none` and
-`container` may not be available in every agent build, and `container` is
-experimental.
+`container` are experimental.
 
 ---
 

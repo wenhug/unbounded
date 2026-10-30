@@ -58,12 +58,8 @@ only reports drift. See [Migrating Between Modes]({{< relref "reference/agent/is
 
 ## Inspecting the node stack
 
-`unbounded-agent exec` and `unbounded-agent logs` work in every isolation mode:
-
-```bash
-sudo unbounded-agent exec -- crictl ps
-sudo unbounded-agent logs --unit kubelet --follow --lines 200
-```
+`unbounded-agent exec` and `unbounded-agent logs` work in every isolation mode.
+See [Running commands and reading logs]({{< relref "reference/agent/isolation" >}}#running-commands-and-reading-logs).
 
 ## Node Recreation
 

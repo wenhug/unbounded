@@ -476,23 +476,10 @@ in the other modes with different mechanics; see the
 
 ## Running commands and reading logs
 
-Use the backend-neutral subcommands, which work the same way in every mode:
-
-```bash
-sudo unbounded-agent exec -- journalctl -u kubelet --no-pager -n 100
-sudo unbounded-agent exec -- ls -l /etc/containerd
-sudo unbounded-agent logs --unit kubelet --follow --lines 200
-```
-
-`exec` runs the command after `--` inside the active machine. `logs` streams the
-journal of one unit inside the node stack (`--unit`), optionally following new
-entries (`--follow`) and limiting output to the last N entries (`--lines`).
-
-{{< callout type="note" >}}
-`exec` and `logs` are new with the isolation work. A host running an agent
-build without them can use the `machinectl` recipes under
-[Troubleshooting](#troubleshooting).
-{{< /callout >}}
+`unbounded-agent exec` runs the command after `--` inside the active machine and
+`unbounded-agent logs` streams the journal of a unit inside it, both through
+`systemd-run --machine`. Usage and options are the same in every mode; see
+[Running commands and reading logs]({{< relref "reference/agent/isolation" >}}#running-commands-and-reading-logs).
 
 ## Limits
 
@@ -509,7 +496,7 @@ build without them can use the `machinectl` recipes under
 ## Troubleshooting
 
 These recipes use `machinectl` directly and apply to `nspawn` hosts only. Prefer
-`unbounded-agent exec` and `unbounded-agent logs` where available.
+`unbounded-agent exec` and `unbounded-agent logs`.
 
 | Symptom | Check |
 |---|---|

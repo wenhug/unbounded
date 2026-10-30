@@ -580,9 +580,8 @@ sudo unbounded-agent logs --unit kubelet --lines 200
 sudo unbounded-agent exec -- journalctl -u kubelet --no-pager -n 100
 ```
 
-`exec` and `logs` work in every isolation mode. On an `nspawn` host whose agent
-predates them, `machinectl shell <slot> /bin/journalctl -u kubelet` still works;
-see [nspawn Mode]({{< relref "reference/agent/isolation-nspawn#troubleshooting" >}}).
+`exec` and `logs` work in every isolation mode; see
+[Isolation Modes]({{< relref "reference/agent/isolation" >}}#running-commands-and-reading-logs).
 
 **GPU not detected** -- Confirm that the vendor driver is installed and loaded
 on the host. For NVIDIA, check `/dev/nvidia*`. For AMD, check `/dev/kfd`,
