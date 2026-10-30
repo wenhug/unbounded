@@ -91,6 +91,17 @@ type InPlaceSpec struct {
 	Preflight func(ctx context.Context, target isolation.Backend) error
 	// Download fetches the artifacts the target needs. Optional.
 	Download func(ctx context.Context) error
+	// SnapshotConfig saves the host configuration files both stacks write, before
+	// the first step that changes the host. Optional; when set, RestoreConfig
+	// should be too. A failure ends the migration with nothing changed.
+	SnapshotConfig func(ctx context.Context) error
+	// RestoreConfig puts the saved files back during a rollback, after the target
+	// is gone and before the source starts. It reports nil when there is no
+	// snapshot to restore. The snapshot is kept when it fails.
+	RestoreConfig func(ctx context.Context) error
+	// DiscardConfig removes the snapshot once the migration is over, after a
+	// success or a completed rollback.
+	DiscardConfig func(ctx context.Context) error
 	// CleanupNetwork removes host networking the source left behind, as a
 	// repave does.
 	CleanupNetwork func(ctx context.Context) error
@@ -191,6 +202,14 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 		}
 	}
 
+	// Before the first change to the host, so a rollback has something to
+	// restore and a crash after the next record finds it.
+	if s.SnapshotConfig != nil {
+		if err := s.SnapshotConfig(ctx); err != nil {
+			return Result{}, fmt.Errorf("save shared configuration: %w", err)
+		}
+	}
+
 	// 3: prepare beside the source.
 	if err := s.record(ctx, StepPreparing); err != nil {
 		return Result{}, err
@@ -203,6 +222,9 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 		if s.TargetRoot != nil {
 			_, rbErr := st.rollback(ctx)
 			err = errors.Join(err, rbErr)
+		} else {
+			// Prepare may have written shared files before it failed.
+			err = errors.Join(err, st.restoreConfig(context.WithoutCancel(ctx)))
 		}
 
 		return Result{}, fmt.Errorf("prepare %s: %w", s.Target.Mode(), err)
@@ -302,6 +324,12 @@ func (st *state) finish(ctx context.Context) (Result, error) {
 		cleanup = errors.Join(cleanup, fmt.Errorf("remove source applied config: %w", err))
 	}
 
+	if s.DiscardConfig != nil {
+		if err := s.DiscardConfig(ctx); err != nil {
+			cleanup = errors.Join(cleanup, fmt.Errorf("discard configuration snapshot: %w", err))
+		}
+	}
+
 	if cleanup == nil {
 		if err := s.record(ctx, StepComplete); err != nil {
 			cleanup = err
@@ -399,6 +427,11 @@ func (st *state) rollback(ctx context.Context) (bool, error) {
 		errs = append(errs, fmt.Errorf("destroy %s: %w", s.Target.Mode(), err))
 	}
 
+	// The target is gone, so nothing writes the shared files any more.
+	if err := st.restoreConfig(ctx); err != nil {
+		errs = append(errs, err)
+	}
+
 	restarted := false
 
 	if st.sourceStopped {
@@ -410,6 +443,27 @@ func (st *state) rollback(ctx context.Context) (bool, error) {
 	}
 
 	return restarted, errors.Join(errs...)
+}
+
+// restoreConfig puts the shared configuration back and, when that worked,
+// drops the snapshot. A failure keeps the snapshot for another attempt.
+func (st *state) restoreConfig(ctx context.Context) error {
+	s := st.spec
+	if s.RestoreConfig == nil {
+		return nil
+	}
+
+	if err := s.RestoreConfig(ctx); err != nil {
+		return fmt.Errorf("restore shared configuration: %w", err)
+	}
+
+	if s.DiscardConfig != nil {
+		if err := s.DiscardConfig(ctx); err != nil {
+			return fmt.Errorf("discard configuration snapshot: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // Parameter keys of an IsolationMigrate MachineOperation.
