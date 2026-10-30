@@ -447,12 +447,15 @@ func (n *Node) waitLocalDNS(ctx context.Context) error {
 // SystemState values once startup is done; a degraded system is accepted
 // because an unrelated failed unit must not block the node.
 func (n *Node) waitReady(ctx context.Context) error {
-	interval := n.p.PollInterval
+	return waitSystemd(ctx, n.backend, n.root(), n.p.PollInterval, n.p.ReadyTimeout)
+}
+
+// waitSystemd polls systemd in the container until it has finished booting.
+func waitSystemd(ctx context.Context, b *container.Backend, root isolation.NodeRoot, interval, timeout time.Duration) error {
 	if interval <= 0 {
 		interval = time.Second
 	}
 
-	timeout := n.p.ReadyTimeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
@@ -463,7 +466,7 @@ func (n *Node) waitReady(ctx context.Context) error {
 	var last string
 
 	for {
-		res, err := n.backend.Exec(ctx, n.root(), isolation.ExecSpec{Args: []string{"systemctl", "show", "--property=SystemState", "--value"}})
+		res, err := b.Exec(ctx, root, isolation.ExecSpec{Args: []string{"systemctl", "show", "--property=SystemState", "--value"}})
 
 		switch state := strings.TrimSpace(res.Stdout); {
 		case err != nil:
@@ -476,7 +479,7 @@ func (n *Node) waitReady(ctx context.Context) error {
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("container %s not ready after %s: %s", n.slot, timeout, last)
+			return fmt.Errorf("container %s not ready after %s: %s", root.Slot(), timeout, last)
 		case <-time.After(interval):
 		}
 	}

@@ -116,3 +116,42 @@ func TestValidate(t *testing.T) {
 	require.Error(t, (&Lifecycle{Controller: &fakeController{}}).PreStart(context.Background(), "kube1"))
 	require.Error(t, (&Lifecycle{Log: slog.Default()}).Reconcile(context.Background(), "kube1"))
 }
+
+func TestPostStartRunsAfterStartOnceTheStackIsRunning(t *testing.T) {
+	c := &fakeController{runningAfter: 1}
+	l := newLifecycle(c)
+
+	var ran []string
+
+	l.AfterStart = func(_ context.Context, slot string) error {
+		ran = append(ran, slot)
+
+		require.Equal(t, 2, c.runningCalls, "the stack was running before the hook")
+
+		return nil
+	}
+
+	require.NoError(t, l.PostStart(context.Background(), "kube2"))
+	require.Equal(t, []string{"kube2"}, ran)
+}
+
+func TestPostStartAfterStartFailureFailsThePhase(t *testing.T) {
+	l := newLifecycle(&fakeController{})
+	l.AfterStart = func(context.Context, string) error { return errors.New("gpu wiring failed") }
+
+	err := l.PostStart(context.Background(), "kube1")
+	require.ErrorContains(t, err, "gpu wiring failed")
+	require.ErrorContains(t, err, "kube1")
+}
+
+func TestPostStartSkipsAfterStartWhenTheStackNeverRuns(t *testing.T) {
+	l := newLifecycle(&fakeController{runningAfter: 1 << 30})
+	l.ReadyTimeout = 20 * time.Millisecond
+	l.AfterStart = func(context.Context, string) error {
+		t.Fatal("AfterStart must not run for a stack that is not running")
+
+		return nil
+	}
+
+	require.Error(t, l.PostStart(context.Background(), "kube1"))
+}

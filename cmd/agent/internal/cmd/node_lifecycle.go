@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Azure/unbounded/cmd/agent/internal/containerops"
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/container"
@@ -71,9 +72,22 @@ func (c containerController) Restart(ctx context.Context, slot string) error {
 }
 
 func newNodeLifecycle(log *slog.Logger) *nodelifecycle.Lifecycle {
+	return newNodeLifecycleWith(log, containerops.NVIDIAHooks{})
+}
+
+// newNodeLifecycleWith builds the lifecycle with the GPU seams supplied. The
+// zero NVIDIAHooks do the real discovery. On a host with no GPUs both GPU hooks
+// are inert: the pre-start refresh leaves a node recorded without NVIDIA grants
+// alone, and the post-start step does nothing when no NVIDIA device is found.
+func newNodeLifecycleWith(log *slog.Logger, gpu containerops.NVIDIAHooks) *nodelifecycle.Lifecycle {
+	b := &container.Backend{Log: log, RefreshGrants: containerops.RefreshNVIDIAGrants(gpu)}
+
 	return &nodelifecycle.Lifecycle{
 		Log:        log,
-		Controller: containerController{b: &container.Backend{Log: log}},
+		Controller: containerController{b: b},
+		AfterStart: func(ctx context.Context, slot string) error {
+			return containerops.ReconcileNVIDIA(ctx, log, b, slot, gpu)
+		},
 		ReloadSystemd: func(ctx context.Context) error {
 			return executil.RunCmd(ctx, log, executil.Systemctl(), "daemon-reload")
 		},

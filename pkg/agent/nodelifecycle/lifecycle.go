@@ -38,6 +38,10 @@ type Lifecycle struct {
 	Controller Controller
 	// ReloadSystemd reloads systemd units after configuration is regenerated.
 	ReloadSystemd func(ctx context.Context) error
+	// AfterStart, when set, runs at the end of PostStart once the stack is
+	// running, with the slot. The container mode uses it to wire GPUs, which
+	// needs the stack up. Its failure fails PostStart.
+	AfterStart func(ctx context.Context, slot string) error
 	// ReadyTimeout bounds PostStart's wait for the stack to be running.
 	ReadyTimeout time.Duration
 	// PollInterval is the wait between readiness checks.
@@ -77,7 +81,8 @@ func (l *Lifecycle) PreStart(ctx context.Context, slot string) error {
 }
 
 // PostStart waits for the node stack to be running after the supervising unit
-// starts. It fails when the stack is not running within ReadyTimeout.
+// starts, then runs AfterStart. It fails when the stack is not running within
+// ReadyTimeout or AfterStart fails.
 func (l *Lifecycle) PostStart(ctx context.Context, slot string) error {
 	if err := l.validate(); err != nil {
 		return err
@@ -103,7 +108,7 @@ func (l *Lifecycle) PostStart(ctx context.Context, slot string) error {
 		if err == nil && running {
 			l.Log.Info("node stack is running", "slot", slot)
 
-			return nil
+			return l.afterStart(ctx, slot)
 		}
 
 		last = detail
@@ -117,6 +122,18 @@ func (l *Lifecycle) PostStart(ctx context.Context, slot string) error {
 		case <-time.After(interval):
 		}
 	}
+}
+
+func (l *Lifecycle) afterStart(ctx context.Context, slot string) error {
+	if l.AfterStart == nil {
+		return nil
+	}
+
+	if err := l.AfterStart(ctx, slot); err != nil {
+		return fmt.Errorf("after start of %s: %w", slot, err)
+	}
+
+	return nil
 }
 
 // Reconcile restarts the node stack, which runs PreStart and PostStart through
