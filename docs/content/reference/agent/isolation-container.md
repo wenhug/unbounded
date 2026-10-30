@@ -109,7 +109,7 @@ configuration are not used by this mode.
   to it needs a new rootfs. A host that reports NVIDIA devices with incomplete
   driver state fails the start, as in `nspawn`. See
   [NVIDIA]({{< relref "reference/gpu/nvidia" >}}).
-- **Runtime.** Only `runc` is supported; `crun` is not.
+- **Runtime.** The OCI runtime is `runc`.
 - **Provisioning.** Whether Azure Container Linux accepts user-supplied Ignition
   when AKS provisions the node is unverified.
 - **Migration.** Migration to and from `nspawn` can be in place; any move

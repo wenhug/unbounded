@@ -331,7 +331,7 @@ Provisional until the node facts in section 13 are collected.
 - Image: reuse the `images/agent-*` rootfs images with systemd as PID 1 (an
   entrypoint is added to the image family if needed).
 - Launch: the agent reuses the OCI unpack step, generates an OCI runtime bundle
-  (`config.json`) over the unpacked rootfs, and runs it with `runc` or `crun`
+  (`config.json`) over the unpacked rootfs, and runs it with `runc`
   supplied as an agent-downloaded artifact under `/opt/unbounded`. An
   agent-owned systemd unit supervises the container. The host's docker and
   containerd are not used.
@@ -341,7 +341,7 @@ Provisional until the node facts in section 13 are collected.
   `/var/lib/kubelet`, device and cgroup rules from grants.
 - SELinux: when enforcing, set `process.selinuxLabel` to `spc_t`. A preflight
   check verifies label support. Provisional.
-- Requirements: writable `/etc`, `/opt`, `/var`, a loadable `runc`/`crun`, cgroup
+- Requirements: writable `/etc`, `/opt`, `/var`, a loadable `runc`, cgroup
   v2, required kernel modules available to the container.
 - Provisioning: existing `ignition` `ProvisioningFormat`. No new format.
 - Lifecycle hooks: a new hidden generic `node-lifecycle` subcommand with the
@@ -354,7 +354,7 @@ Provisional until the node facts in section 13 are collected.
 supervising unit, bootstrap, start, soft reboot, blue/green upgrade with
 rollback, reset, `exec`, `logs`, preflight, GPU wiring through the
 `node-lifecycle` hooks, and uninstall. The runtime is `runc`, downloaded to
-`/opt/unbounded/runtime/runc` in this mode only. `crun` is not implemented.
+`/opt/unbounded/runtime/runc` in this mode only.
 Decisions: paths under the bind-mounted same-path directories are written on the
 host side, since a bind mount hides anything written below it in the rootfs;
 both slots share those directories, so a repave resets the shared kubelet state
@@ -595,7 +595,7 @@ Owns: `pkg/agent/isolation/container/` (new), OCI bundle generation,
 `node-lifecycle` hidden command in `cmd/agent/internal/cmd/`, shared lifecycle
 code in `pkg/agent/` (new package, for example `pkg/agent/nodelifecycle`),
 changes to `images/agent-*` needed for systemd as PID 1, and the runtime
-artifact (`runc` or `crun`) download wiring.
+artifact (`runc`) download wiring.
 
 Steps: implement `Backend` per section 8.3. Reuse the OCI unpack code from
 `pkg/agent/phases/rootfs/oci`. Apply grants as OCI mounts and devices. Set the
@@ -706,10 +706,8 @@ operation in section 9, GPU, LocalDNS, limits and troubleshooting; links valid;
 ## 13. Open items and prerequisites
 
 Status: WP2 was implemented without these facts; see the status note in
-section 8.3. Every item below is still open. Remaining gaps beyond these facts:
-`crun` is unsupported, there is no agent-side `--isolation` flag (the agent
-reads `Isolation` from its config), and nothing has run on a real host or in
-the QEMU e2e.
+section 8.3. Every item below is still open. Remaining gap beyond these facts:
+nothing has run on a real host or in the QEMU e2e.
 
 1. **Azure Container Linux node facts (blocks WP2).** Run on a live node and
    record the output: `uname -r`, `containerd --version`, `runc --version`,

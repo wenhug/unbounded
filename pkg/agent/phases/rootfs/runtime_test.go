@@ -107,6 +107,6 @@ func TestInstallHostRuntimeFailureLeavesNoBinary(t *testing.T) {
 func TestInstallHostRuntimeRejectsAnotherFileName(t *testing.T) {
 	t.Parallel()
 
-	err := InstallHostRuntime(slog.Default(), runtimeGoalState("http://127.0.0.1:1"), filepath.Join(t.TempDir(), "crun")).Do(context.Background())
+	err := InstallHostRuntime(slog.Default(), runtimeGoalState("http://127.0.0.1:1"), filepath.Join(t.TempDir(), "runtime")).Do(context.Background())
 	require.ErrorContains(t, err, "must end in runc")
 }
