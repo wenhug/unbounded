@@ -34,29 +34,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/pkg/agent/config"
-	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/container"
-	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestart"
-	"github.com/Azure/unbounded/pkg/agent/phases/reset"
 	"github.com/Azure/unbounded/pkg/agent/phases/rootfs"
 	"github.com/Azure/unbounded/pkg/agent/phases/rootfs/oci"
 )
-
-// kubeletClientPKIDir holds kubelet's rotated client certificates. It is not
-// goalstates.KubeletPKIDir, which is the cluster CA directory.
-const kubeletClientPKIDir = "/var/lib/kubelet/pki"
 
 // Slot is the slot a first install builds.
 const Slot = goalstates.NSpawnMachineKube1
@@ -124,9 +115,9 @@ type Node struct {
 	slot    string
 	backend *container.Backend
 
-	// snapshot is the directory of the shared configuration saved by a running
-	// Upgrade, until it is restored or discarded.
-	snapshot string
+	// snapshot is the shared configuration saved by a running Upgrade, until it
+	// is restored or discarded.
+	snapshot *hostnode.Snapshot
 
 	once sync.Once
 	gs   *goalstates.MachineGoalState
@@ -164,8 +155,6 @@ func New(p Params) *Node {
 	}}
 }
 
-// SlotName is the slot this node manages.
-
 // Backend is the container backend wired to this node. Its Unpack is bound on
 // first use of the goal state.
 func (n *Node) Backend() *container.Backend { return n.backend }
@@ -198,27 +187,9 @@ func (n *Node) resolve() error {
 }
 
 func (n *Node) resolveGoalState() (*goalstates.MachineGoalState, error) {
-	if n.p.GoalState != nil {
-		return n.p.GoalState, nil
-	}
-
-	resolve := n.p.Resolve
-	if resolve == nil {
-		if n.p.Config == nil {
-			return nil, errors.New("no agent configuration to resolve the node")
-		}
-
-		resolve = func(slot string) (*goalstates.MachineGoalState, error) {
-			return goalstates.ResolveMachine(n.p.Log, n.p.Config, slot, n.p.Downloads)
-		}
-	}
-
-	gs, err := resolve(n.slot)
-	if err != nil {
-		return nil, fmt.Errorf("resolve machine goal state: %w", err)
-	}
-
-	return gs, nil
+	return hostnode.GoalStateSource{
+		Log: n.p.Log, Config: n.p.Config, Downloads: n.p.Downloads, GoalState: n.p.GoalState, Resolve: n.p.Resolve,
+	}.For(n.slot)
 }
 
 // applyOverrides points the goal state at the container: the root is the
@@ -367,12 +338,7 @@ func (n *Node) Running(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	st, err := n.backend.Status(ctx, n.root())
-	if err != nil {
-		return false, err
-	}
-
-	return st.Running, nil
+	return hostnode.Running(ctx, n.backend, n.root())
 }
 
 type funcTask struct {
@@ -408,37 +374,26 @@ func (n *Node) Start(ctx context.Context, wasRunning, containerdChanged, kubelet
 	).Do(ctx)
 }
 
+// restartChanged restarts the services whose configuration changed. When this
+// start booted the container (wasRunning is false) the services have already
+// read the configuration written before it.
 func (n *Node) restartChanged(ctx context.Context, wasRunning, containerdChanged, kubeletChanged bool) error {
-	if !wasRunning {
-		// This start booted the container, so the services have already read
-		// the configuration written before it.
-		return nil
-	}
+	return hostnode.RestartChanged(ctx, n.p.Log, wasRunning,
+		[]hostnode.ChangedUnit{
+			{Unit: goalstates.SystemdUnitContainerd, Changed: containerdChanged},
+			{Unit: goalstates.SystemdUnitKubelet, Changed: kubeletChanged},
+		},
+		func(ctx context.Context, unit string) error {
+			if _, err := n.backend.Exec(ctx, n.root(), isolation.ExecSpec{Args: []string{"systemctl", "restart", unit}}); err != nil {
+				return fmt.Errorf("systemctl restart %s in %s: %w", unit, n.slot, err)
+			}
 
-	for _, u := range []struct {
-		unit    string
-		changed bool
-	}{{goalstates.SystemdUnitContainerd, containerdChanged}, {goalstates.SystemdUnitKubelet, kubeletChanged}} {
-		if !u.changed {
-			continue
-		}
-
-		n.p.Log.Info("configuration changed on a running node, restarting service", "unit", u.unit, "slot", n.slot)
-
-		if _, err := n.backend.Exec(ctx, n.root(), isolation.ExecSpec{Args: []string{"systemctl", "restart", u.unit}}); err != nil {
-			return fmt.Errorf("systemctl restart %s in %s: %w", u.unit, n.slot, err)
-		}
-	}
-
-	return nil
+			return nil
+		}, "slot", n.slot)
 }
 
 func (n *Node) waitLocalDNS(ctx context.Context) error {
-	if n.p.WaitLocalDNS != nil {
-		return n.p.WaitLocalDNS(ctx)
-	}
-
-	return nodestart.WaitForLocalDNS(n.p.Log, n.gs.NodeStart).Do(ctx)
+	return hostnode.WaitLocalDNS(ctx, n.p.WaitLocalDNS, n.p.Log, n.gs.NodeStart)
 }
 
 // waitReady waits until systemd inside the container accepts commands and has
@@ -565,29 +520,12 @@ func (n *Node) RewriteUnit(ctx context.Context) error {
 	return n.backend.RewriteUnit(ctx, n.slot)
 }
 
-func (n *Node) unmountKubelet(ctx context.Context) error {
-	td := &noneops.Teardown{Log: n.p.Log, MountInfo: n.p.MountInfoPath}
-	if n.p.Run != nil {
-		td.Run = none.Runner(n.p.Run)
-	}
-
-	return td.UnmountBelow(ctx, "/var/lib/kubelet")
-}
-
 func (n *Node) setupNetwork(ctx context.Context) error {
-	if n.p.SetupNetwork != nil {
-		return n.p.SetupNetwork(ctx)
-	}
-
-	return nodestart.SetupLocalDNSNetwork(n.p.Log, n.gs.NodeStart).Do(ctx)
+	return hostnode.SetupNetwork(ctx, n.p.SetupNetwork, n.p.Log, n.gs.NodeStart)
 }
 
 func (n *Node) cleanupNetwork(ctx context.Context) error {
-	if n.p.CleanupNetwork != nil {
-		return n.p.CleanupNetwork(ctx)
-	}
-
-	return reset.CleanupNetwork(n.p.Log).Do(ctx)
+	return hostnode.CleanupNetwork(ctx, n.p.CleanupNetwork, n.p.Log)
 }
 
 // resetSharedKubeletState prepares the shared kubelet directory for a new slot.
@@ -599,22 +537,11 @@ func (n *Node) cleanupNetwork(ctx context.Context) error {
 // PROVISIONAL: propagation of pod mounts to the host (rshared through the host
 // root mount) is the design's assumption.
 func (n *Node) resetSharedKubeletState(ctx context.Context) error {
-	if err := n.unmountKubelet(ctx); err != nil {
+	if err := hostnode.UnmountBelow(ctx, n.p.Log, n.p.Run, n.p.MountInfoPath, hostnode.KubeletDir); err != nil {
 		return err
 	}
 
-	k := n.gs.NodeStart.Kubelet
-	if k.BootstrapToken == "" || len(k.KubeconfigData) > 0 || k.ExecCredential != nil {
-		return nil
-	}
-
-	for _, p := range []string{goalstates.KubeletKubeconfigPath, kubeletClientPKIDir} {
-		if err := os.RemoveAll(n.gs.NodeStart.Root().Path(p)); err != nil {
-			return fmt.Errorf("remove previous kubelet credentials %s: %w", p, err)
-		}
-	}
-
-	return nil
+	return hostnode.ResetKubeletIdentity(n.gs.NodeStart)
 }
 
 // Upgrade moves the node from old to this node's slot (blue/green): the new
@@ -641,21 +568,19 @@ func (n *Node) Upgrade(ctx context.Context, old *Node) (err error) {
 		}
 	}
 
-	dir := n.configSnapshotDir()
-	if err := confsnap.Take(dir, n.p.HostRoot, confsnap.SharedPaths()); err != nil {
-		return fmt.Errorf("save shared configuration: %w", err)
+	snapshot, err := hostnode.TakeSnapshot(n.p.Log, n.configSnapshotDir(), n.p.HostRoot)
+	if err != nil {
+		return err
 	}
 
-	n.snapshot = dir
+	n.snapshot = snapshot
 
 	defer func() {
 		// A snapshot that is still set was not restored, and is kept for that.
-		if err == nil && n.snapshot != "" {
-			if derr := confsnap.Discard(n.snapshot); derr != nil {
-				n.p.Log.Warn("could not remove the saved shared configuration", "error", derr)
-			}
+		if err == nil && n.snapshot != nil {
+			n.snapshot.Discard()
 
-			n.snapshot = ""
+			n.snapshot = nil
 		}
 	}()
 
@@ -723,29 +648,23 @@ func (n *Node) abandon(ctx context.Context, cause error) error {
 }
 
 func (n *Node) configSnapshotDir() string {
-	if n.p.ConfigSnapshotDir != "" {
-		return n.p.ConfigSnapshotDir
-	}
-
-	return filepath.Join(n.p.HostRoot, goalstates.AgentConfigDir, "container-upgrade-config")
+	return hostnode.SnapshotDir(n.p.ConfigSnapshotDir, n.p.HostRoot, "container-upgrade-config")
 }
 
 // restoreShared puts the saved shared configuration back and drops the
 // snapshot. A failure keeps it.
 func (n *Node) restoreShared() error {
-	if n.snapshot == "" {
+	if n.snapshot == nil {
 		return nil
 	}
 
-	if err := confsnap.Restore(n.snapshot, n.p.HostRoot); err != nil {
-		return fmt.Errorf("restore shared configuration: %w", err)
+	if err := n.snapshot.Restore(); err != nil {
+		return err
 	}
 
-	if err := confsnap.Discard(n.snapshot); err != nil {
-		n.p.Log.Warn("could not remove the saved shared configuration", "error", err)
-	}
+	n.snapshot.Discard()
 
-	n.snapshot = ""
+	n.snapshot = nil
 
 	return nil
 }

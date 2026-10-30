@@ -4,7 +4,6 @@
 package noneops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -12,11 +11,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"syscall"
 
-	"github.com/Azure/unbounded/internal/executil"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/phases"
@@ -46,13 +43,7 @@ type Teardown struct {
 	Proc string
 }
 
-func (t *Teardown) logger() *slog.Logger {
-	if t.Log == nil {
-		return slog.Default()
-	}
-
-	return t.Log
-}
+func (t *Teardown) logger() *slog.Logger { return hostnode.Logger(t.Log) }
 
 func (t *Teardown) path(p string) string { return filepath.Join(t.Root, p) }
 
@@ -133,7 +124,7 @@ func (t *Teardown) RemoveConfig() phases.Task {
 			goalstates.CDISpecFile,
 			goalstates.KubeletAPIServerCACertPath,
 			filepath.Join(goalstates.SystemdSystemDir, goalstates.LocalDNSSliceUnit),
-			modulesLoadPath,
+			ModulesLoadPath,
 		}
 		for _, f := range files {
 			if err := os.Remove(t.path(f)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -200,7 +191,7 @@ var dataDirs = []string{"/var/lib/kubelet", "/var/lib/containerd", goalstates.CN
 func (t *Teardown) removeData(ctx context.Context) error {
 	var errs []error
 
-	if err := t.unmountBelow(ctx, "/var/lib/kubelet", "/var/lib/containerd"); err != nil {
+	if err := hostnode.UnmountBelow(ctx, t.logger(), t.Run, t.MountInfo, hostnode.KubeletDir, "/var/lib/containerd"); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -213,95 +204,10 @@ func (t *Teardown) removeData(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// unmountBelow lazily unmounts every mount at or below the given prefixes,
-// deepest first. Pod volumes (tmpfs secrets, projected volumes) are mounted
-// under /var/lib/kubelet and would make removing it fail or, worse, delete
-// through a bind mount.
-func (t *Teardown) unmountBelow(ctx context.Context, prefixes ...string) error {
-	info := t.MountInfo
-	if info == "" {
-		info = "/proc/self/mountinfo"
-	}
-
-	f, err := os.Open(info)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-
-	if err != nil {
-		return err
-	}
-
-	defer f.Close() //nolint:errcheck // read only
-
-	var mounts []string
-
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) < 5 {
-			continue
-		}
-
-		mp := unescapeMount(fields[4])
-		for _, p := range prefixes {
-			if mp == p || strings.HasPrefix(mp, p+"/") {
-				mounts = append(mounts, mp)
-			}
-		}
-	}
-
-	if err := sc.Err(); err != nil {
-		return err
-	}
-
-	sort.Slice(mounts, func(i, j int) bool { return len(mounts[i]) > len(mounts[j]) })
-
-	run := t.Run
-	if run == nil {
-		run = func(ctx context.Context, log *slog.Logger, name string, args ...string) (string, error) {
-			return executil.OutputCmd(ctx, log, name, args...)
-		}
-	}
-
-	var errs []error
-
-	for _, mp := range mounts {
-		if _, err := run(ctx, t.logger(), "umount", "-l", mp); err != nil {
-			errs = append(errs, fmt.Errorf("unmount %s: %w", mp, err))
-		}
-	}
-
-	return errors.Join(errs...)
-}
-
-// unescapeMount decodes the octal escapes mountinfo uses for spaces and tabs.
-func unescapeMount(s string) string {
-	return strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`).Replace(s)
-}
-
 // IsNotEmpty reports whether err says a directory could not be removed because
 // it still has entries.
 func IsNotEmpty(err error) bool {
 	return errors.Is(err, syscall.ENOTEMPTY)
 }
 
-func unitDir(d string) string {
-	if d == "" {
-		return none.SystemdDir
-	}
-
-	return d
-}
-
-// UnmountBelow lazily unmounts every mount at or below the given prefixes,
-// deepest first. The container teardown shares it: pod volumes propagate from
-// the container to the host under /var/lib/kubelet and outlive the container.
-func (t *Teardown) UnmountBelow(ctx context.Context, prefixes ...string) error {
-	return t.unmountBelow(ctx, prefixes...)
-}
-
-// ModulesLoadPath is the host file that lists the node's kernel modules for
-// boot. A teardown for any mode that wrote it through LoadKernelModules removes
-// it.
-func ModulesLoadPath() string { return modulesLoadPath }
+func unitDir(d string) string { return hostnode.OrDefault(d, none.SystemdDir) }

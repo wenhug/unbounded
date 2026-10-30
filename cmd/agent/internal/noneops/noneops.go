@@ -31,14 +31,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/pkg/agent/config"
-	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestart"
-	"github.com/Azure/unbounded/pkg/agent/phases/reset"
 	"github.com/Azure/unbounded/pkg/agent/phases/rootfs"
 )
 
@@ -158,27 +157,9 @@ func (n *Node) resolve() error {
 }
 
 func (n *Node) resolveGoalState() (*goalstates.MachineGoalState, error) {
-	if n.p.GoalState != nil {
-		return n.p.GoalState, nil
-	}
-
-	resolve := n.p.Resolve
-	if resolve == nil {
-		if n.p.Config == nil {
-			return nil, errors.New("no agent configuration to resolve the node")
-		}
-
-		resolve = func(slot string) (*goalstates.MachineGoalState, error) {
-			return goalstates.ResolveMachine(n.p.Log, n.p.Config, slot, n.p.Downloads)
-		}
-	}
-
-	gs, err := resolve(Slot)
-	if err != nil {
-		return nil, fmt.Errorf("resolve machine goal state: %w", err)
-	}
-
-	return gs, nil
+	return hostnode.GoalStateSource{
+		Log: n.p.Log, Config: n.p.Config, Downloads: n.p.Downloads, GoalState: n.p.GoalState, Resolve: n.p.Resolve,
+	}.For(Slot)
 }
 
 // applyOverrides points the goal state at the host: the root maps installer
@@ -234,11 +215,7 @@ func (n *Node) setupGPU(ctx context.Context) error {
 }
 
 func (n *Node) waitLocalDNS(ctx context.Context) error {
-	if n.p.WaitLocalDNS != nil {
-		return n.p.WaitLocalDNS(ctx)
-	}
-
-	return nodestart.WaitForLocalDNS(n.p.Log, n.gs.NodeStart).Do(ctx)
+	return hostnode.WaitLocalDNS(ctx, n.p.WaitLocalDNS, n.p.Log, n.gs.NodeStart)
 }
 
 func (n *Node) waitKubelet(ctx context.Context) error {
@@ -390,12 +367,7 @@ func (n *Node) Running(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	st, err := n.backend.Status(ctx, n.root())
-	if err != nil {
-		return false, err
-	}
-
-	return st.Running, nil
+	return hostnode.Running(ctx, n.backend, n.root())
 }
 
 // Start brings the stack up and waits for kubelet to bootstrap. When the stack
@@ -412,21 +384,17 @@ func (n *Node) Start(ctx context.Context, wasRunning, containerdChanged, kubelet
 		return err
 	}
 
-	if wasRunning {
-		for _, u := range []struct {
-			unit    string
-			changed bool
-		}{{none.UnitContainerd, containerdChanged}, {none.UnitKubelet, kubeletChanged}} {
-			if !u.changed {
-				continue
+	err := hostnode.RestartChanged(ctx, n.p.Log, wasRunning,
+		[]hostnode.ChangedUnit{{Unit: none.UnitContainerd, Changed: containerdChanged}, {Unit: none.UnitKubelet, Changed: kubeletChanged}},
+		func(ctx context.Context, unit string) error {
+			if _, err := n.backend.Exec(ctx, r, isolation.ExecSpec{Args: []string{"systemctl", "restart", unit}}); err != nil {
+				return fmt.Errorf("systemctl restart %s: %w", unit, err)
 			}
 
-			n.p.Log.Info("configuration changed on a running node, restarting service", "unit", u.unit)
-
-			if _, err := n.backend.Exec(ctx, r, isolation.ExecSpec{Args: []string{"systemctl", "restart", u.unit}}); err != nil {
-				return fmt.Errorf("systemctl restart %s: %w", u.unit, err)
-			}
-		}
+			return nil
+		})
+	if err != nil {
+		return err
 	}
 
 	return n.waitBootstrap(ctx)
@@ -471,38 +439,24 @@ func (n *Node) Upgrade(ctx context.Context) (err error) {
 		return err
 	}
 
-	snapshot := n.configSnapshotDir()
-
-	if err := confsnap.Take(snapshot, n.p.HostRoot, confsnap.SharedPaths()); err != nil {
-		return fmt.Errorf("save shared configuration: %w", err)
-	}
-
-	restored := false
-	restore := func() error {
-		if err := confsnap.Restore(snapshot, n.p.HostRoot); err != nil {
-			return fmt.Errorf("restore shared configuration: %w", err)
-		}
-
-		restored = true
-
-		return nil
+	snapshot, err := hostnode.TakeSnapshot(n.p.Log, n.configSnapshotDir(), n.p.HostRoot)
+	if err != nil {
+		return err
 	}
 
 	defer func() {
-		if err != nil && !restored {
+		if err != nil && !snapshot.Restored() {
 			// A failure the backend did not roll back from, such as an install or
 			// configuration error, or a stop that failed. The snapshot stays when
 			// the restore fails, so it can be tried again.
-			if rerr := restore(); rerr != nil {
+			if rerr := snapshot.Restore(); rerr != nil {
 				err = errors.Join(err, rerr)
 
 				return
 			}
 		}
 
-		if derr := confsnap.Discard(snapshot); derr != nil {
-			n.p.Log.Warn("could not remove the saved shared configuration", "error", derr)
-		}
+		snapshot.Discard()
 	}()
 
 	r, err := n.Prepare(ctx)
@@ -514,7 +468,7 @@ func (n *Node) Upgrade(ctx context.Context) (err error) {
 		return err
 	}
 
-	n.backend.BeforeRollbackStart = func(context.Context) error { return restore() }
+	n.backend.BeforeRollbackStart = func(context.Context) error { return snapshot.Restore() }
 
 	first := true
 
@@ -535,7 +489,7 @@ func (n *Node) Upgrade(ctx context.Context) (err error) {
 
 		// A repaved node bootstraps fresh credentials, as the new nspawn machine
 		// does. The old identity belongs to the Node object that was deleted.
-		return n.resetKubeletIdentity()
+		return hostnode.ResetKubeletIdentity(n.gs.NodeStart)
 	}
 
 	return n.backend.Upgrade(ctx, r, func(ctx context.Context) error {
@@ -548,29 +502,7 @@ func (n *Node) Upgrade(ctx context.Context) (err error) {
 }
 
 func (n *Node) configSnapshotDir() string {
-	if n.p.ConfigSnapshotDir != "" {
-		return n.p.ConfigSnapshotDir
-	}
-
-	return filepath.Join(n.p.HostRoot, goalstates.AgentConfigDir, "none-upgrade-config")
-}
-
-// resetKubeletIdentity removes the previous kubelet client credentials when the
-// node authenticates with a bootstrap token, so the next start requests new
-// ones. Direct kubeconfig and exec credential modes are rewritten by Configure.
-func (n *Node) resetKubeletIdentity() error {
-	k := n.gs.NodeStart.Kubelet
-	if k.BootstrapToken == "" || len(k.KubeconfigData) > 0 || k.ExecCredential != nil {
-		return nil
-	}
-
-	for _, p := range []string{goalstates.KubeletKubeconfigPath, "/var/lib/kubelet/pki"} {
-		if err := os.RemoveAll(n.gs.NodeStart.Root().Path(p)); err != nil {
-			return fmt.Errorf("remove previous kubelet credentials %s: %w", p, err)
-		}
-	}
-
-	return nil
+	return hostnode.SnapshotDir(n.p.ConfigSnapshotDir, n.p.HostRoot, "none-upgrade-config")
 }
 
 // PruneVersions removes every installed version except the active one. It runs
@@ -593,19 +525,11 @@ func (n *Node) PruneVersions() error {
 }
 
 func (n *Node) setupNetwork(ctx context.Context) error {
-	if n.p.SetupNetwork != nil {
-		return n.p.SetupNetwork(ctx)
-	}
-
-	return nodestart.SetupLocalDNSNetwork(n.p.Log, n.gs.NodeStart).Do(ctx)
+	return hostnode.SetupNetwork(ctx, n.p.SetupNetwork, n.p.Log, n.gs.NodeStart)
 }
 
 func (n *Node) cleanupNetwork(ctx context.Context) error {
-	if n.p.CleanupNetwork != nil {
-		return n.p.CleanupNetwork(ctx)
-	}
-
-	return reset.CleanupNetwork(n.p.Log).Do(ctx)
+	return hostnode.CleanupNetwork(ctx, n.p.CleanupNetwork, n.p.Log)
 }
 
 func (n *Node) kernelModulesTask() phases.Task {

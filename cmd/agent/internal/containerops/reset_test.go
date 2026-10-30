@@ -34,7 +34,7 @@ func teardownFixture(t *testing.T) (*fixture, *Teardown, string) {
 	require.NoError(t, os.MkdirAll(runtimeDir, 0o755))
 	require.NoError(t, os.WriteFile(runtime, []byte("x"), 0o755))
 
-	for _, p := range []string{"/var/lib/kubelet/config.yaml", "/opt/cni/bin/bridge", "/etc/cni/net.d/10.conf", "/var/lib/unbounded/container-images/a.tar", noneops.ModulesLoadPath()} {
+	for _, p := range []string{"/var/lib/kubelet/config.yaml", "/opt/cni/bin/bridge", "/etc/cni/net.d/10.conf", "/var/lib/unbounded/container-images/a.tar", noneops.ModulesLoadPath} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(p)), 0o755))
 		require.NoError(t, os.WriteFile(f.hostPath(p), []byte("x"), 0o644))
 	}
@@ -108,7 +108,7 @@ func TestTeardownDestroyRemovesEverythingTheNodeLeft(t *testing.T) {
 		td.Layout.RootfsDir(""), filepath.Join(td.SystemdDir, container.UnitName("kube1")), filepath.Join(td.SystemdDir, container.UnitName("kube2")),
 		runtime, filepath.Dir(runtime),
 		f.hostPath("/var/lib/kubelet"), f.hostPath("/opt/cni/bin"), f.hostPath("/etc/cni/net.d"), f.hostPath("/var/lib/unbounded/container-images"),
-		f.hostPath(noneops.ModulesLoadPath()),
+		f.hostPath(noneops.ModulesLoadPath),
 	} {
 		_, err := os.Lstat(p)
 		require.ErrorIs(t, err, os.ErrNotExist, p)
@@ -150,5 +150,5 @@ func TestTeardownRemoveConfigLeavesOtherFiles(t *testing.T) {
 	td := &Teardown{Root: root}
 	require.NoError(t, td.RemoveConfig().Do(t.Context()), "an absent file is fine")
 	require.FileExists(t, other)
-	require.Equal(t, "/etc/modules-load.d/unbounded-kubernetes.conf", noneops.ModulesLoadPath())
+	require.Equal(t, "/etc/modules-load.d/unbounded-kubernetes.conf", noneops.ModulesLoadPath)
 }

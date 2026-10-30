@@ -19,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation/container"
@@ -669,7 +670,7 @@ func upgradeFixture(t *testing.T) (f *fixture, oldNode, newNode *Node) {
 	require.NoError(t, oldNode.Start(t.Context(), false, false, false))
 
 	// The old node's identity, which a repave must discard.
-	for _, p := range []string{goalstates.KubeletKubeconfigPath, kubeletClientPKIDir + "/kubelet-client-current.pem"} {
+	for _, p := range []string{goalstates.KubeletKubeconfigPath, hostnode.KubeletClientPKIDir + "/kubelet-client-current.pem"} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(p)), 0o755))
 		require.NoError(t, os.WriteFile(f.hostPath(p), []byte("old"), 0o600))
 	}
@@ -708,7 +709,7 @@ func TestUpgradeMovesToTheAlternateSlot(t *testing.T) {
 
 	// The previous identity is gone so the new slot bootstraps fresh credentials.
 	require.NoFileExists(t, f.hostPath(goalstates.KubeletKubeconfigPath))
-	require.NoDirExists(t, f.hostPath(kubeletClientPKIDir))
+	require.NoDirExists(t, f.hostPath(hostnode.KubeletClientPKIDir))
 
 	// Retiring removes the old slot.
 	require.NoError(t, oldNode.Destroy(t.Context()))
@@ -873,7 +874,7 @@ func TestUpgradeRollbackPutsTheSharedConfigurationBack(t *testing.T) {
 			// resetSharedKubeletState removed these for the new slot; the old slot
 			// is started on the identity it had.
 			require.FileExists(t, f.hostPath(goalstates.KubeletKubeconfigPath))
-			require.FileExists(t, f.hostPath(kubeletClientPKIDir+"/kubelet-client-current.pem"))
+			require.FileExists(t, f.hostPath(hostnode.KubeletClientPKIDir+"/kubelet-client-current.pem"))
 			require.NoDirExists(t, newNode.configSnapshotDir(), "the snapshot is dropped once restored")
 		})
 	}
@@ -928,7 +929,7 @@ func TestUpgradeRefusesToStartWhenTheSharedConfigurationCannotBeSaved(t *testing
 	f, oldNode, newNode := upgradeFixture(t)
 
 	// A named pipe cannot be saved byte for byte.
-	require.NoError(t, syscall.Mkfifo(f.hostPath(kubeletClientPKIDir+"/pipe"), 0o600))
+	require.NoError(t, syscall.Mkfifo(f.hostPath(hostnode.KubeletClientPKIDir+"/pipe"), 0o600))
 
 	require.ErrorContains(t, newNode.Upgrade(t.Context(), oldNode), "save shared configuration")
 	require.Equal(t, -1, index(f.h.snapshot(), "systemctl stop "+container.UnitName("kube1"), 0), "the old slot was never touched")

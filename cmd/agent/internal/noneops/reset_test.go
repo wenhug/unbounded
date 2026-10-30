@@ -108,7 +108,7 @@ func TestTeardownRemoveConfig(t *testing.T) {
 		require.NoFileExists(t, filepath.Join(root, p), p)
 	}
 
-	require.NoFileExists(t, filepath.Join(root, modulesLoadPath))
+	require.NoFileExists(t, filepath.Join(root, ModulesLoadPath))
 	require.FileExists(t, filepath.Join(root, "/etc/containerd/conf.d/50-site.toml"))
 	require.FileExists(t, filepath.Join(root, "/etc/kubernetes/pki/other.crt"))
 

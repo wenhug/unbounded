@@ -11,10 +11,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation/container"
-	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
@@ -37,23 +37,11 @@ type Teardown struct {
 	MountInfo string
 }
 
-func (t *Teardown) logger() *slog.Logger {
-	if t.Log == nil {
-		return slog.Default()
-	}
-
-	return t.Log
-}
+func (t *Teardown) logger() *slog.Logger { return hostnode.Logger(t.Log) }
 
 func (t *Teardown) path(p string) string { return filepath.Join(t.Root, p) }
 
-func (t *Teardown) unitDir() string {
-	if t.SystemdDir == "" {
-		return container.SystemdDir
-	}
-
-	return t.SystemdDir
-}
+func (t *Teardown) unitDir() string { return hostnode.OrDefault(t.SystemdDir, container.SystemdDir) }
 
 func (t *Teardown) node(slot string) *Node {
 	return New(Params{
@@ -129,7 +117,7 @@ func (t *Teardown) slotPresent(slot string) bool { return t.node(slot).Backend()
 // outside the slots: the host kernel modules list (written by bootstrap).
 func (t *Teardown) RemoveConfig() phases.Task {
 	return task{"remove-container-config", func(context.Context) error {
-		if err := os.Remove(t.path(noneops.ModulesLoadPath())); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(t.path(noneops.ModulesLoadPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 
@@ -205,10 +193,5 @@ func (t *Teardown) removeLayout() []error {
 }
 
 func (t *Teardown) unmountShared(ctx context.Context) error {
-	td := &noneops.Teardown{Log: t.logger(), MountInfo: t.MountInfo}
-	if t.Run != nil {
-		td.Run = none.Runner(t.Run)
-	}
-
-	return td.UnmountBelow(ctx, "/var/lib/kubelet")
+	return hostnode.UnmountBelow(ctx, t.logger(), t.Run, t.MountInfo, hostnode.KubeletDir)
 }

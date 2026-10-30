@@ -16,10 +16,11 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/phases/rootfs"
 )
 
-// modulesLoadPath is where the node's kernel modules are listed for boot. The
+// ModulesLoadPath is where the node's kernel modules are listed for boot. The
 // nspawn machine lists them inside its rootfs; a host-native node needs them on
-// the host, and the agent-specific name never collides with a distro file.
-var modulesLoadPath = "/etc/modules-load.d/unbounded-kubernetes.conf"
+// the host, and the agent-specific name never collides with a distro file. A
+// teardown for any mode that wrote it through LoadKernelModules removes it.
+const ModulesLoadPath = "/etc/modules-load.d/unbounded-kubernetes.conf"
 
 type kernelModules struct {
 	log  *slog.Logger
@@ -31,7 +32,7 @@ type kernelModules struct {
 // boot and loads them now. The sysctls the host phase applies (bridge-nf-call)
 // need br_netfilter loaded first.
 func LoadKernelModules(log *slog.Logger, run none.Runner) *kernelModules {
-	return &kernelModules{log: log, run: run, path: modulesLoadPath}
+	return &kernelModules{log: log, run: run, path: ModulesLoadPath}
 }
 
 func (k *kernelModules) Name() string { return "load-kernel-modules" }
@@ -39,7 +40,7 @@ func (k *kernelModules) Name() string { return "load-kernel-modules" }
 func (k *kernelModules) Do(ctx context.Context) error {
 	path := k.path
 	if path == "" {
-		path = modulesLoadPath
+		path = ModulesLoadPath
 	}
 
 	content := rootfs.KubernetesModulesConfig()
