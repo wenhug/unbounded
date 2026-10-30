@@ -420,6 +420,22 @@ func (b *Backend) Restart(ctx context.Context, r isolation.NodeRoot) error {
 	return nil
 }
 
+// SlotExists reports whether the slot has a rootfs or a supervising unit on the
+// host, even a half built one.
+func (b *Backend) SlotExists(slot string) bool {
+	if ValidSlot(slot) != nil {
+		return false
+	}
+
+	for _, p := range []string{b.Layout.RootfsDir(slot), filepath.Join(b.unitDir(), UnitName(slot))} {
+		if _, err := os.Lstat(p); err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Destroy stops and removes the unit, then removes the bundle and rootfs. Every
 // step is attempted so a failure on one does not strand the others. The rootfs
 // is not removed while anything is still mounted below it, since removing a
@@ -432,20 +448,29 @@ func (b *Backend) Destroy(ctx context.Context, r isolation.NodeRoot) error {
 
 	var errs []error
 
-	if err := b.Stop(ctx, r); err != nil {
-		errs = append(errs, err)
-	}
+	// A slot whose unit was never written (an interrupted Prepare) or is
+	// already gone has nothing for systemd to stop; asking would fail with
+	// "not loaded" and hide the cleanup that follows.
+	unitPath := filepath.Join(b.unitDir(), UnitName(slot))
 
-	if err := b.systemctl(ctx, "disable", UnitName(slot)); err != nil {
-		errs = append(errs, fmt.Errorf("disable %s: %w", UnitName(slot), err))
-	}
+	if _, err := os.Lstat(unitPath); err == nil {
+		if err := b.Stop(ctx, r); err != nil {
+			errs = append(errs, err)
+		}
 
-	if err := os.Remove(filepath.Join(b.unitDir(), UnitName(slot))); err != nil && !errors.Is(err, os.ErrNotExist) {
-		errs = append(errs, err)
-	}
+		if err := b.systemctl(ctx, "disable", UnitName(slot)); err != nil {
+			errs = append(errs, fmt.Errorf("disable %s: %w", UnitName(slot), err))
+		}
 
-	if err := b.systemctl(ctx, "daemon-reload"); err != nil {
-		errs = append(errs, fmt.Errorf("daemon-reload: %w", err))
+		if err := os.Remove(unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+
+		if err := b.systemctl(ctx, "daemon-reload"); err != nil {
+			errs = append(errs, fmt.Errorf("daemon-reload: %w", err))
+		}
+	} else {
+		b.deleteContainer(ctx, slot)
 	}
 
 	if err := b.removeTree(b.Layout.BundleDir(slot)); err != nil {

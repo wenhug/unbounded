@@ -619,6 +619,14 @@ func (n *Node) Upgrade(ctx context.Context, old *Node) error {
 		return fmt.Errorf("upgrade needs a different slot than the running %s", old.slot)
 	}
 
+	// A slot left by an earlier failed or retired upgrade must not be reused:
+	// its rootfs may be a different image. The old slot is untouched here.
+	if n.backend.SlotExists(n.slot) {
+		if err := n.Destroy(ctx); err != nil {
+			return fmt.Errorf("remove stale slot %s: %w", n.slot, err)
+		}
+	}
+
 	if _, err := n.Prepare(ctx); err != nil {
 		// The old slot has not been touched.
 		return n.abandon(ctx, fmt.Errorf("prepare slot %s: %w", n.slot, err))

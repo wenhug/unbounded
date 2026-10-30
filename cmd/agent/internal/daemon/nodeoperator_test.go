@@ -184,25 +184,36 @@ func TestFindActiveMachine_Kube1(t *testing.T) {
 
 func Test_activeMode(t *testing.T) {
 	tests := []struct {
-		name      string
-		isolation string
-		want      isolation.Mode
-		wantErr   string
+		name       string
+		isolation  string
+		unregister bool
+		want       isolation.Mode
+		wantErr    string
 	}{
 		{name: "legacy config without the field is nspawn", want: isolation.ModeNSpawn},
 		{name: "explicit nspawn", isolation: "nspawn", want: isolation.ModeNSpawn},
 		{name: "unknown mode is rejected", isolation: "microvm", wantErr: "unsupported isolation mode"},
-		// The none backend is registered now, so the case that used "none" here
-		// uses "container", which still has no registered backend. The agent
-		// must refuse rather than operate on it as nspawn.
-		{name: "known mode without a backend is rejected", isolation: "container", wantErr: "no registered backend"},
+		// Every shipped mode has a registered backend now, so the unregistered
+		// path is exercised by temporarily unregistering the mode under test (see
+		// isolation.Unregister), which does not depend on which modes ship. The
+		// agent must refuse rather than operate on it as nspawn.
+		{name: "known mode without a backend is rejected", isolation: "container", unregister: true, wantErr: "no registered backend"},
 		{name: "none is accepted once its backend is registered", isolation: "none", want: isolation.ModeNone},
+		{name: "container is accepted once its backend is registered", isolation: "container", want: isolation.ModeContainer},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := baseConfig()
 			cfg.Isolation = tt.isolation
+
+			if tt.unregister {
+				mode := isolation.Mode(tt.isolation)
+
+				factory, ok := isolation.Unregister(mode)
+				require.True(t, ok, "the mode under test must be registered to begin with")
+				t.Cleanup(func() { isolation.Register(mode, factory) })
+			}
 
 			got, err := activeMode(cfg)
 			if tt.wantErr != "" {

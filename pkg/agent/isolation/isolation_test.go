@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseMode(t *testing.T) {
@@ -149,4 +151,27 @@ func TestFakeBackendPrepareError(t *testing.T) {
 	if _, err := f.Prepare(context.Background(), NodeSpec{Slot: "kube1"}); err == nil {
 		t.Fatal("expected error")
 	}
+}
+
+func TestUnregisterReturnsTheFactoryForRestoring(t *testing.T) {
+	const mode Mode = "container"
+
+	Register(mode, func(any) (Backend, error) { return &FakeBackend{FakeMode: mode}, nil })
+
+	f, ok := Unregister(mode)
+	require.True(t, ok)
+
+	_, err := New(mode, nil)
+	require.ErrorContains(t, err, "no registered backend")
+
+	Register(mode, f)
+
+	b, err := New(mode, nil)
+	require.NoError(t, err)
+	require.Equal(t, mode, b.Mode())
+
+	unregister(mode)
+
+	_, ok = Unregister(mode)
+	require.False(t, ok)
 }

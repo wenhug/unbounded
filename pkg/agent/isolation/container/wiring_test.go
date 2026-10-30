@@ -245,3 +245,21 @@ func TestRuntimeStatusIgnoresTheUnitState(t *testing.T) {
 	_, err = b.RuntimeStatus(t.Context(), isolation.DirRoot{SlotName: "x"})
 	require.Error(t, err)
 }
+
+func TestDestroyOfASlotWithoutAUnitSkipsSystemd(t *testing.T) {
+	b, st, _ := newBackend(t)
+
+	// An interrupted Prepare: the rootfs exists, the unit was never written.
+	require.NoError(t, os.MkdirAll(filepath.Join(b.Layout.RootfsDir("kube2"), "etc"), 0o755))
+
+	st.fail["systemctl"] = errors.New("Unit unbounded-node-kube2.service not loaded")
+
+	require.NoError(t, b.Destroy(t.Context(), isolation.DirRoot{SlotName: "kube2"}))
+	require.NoDirExists(t, b.Layout.RootfsDir("kube2"))
+
+	for _, c := range st.calls {
+		require.NotContains(t, c, "systemctl", "systemd is not asked about a unit that does not exist")
+	}
+
+	require.Contains(t, st.calls, rt+" delete --force unbounded-kube2", "stale runtime state is still cleared")
+}

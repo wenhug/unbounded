@@ -127,6 +127,12 @@ func TestReconcileIsolationMigrate_FindActiveMachineFailed(t *testing.T) {
 func TestNspawnNodeOperator_MigrateIsolationFailsWithoutTargetBackend(t *testing.T) {
 	active := &ActiveMachine{Name: "kube1", Config: baseConfig(), Mode: isolation.ModeNSpawn}
 
+	// container now registers its own backend, so the missing-target path is
+	// exercised by temporarily unregistering it.
+	factory, ok := isolation.Unregister(isolation.ModeContainer)
+	require.True(t, ok)
+	t.Cleanup(func() { isolation.Register(isolation.ModeContainer, factory) })
+
 	err := nspawnNodeOperator{}.MigrateIsolation(context.Background(), discardLogger(), active,
 		migrate.Request{Target: isolation.ModeContainer}, migrate.InPlace)
 	require.ErrorContains(t, err, "no registered backend")

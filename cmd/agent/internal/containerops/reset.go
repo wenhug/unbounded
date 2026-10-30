@@ -124,15 +124,7 @@ func (t *Teardown) Stop() phases.Task {
 	}}
 }
 
-func (t *Teardown) slotPresent(slot string) bool {
-	if _, err := os.Lstat(filepath.Join(t.unitDir(), container.UnitName(slot))); err == nil {
-		return true
-	}
-
-	_, err := os.Lstat(t.Layout.RootfsDir(slot))
-
-	return err == nil
-}
+func (t *Teardown) slotPresent(slot string) bool { return t.node(slot).Backend().SlotExists(slot) }
 
 // RemoveConfig returns the task that removes the configuration the agent wrote
 // outside the slots: the host kernel modules list (written by bootstrap).

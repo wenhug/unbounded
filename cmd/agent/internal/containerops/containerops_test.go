@@ -819,3 +819,27 @@ func TestUpgradeRollsBackWhenTheNewNodeNeverBootstraps(t *testing.T) {
 	require.False(t, f.h.active[container.UnitName("kube2")])
 	require.NoDirExists(t, f.rootfs("kube2"))
 }
+
+func TestUpgradeRemovesAStaleTargetSlotFirst(t *testing.T) {
+	f, oldNode, newNode := upgradeFixture(t)
+
+	// A leftover rootfs of an earlier upgrade, from another image.
+	stale := filepath.Join(f.rootfs("kube2"), "etc", "stale-marker")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, nil, 0o644))
+
+	require.NoError(t, newNode.Upgrade(t.Context(), oldNode))
+	require.NoFileExists(t, stale, "the slot was rebuilt, not reused")
+	require.Equal(t, 1, f.hooks.unpack)
+
+	// A target slot that cannot be cleaned stops the upgrade before the running
+	// node is touched.
+	f, oldNode, newNode = upgradeFixture(t)
+	require.NoError(t, os.MkdirAll(f.rootfs("kube2"), 0o755))
+	require.NoError(t, os.WriteFile(f.mountInfo(), []byte("100 1 0:50 / "+f.rootfs("kube2")+"/var/lib/containerd rw - xfs /dev/sda rw\n"), 0o644))
+
+	err := newNode.Upgrade(t.Context(), oldNode)
+	require.ErrorContains(t, err, "remove stale slot kube2")
+	require.True(t, f.h.active[container.UnitName("kube1")])
+	require.Equal(t, -1, index(f.h.snapshot(), "systemctl stop "+container.UnitName("kube1"), 0))
+}
