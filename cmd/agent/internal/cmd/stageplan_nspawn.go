@@ -6,8 +6,6 @@ package cmd
 import (
 	"context"
 
-	"github.com/Azure/unbounded/cmd/agent/internal/daemon"
-	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
 	"github.com/Azure/unbounded/internal/fsutil"
 	"github.com/Azure/unbounded/internal/hostroot"
 	"github.com/Azure/unbounded/internal/provision"
@@ -53,21 +51,9 @@ func (nspawnPlan) ResolveInputs(ctx context.Context, s *agentStages) error {
 }
 
 func (nspawnPlan) PrepareHost(ctx context.Context, s *agentStages) error {
-	if err := hostroot.Prepare(ctx, s.log, "bin", "libexec"); err != nil {
-		return err
-	}
-
-	if err := daemon.InstallBootstrapBinary(); err != nil {
-		return err
-	}
-
-	if err := phases.Serial(s.log, host.InstallPackages(s.log), phases.Parallel(s.log,
+	return prepareHostSteps(ctx, s, host.InstallPackages(s.log), phases.Parallel(s.log,
 		host.ConfigureOS(s.log), host.ConfigureNFTables(s.log), phases.Serial(s.log, host.DisableDocker(s.log), host.ConfigureDocker(s.log)),
-		host.DisableContainerd(s.log), host.DisableKubelet(s.log), host.DisableSwap(s.log), host.HardenAPT(s.log))).Do(ctx); err != nil {
-		return err
-	}
-
-	return fsutil.SyncFilesystems("/etc", hostroot.Resolve(), installstate.DefaultDirectory)
+		host.DisableContainerd(s.log), host.DisableKubelet(s.log), host.DisableSwap(s.log), host.HardenAPT(s.log)))
 }
 
 func (nspawnPlan) PrepareNodeRoot(ctx context.Context, s *agentStages) error {

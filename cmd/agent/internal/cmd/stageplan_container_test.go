@@ -98,7 +98,7 @@ func newContainerPlan(t *testing.T, running bool) (*containerPlan, *agentStages,
 
 	var persisted []string
 
-	p := &containerPlan{
+	p := &containerPlan{hostSeams: hostSeams{
 		sync: func(...string) error { return nil },
 		archives: func(*slog.Logger, *goalstates.ContainerImageArchiveStaging) phases.Task {
 			return hostnode.Func("archives", func(context.Context) error { return nil })
@@ -109,7 +109,7 @@ func newContainerPlan(t *testing.T, running bool) (*containerPlan, *agentStages,
 				return nil
 			})
 		},
-	}
+	}}
 	p.node = containerops.New(containerops.Params{
 		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Layout:        container.Layout{Base: filepath.Join(dir, "containers")},

@@ -198,7 +198,7 @@ func newNonePlan(t *testing.T, running bool) (*nonePlan, *agentStages, *fakeHost
 
 	var persisted []string
 
-	p := &nonePlan{
+	p := &nonePlan{hostSeams: hostSeams{
 		sync: func(...string) error { return nil },
 		archives: func(*slog.Logger, *goalstates.ContainerImageArchiveStaging) phases.Task {
 			return hostnode.Func("archives", func(context.Context) error { return nil })
@@ -209,7 +209,7 @@ func newNonePlan(t *testing.T, running bool) (*nonePlan, *agentStages, *fakeHost
 				return nil
 			})
 		},
-	}
+	}}
 	p.node = noneops.New(noneops.Params{
 		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Layout:       none.Layout{Base: filepath.Join(root, "node")},
