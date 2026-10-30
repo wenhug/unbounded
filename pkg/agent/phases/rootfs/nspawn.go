@@ -18,10 +18,8 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/phases/rootfs/oci"
 )
 
-// nspawnTemplates and nspawnTemplateData alias the nspawn backend's rendering
-// types, which own the templates and the shape of their data.
-var nspawnTemplates = nspawn.Templates
-
+// nspawnTemplateData aliases the nspawn backend's rendering data, which owns
+// the templates and the shape of their data.
 type nspawnTemplateData = nspawn.TemplateData
 
 type ensureNSpawnWorkspace struct {
@@ -29,14 +27,6 @@ type ensureNSpawnWorkspace struct {
 	goalState   *goalstates.RootFS
 	ownedReplay bool
 }
-
-// NSpawnBind, NSpawnDeviceAllow and NSpawnDeviceTarget are the nspawn
-// backend's render types.
-type (
-	NSpawnBind         = nspawn.Bind
-	NSpawnDeviceAllow  = nspawn.DeviceAllow
-	NSpawnDeviceTarget = nspawn.DeviceTarget
-)
 
 // EnsureNSpawnWorkspace returns a task that bootstraps an OCI rootfs into the
 // machine directory (if it is empty or missing) and writes the
@@ -190,14 +180,4 @@ func nspawnLifecycleCommands(goalState *goalstates.RootFS, machineName string) (
 	helper := goalstates.ResolveHostPaths().NSpawnLifecycleBinary
 
 	return helper + " nspawn-lifecycle pre-start " + machineName, helper + " nspawn-lifecycle post-start " + machineName
-}
-
-func nvidiaHostBinDir(nvidia goalstates.NvidiaHost) string { return nvidia.HostBinDir() }
-
-func nvidiaNSpawnDeviceTargets(paths []string) []NSpawnDeviceTarget {
-	return nspawn.NvidiaDeviceTargets(paths)
-}
-
-func pathsExcluding(paths, excluded []string) []string {
-	return goalstates.PathsExcluding(paths, excluded)
 }

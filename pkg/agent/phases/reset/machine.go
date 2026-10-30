@@ -32,12 +32,6 @@ func (t *stopMachine) Do(ctx context.Context) error {
 	return nspawn.Stop(ctx, t.log, t.machineName)
 }
 
-// confirmNotEnabled reports whether the nspawn unit is definitely not enabled.
-// See nspawn.ConfirmNotEnabled.
-func confirmNotEnabled(ctx context.Context, log *slog.Logger, service string) error {
-	return nspawn.ConfirmNotEnabled(ctx, log, service)
-}
-
 type removeMachine struct {
 	log         *slog.Logger
 	machineName string

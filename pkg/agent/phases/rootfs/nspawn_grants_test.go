@@ -15,6 +15,7 @@ import (
 
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 )
 
 // TestWriteNSpawnConfigsFromGrantsMatchesLegacyData pins that routing devices,
@@ -64,11 +65,11 @@ func TestWriteNSpawnConfigsFromGrantsMatchesLegacyData(t *testing.T) {
 		HostDevicePaths:              gs.HostDevices.Paths(),
 		HostDeviceGroupSpecifiers:    gs.HostDevices.DeviceGroupSpecifiers(),
 		AdditionalHostMounts:         gs.AdditionalHostMounts,
-		NvidiaDeviceTargets:          nvidiaNSpawnDeviceTargets(gs.Nvidia.GPUDevicePaths),
+		NvidiaDeviceTargets:          nspawn.NvidiaDeviceTargets(gs.Nvidia.GPUDevicePaths),
 		NvidiaLibDirMounts:           gs.Nvidia.LibDirMounts,
 		NvidiaI386LibDirMounts:       gs.Nvidia.I386LibDirMounts,
-		NvidiaBinDir:                 nvidiaHostBinDir(gs.Nvidia),
-		AMDGPUDevicePaths:            pathsExcluding(gs.AMD.GPUDevicePaths, gs.Nvidia.GPUDevicePaths),
+		NvidiaBinDir:                 gs.Nvidia.HostBinDir(),
+		AMDGPUDevicePaths:            goalstates.PathsExcluding(gs.AMD.GPUDevicePaths, gs.Nvidia.GPUDevicePaths),
 		AMDSysFSPaths:                gs.AMD.SysFSPaths,
 	}
 	legacy.PreStartCommand, legacy.PostStartCommand = nspawnLifecycleCommands(gs, "kube1")
@@ -79,7 +80,7 @@ func TestWriteNSpawnConfigsFromGrantsMatchesLegacyData(t *testing.T) {
 		gs.ConfigRegenerationFile: "config-regeneration.service",
 	} {
 		var want bytes.Buffer
-		require.NoError(t, nspawnTemplates.ExecuteTemplate(&want, tmpl, legacy))
+		require.NoError(t, nspawn.Templates.ExecuteTemplate(&want, tmpl, legacy))
 
 		got, err := os.ReadFile(file)
 		require.NoError(t, err)

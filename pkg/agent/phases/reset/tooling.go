@@ -4,9 +4,6 @@
 package reset
 
 import (
-	"context"
-	"log/slog"
-
 	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 )
 
@@ -27,9 +24,3 @@ import (
 // as an error leaves an installation record nothing can clear, which is the one
 // outcome reset exists to prevent.
 func missingTool(err error) bool { return nspawn.MissingTool(err) }
-
-// registeredMachineForCleanup answers RegisteredMachine's question with the
-// tolerance described on missingTool. Cleanup uses this; admission must not.
-func registeredMachineForCleanup(ctx context.Context, log *slog.Logger, name string) (bool, error) {
-	return nspawn.RegisteredForCleanup(ctx, log, name)
-}

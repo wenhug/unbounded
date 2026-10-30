@@ -13,15 +13,12 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
-// machineRunner is the machine control driver the nspawn backend uses. Tests inject a fake.
-type machineRunner = nspawn.Runner
-
 type startNSpawnMachine struct {
 	log       *slog.Logger
 	goalState *goalstates.NodeStart
 
 	// runner is the machine control driver. Tests inject a fake.
-	runner machineRunner
+	runner nspawn.Runner
 
 	// wasRunning records whether the machine was already up before this task
 	// touched it. A reapply against a live node has to restart any service
@@ -77,10 +74,6 @@ func (s *startNSpawnMachine) startWithRecovery(ctx context.Context, name string)
 
 	return nil
 }
-
-// isAlreadyExistsErr reports whether err looks like a "machine already
-// exists" failure.
-func isAlreadyExistsErr(err error) bool { return nspawn.IsAlreadyExists(err) }
 
 // WaitForMachine polls the machine until it is responsive to systemd-run
 // commands. See nspawn.WaitForMachine.

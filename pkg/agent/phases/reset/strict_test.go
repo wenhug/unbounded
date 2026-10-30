@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 )
 
 func TestMachineInspectionFailsClosed(t *testing.T) {
@@ -68,7 +70,7 @@ func TestConfirmNotEnabledOnlyAcceptsUnstartableStates(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "systemctl"), []byte("#!/bin/sh\n"+tc.script+"\n"), 0o755))
 			t.Setenv("PATH", dir)
 
-			err := confirmNotEnabled(t.Context(), slog.New(slog.DiscardHandler), "systemd-nspawn@kube1.service")
+			err := nspawn.ConfirmNotEnabled(t.Context(), slog.New(slog.DiscardHandler), "systemd-nspawn@kube1.service")
 			if tc.confirmed {
 				require.NoError(t, err)
 			} else {
