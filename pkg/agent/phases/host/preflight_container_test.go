@@ -94,14 +94,14 @@ func TestExistingDeploymentForContainerFindsContainerArtifacts(t *testing.T) {
 		deps.stat = statOnlyExists(path)
 		deps.outputCmd = outputWith("", errors.New("not found"))
 
-		results := checkExistingDeploymentFor(slog.New(slog.DiscardHandler), deps, isolation.ModeContainer).Check(context.Background())
+		results := checkExistingDeployment(slog.New(slog.DiscardHandler), deps, isolation.ModeContainer).Check(context.Background())
 		require.Len(t, results, 1, path)
 		assert.Equal(t, preflight.SeverityError, results[0].Severity)
 		assert.Equal(t, path, results[0].Target)
 
 		// Neither the default mode nor none looks for them.
 		for _, mode := range []isolation.Mode{isolation.ModeNSpawn, isolation.ModeNone} {
-			results = checkExistingDeploymentFor(slog.New(slog.DiscardHandler), deps, mode).Check(context.Background())
+			results = checkExistingDeployment(slog.New(slog.DiscardHandler), deps, mode).Check(context.Background())
 			assert.Equal(t, preflight.SeverityOK, results[0].Severity, "%s %s", mode, path)
 		}
 	}
@@ -109,5 +109,5 @@ func TestExistingDeploymentForContainerFindsContainerArtifacts(t *testing.T) {
 	deps := defaultHostCheckDeps()
 	deps.stat = statNotExist()
 	deps.outputCmd = outputWith("", errors.New("not found"))
-	require.NoError(t, ensureNoExistingDeploymentFor(context.Background(), slog.New(slog.DiscardHandler), deps, isolation.ModeContainer))
+	require.NoError(t, ensureNoExistingDeployment(context.Background(), slog.New(slog.DiscardHandler), deps, isolation.ModeContainer))
 }

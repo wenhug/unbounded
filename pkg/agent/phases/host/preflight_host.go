@@ -57,7 +57,7 @@ type hostCheckDeps struct {
 func defaultHostCheckDeps() hostCheckDeps {
 	return hostCheckDeps{
 		lookupPath:           exec.LookPath,
-		detectPackageManager: detectHostPackageManager,
+		detectPackageManager: detectHostPackageManagerForMode(isolation.DefaultMode),
 		uid:                  os.Geteuid,
 		statfs:               syscall.Statfs,
 		readFile:             os.ReadFile,

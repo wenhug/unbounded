@@ -99,7 +99,7 @@ func InstallPackagesFor(log *slog.Logger, mode isolation.Mode) phases.Task {
 func (ip *installPackages) Name() string { return "install-packages" }
 
 func (ip *installPackages) Do(ctx context.Context) error {
-	pm, err := detectHostPackageManagerMode(exec.LookPath, goalstates.HostIsImageManaged(), ip.mode)
+	pm, err := detectHostPackageManager(exec.LookPath, goalstates.HostIsImageManaged(), ip.mode)
 	if err != nil {
 		return err
 	}
@@ -145,19 +145,15 @@ func (ip *installPackages) Do(ctx context.Context) error {
 	return nil
 }
 
-func detectHostPackageManager(lookupPath func(string) (string, error)) (*hostPackageManager, error) {
-	return detectHostPackageManagerMode(lookupPath, goalstates.HostIsImageManaged(), isolation.DefaultMode)
-}
-
-// detectHostPackageManagerForMode is detectHostPackageManager for an isolation
+// detectHostPackageManagerForMode binds detectHostPackageManager to an isolation
 // mode's package requirements.
 func detectHostPackageManagerForMode(mode isolation.Mode) func(func(string) (string, error)) (*hostPackageManager, error) {
 	return func(lookupPath func(string) (string, error)) (*hostPackageManager, error) {
-		return detectHostPackageManagerMode(lookupPath, goalstates.HostIsImageManaged(), mode)
+		return detectHostPackageManager(lookupPath, goalstates.HostIsImageManaged(), mode)
 	}
 }
 
-// detectHostPackageManagerFor selects how required tools are satisfied on a
+// detectHostPackageManager selects how required tools are satisfied on a
 // host whose OS content is, or is not, image-managed.
 //
 // The distinction is not cosmetic. Azure Container Linux ships tdnf, so keying
@@ -166,16 +162,10 @@ func detectHostPackageManagerForMode(mode isolation.Mode) func(func(string) (str
 // delivery there, so a missing tool is a prerequisite to report rather than
 // something to remediate, and the presence of tdnf is not evidence that package
 // mutation is supported.
-func detectHostPackageManagerFor(
-	lookupPath func(string) (string, error),
-	imageManaged bool,
-) (*hostPackageManager, error) {
-	return detectHostPackageManagerMode(lookupPath, imageManaged, isolation.DefaultMode)
-}
-
-// detectHostPackageManagerMode is detectHostPackageManagerFor for the package
-// requirements of an isolation mode.
-func detectHostPackageManagerMode(
+//
+// The package requirements are those of the isolation mode; the empty mode is
+// nspawn.
+func detectHostPackageManager(
 	lookupPath func(string) (string, error),
 	imageManaged bool,
 	mode isolation.Mode,
@@ -266,7 +256,7 @@ func capabilityOnlyPackageManager(lookupPath func(string) (string, error), requi
 		)
 	}
 
-	return capabilityManagerFor(lookupPath, required), nil
+	return capabilityManager(lookupPath, required), nil
 }
 
 // imageManagedPackageManager validates that an image-managed host already
@@ -284,7 +274,7 @@ func imageManagedPackageManager(lookupPath func(string) (string, error), require
 		)
 	}
 
-	return capabilityManagerFor(lookupPath, required), nil
+	return capabilityManager(lookupPath, required), nil
 }
 
 // missingCapabilities returns the required packages whose capability does not
@@ -309,13 +299,8 @@ func missingCapabilities(lookupPath func(string) (string, error), required []str
 }
 
 // capabilityManager returns a package manager that can only report, never
-// install.
-func capabilityManager(lookupPath func(string) (string, error)) *hostPackageManager {
-	return capabilityManagerFor(lookupPath, rpmRequiredPackages)
-}
-
-// capabilityManagerFor is capabilityManager for an explicit package list.
-func capabilityManagerFor(lookupPath func(string) (string, error), required []string) *hostPackageManager {
+// install, for an explicit package list.
+func capabilityManager(lookupPath func(string) (string, error), required []string) *hostPackageManager {
 	return &hostPackageManager{
 		name:             "none",
 		requiredPackages: required,

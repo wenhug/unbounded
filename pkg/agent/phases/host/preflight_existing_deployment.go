@@ -23,24 +23,15 @@ import (
 // resumed installation intentionally skips.
 const CheckExistingDeploymentName = "existing-deployment"
 
-// CheckExistingDeployment verifies the host does not already contain
-// node deployment artifacts. Bootstrap must start from a clean host;
-// otherwise partial state from a prior run can be reused accidentally.
-func CheckExistingDeployment(log *slog.Logger) preflight.Checker {
-	return checkExistingDeployment(log, defaultHostCheckDeps())
-}
-
-// CheckExistingDeploymentFor is CheckExistingDeployment for an isolation mode.
-// Modes other than nspawn also look for the artifacts of a host-native node.
+// CheckExistingDeploymentFor verifies the host does not already contain node
+// deployment artifacts. Bootstrap must start from a clean host; otherwise
+// partial state from a prior run can be reused accidentally. Modes other than
+// nspawn also look for the artifacts of a host-native node.
 func CheckExistingDeploymentFor(log *slog.Logger, mode isolation.Mode) preflight.Checker {
-	return checkExistingDeploymentFor(log, defaultHostCheckDeps(), mode)
+	return checkExistingDeployment(log, defaultHostCheckDeps(), mode)
 }
 
-func checkExistingDeployment(log *slog.Logger, deps hostCheckDeps) preflight.Checker {
-	return checkExistingDeploymentFor(log, deps, isolation.DefaultMode)
-}
-
-func checkExistingDeploymentFor(log *slog.Logger, deps hostCheckDeps, mode isolation.Mode) preflight.Checker {
+func checkExistingDeployment(log *slog.Logger, deps hostCheckDeps, mode isolation.Mode) preflight.Checker {
 	return simpleHostChecker{name: CheckExistingDeploymentName, check: func(ctx context.Context) []preflight.Result {
 		results := existingDeploymentResultsFor(ctx, log, deps, mode)
 		if len(results) > 0 {
@@ -59,20 +50,16 @@ func checkExistingDeploymentFor(log *slog.Logger, deps hostCheckDeps, mode isola
 // node deployment artifacts. It is used by start before any
 // bootstrap task mutates host state.
 func EnsureNoExistingDeployment(ctx context.Context, log *slog.Logger) error {
-	return ensureNoExistingDeployment(ctx, log, defaultHostCheckDeps())
+	return ensureNoExistingDeployment(ctx, log, defaultHostCheckDeps(), isolation.DefaultMode)
 }
 
 // EnsureNoExistingDeploymentFor is EnsureNoExistingDeployment for an isolation
 // mode.
 func EnsureNoExistingDeploymentFor(ctx context.Context, log *slog.Logger, mode isolation.Mode) error {
-	return ensureNoExistingDeploymentFor(ctx, log, defaultHostCheckDeps(), mode)
+	return ensureNoExistingDeployment(ctx, log, defaultHostCheckDeps(), mode)
 }
 
-func ensureNoExistingDeployment(ctx context.Context, log *slog.Logger, deps hostCheckDeps) error {
-	return ensureNoExistingDeploymentFor(ctx, log, deps, isolation.DefaultMode)
-}
-
-func ensureNoExistingDeploymentFor(ctx context.Context, log *slog.Logger, deps hostCheckDeps, mode isolation.Mode) error {
+func ensureNoExistingDeployment(ctx context.Context, log *slog.Logger, deps hostCheckDeps, mode isolation.Mode) error {
 	results := existingDeploymentResultsFor(ctx, log, deps, mode)
 	if len(results) == 0 {
 		return nil

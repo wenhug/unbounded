@@ -49,15 +49,15 @@ func TestPackageSetForOtherModesDropsSystemdContainer(t *testing.T) {
 func TestDetectHostPackageManagerModeSelectsPackages(t *testing.T) {
 	t.Parallel()
 
-	pm, err := detectHostPackageManagerMode(existingPathLookup("apt-get"), false, isolation.ModeNone)
+	pm, err := detectHostPackageManager(existingPathLookup("apt-get"), false, isolation.ModeNone)
 	require.NoError(t, err)
 	assert.NotContains(t, pm.requiredPackages, "systemd-container")
 
-	pm, err = detectHostPackageManagerMode(existingPathLookup("apt-get"), false, isolation.ModeNSpawn)
+	pm, err = detectHostPackageManager(existingPathLookup("apt-get"), false, isolation.ModeNSpawn)
 	require.NoError(t, err)
 	assert.Contains(t, pm.requiredPackages, "systemd-container")
 
-	pm, err = detectHostPackageManagerMode(existingPathLookup("dnf"), false, isolation.ModeNone)
+	pm, err = detectHostPackageManager(existingPathLookup("dnf"), false, isolation.ModeNone)
 	require.NoError(t, err)
 	assert.NotContains(t, pm.requiredPackages, "systemd-container")
 }
@@ -69,21 +69,21 @@ func TestCapabilityOnlyHostWithoutNSpawnPerMode(t *testing.T) {
 
 	lookup := existingPathLookup("curl", "nft", "mountpoint")
 
-	_, err := detectHostPackageManagerMode(lookup, false, isolation.ModeNSpawn)
+	_, err := detectHostPackageManager(lookup, false, isolation.ModeNSpawn)
 	require.ErrorContains(t, err, "systemd-container")
 
-	pm, err := detectHostPackageManagerMode(lookup, false, isolation.ModeNone)
+	pm, err := detectHostPackageManager(lookup, false, isolation.ModeNone)
 	require.NoError(t, err)
 	assert.Equal(t, "none", pm.name)
 
-	_, err = detectHostPackageManagerMode(lookup, true, isolation.ModeNSpawn)
+	_, err = detectHostPackageManager(lookup, true, isolation.ModeNSpawn)
 	require.ErrorContains(t, err, "systemd-container")
 
-	_, err = detectHostPackageManagerMode(lookup, true, isolation.ModeNone)
+	_, err = detectHostPackageManager(lookup, true, isolation.ModeNone)
 	require.NoError(t, err)
 
 	// A tool none still needs is still reported.
-	_, err = detectHostPackageManagerMode(existingPathLookup("curl", "mountpoint"), true, isolation.ModeNone)
+	_, err = detectHostPackageManager(existingPathLookup("curl", "mountpoint"), true, isolation.ModeNone)
 	require.ErrorContains(t, err, "nftables")
 }
 
@@ -233,14 +233,14 @@ func TestExistingDeploymentForNoneFindsHostNativeArtifacts(t *testing.T) {
 		deps.stat = statOnlyExists(path)
 		deps.outputCmd = outputWith("", errors.New("not found"))
 
-		results := checkExistingDeploymentFor(slog.New(slog.DiscardHandler), deps, isolation.ModeNone).Check(context.Background())
+		results := checkExistingDeployment(slog.New(slog.DiscardHandler), deps, isolation.ModeNone).Check(context.Background())
 		require.Len(t, results, 1, path)
 		assert.Equal(t, preflight.SeverityError, results[0].Severity)
 		assert.Equal(t, path, results[0].Target)
 		assert.Contains(t, results[0].Message, "node reset is needed")
 
 		// The default mode does not look for them, so its output is unchanged.
-		results = checkExistingDeployment(slog.New(slog.DiscardHandler), deps).Check(context.Background())
+		results = checkExistingDeployment(slog.New(slog.DiscardHandler), deps, isolation.DefaultMode).Check(context.Background())
 		assert.Equal(t, preflight.SeverityOK, results[0].Severity, path)
 	}
 }
@@ -252,12 +252,12 @@ func TestEnsureNoExistingDeploymentForNone(t *testing.T) {
 	deps.stat = statOnlyExists(none.DefaultBase)
 	deps.outputCmd = outputWith("", errors.New("not found"))
 
-	err := ensureNoExistingDeploymentFor(context.Background(), slog.New(slog.DiscardHandler), deps, isolation.ModeNone)
+	err := ensureNoExistingDeployment(context.Background(), slog.New(slog.DiscardHandler), deps, isolation.ModeNone)
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), none.DefaultBase))
 
 	deps.stat = statNotExist()
-	require.NoError(t, ensureNoExistingDeploymentFor(context.Background(), slog.New(slog.DiscardHandler), deps, isolation.ModeNone))
+	require.NoError(t, ensureNoExistingDeployment(context.Background(), slog.New(slog.DiscardHandler), deps, isolation.ModeNone))
 }
 
 func TestCheckNoneBackendRefusesReadOnlyPaths(t *testing.T) {
