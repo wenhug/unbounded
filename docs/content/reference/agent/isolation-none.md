@@ -94,8 +94,11 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
   documented difference from `nspawn`.
 - **Upgrades are not blue/green.** The node is briefly down during the flip.
   Automatic rollback restores the previous binaries. Configuration files live at
-  the shared host paths and are not versioned, so a rollback does not restore the
-  previous configuration.
+  the shared host paths and are not versioned, so the agent saves them before an
+  upgrade (the containerd, kubelet, CNI and LocalDNS configuration and the
+  kubelet credentials, in `/etc/unbounded/agent/none-upgrade-config`) and puts them back,
+  byte for byte, before the previous version starts again. If they cannot be put
+  back the error says so and the saved copy is kept.
 - **Pods outlive the units.** containerd runs with `KillMode=process`, so a plain
   unit stop leaves pods running. Reset ends the shims; an upgrade does not need
   to because the operator drains the Node first.

@@ -468,12 +468,25 @@ builds no Kubernetes client for it).
   then the target mode's bootstrap stage plan, and is retried by systemd and run
   again at boot until it finishes. The daemon bootstrap installs reports the
   operation once the applied config is in the target mode.
-- *Gaps.* A reprovision whose bootstrap never succeeds leaves the operation
-  `InProgress` (no daemon is left to fail it). A metalman-attested host
-  reprovisions with the applied config's bootstrap token, not a new attestation.
-  The `none` target's full preflight runs only after the reset. Container to
-  nspawn in place needs `systemd-container` already installed. Everything is verified
-  against fakes and stubbed hosts only.
+- *Shared configuration.* `confsnap` saves, byte for byte, the host files both
+  stacks write at the same paths (`confsnap.SharedPaths`: containerd, kubelet,
+  CNI, LocalDNS configuration and the kubelet credentials) before an in-place
+  migration, a `none` upgrade and a container upgrade changes anything, and
+  restores them after the target is gone and before the source starts, also on a
+  restart mid-migration. The snapshot of a migration is next to the journal.
+- *Reprovision limits.* The handoff gives up after
+  `daemon.ReprovisionMaxAttempts` runs: it journals `failed`, removes its unit
+  and staged credentials, and stops. With the host reset and no daemon, the
+  operation is reported `Failed` by the first agent that starts on the host
+  afterward. An attested host records its attestation URL at bootstrap and
+  attests again; any other host is checked for a still-valid bootstrap token
+  before the reset. A token that is no longer valid cannot be renewed from the
+  agent: the operator must renew it or bootstrap with attestation. The `none`
+  target's static preflight runs before the reset and the ownership half after.
+- *Gaps.* The operation of a failed reprovision is not reported until an agent
+  runs on the host again. Container to nspawn in place needs
+  `systemd-container` already installed. Everything is verified against fakes
+  and stubbed hosts only.
 
 ## 11. Work packages
 
