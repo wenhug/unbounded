@@ -1,0 +1,163 @@
+// Copyright (c) Microsoft Corporation.
+// SPDX-License-Identifier: Apache-2.0
+
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/signal"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Azure/unbounded/pkg/agent/appliedconfig"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/none"
+	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
+)
+
+// nodeAccess is the active node and the backend that operates its stack.
+type nodeAccess struct {
+	Backend isolation.Backend
+	Root    isolation.NodeRoot
+}
+
+// accessResolver finds the active node. It is a seam for tests.
+type accessResolver func(*slog.Logger) (*nodeAccess, error)
+
+// backendForMode builds the backend for a mode. The none backend is not in the
+// isolation registry yet, so it is constructed here; once it is registered this
+// reduces to isolation.New.
+func backendForMode(mode isolation.Mode, log *slog.Logger) (isolation.Backend, error) {
+	if mode == isolation.ModeNone {
+		return &none.Backend{Log: log}, nil
+	}
+
+	b, err := isolation.New(mode, &nspawn.Backend{Log: log})
+	if err != nil {
+		// Only nspawn and none can run exec and logs from this binary today;
+		// say so clearly rather than leaking the registry wording.
+		return nil, fmt.Errorf("isolation mode %q is not supported by exec and logs: %w", mode, err)
+	}
+
+	return b, nil
+}
+
+// resolveActiveNode reads the applied config and builds the backend for the
+// mode it records.
+func resolveActiveNode(log *slog.Logger) (*nodeAccess, error) {
+	applied, err := appliedconfig.Read()
+	if err != nil {
+		if errors.Is(err, appliedconfig.ErrNotFound) {
+			return nil, fmt.Errorf("no node has been bootstrapped on this host: %w", err)
+		}
+
+		return nil, err
+	}
+
+	b, err := backendForMode(applied.Mode, log)
+	if err != nil {
+		return nil, err
+	}
+
+	return &nodeAccess{Backend: b, Root: isolation.DirRoot{SlotName: applied.Slot}}, nil
+}
+
+func runExec(ctx context.Context, log *slog.Logger, resolve accessResolver, stdout io.Writer, args []string) error {
+	if len(args) == 0 {
+		return errors.New("exec requires a command, for example: exec -- crictl ps")
+	}
+
+	n, err := resolve(log)
+	if err != nil {
+		return err
+	}
+
+	res, err := n.Backend.Exec(ctx, n.Root, isolation.ExecSpec{Args: args})
+	if res.Stdout != "" {
+		if _, werr := fmt.Fprintln(stdout, res.Stdout); werr != nil && err == nil {
+			err = werr
+		}
+	}
+
+	return err
+}
+
+func runLogs(ctx context.Context, log *slog.Logger, resolve accessResolver, stdout io.Writer, opts isolation.LogOptions) error {
+	if opts.Lines < 0 {
+		return errors.New("--lines must not be negative")
+	}
+
+	n, err := resolve(log)
+	if err != nil {
+		return err
+	}
+
+	rc, err := n.Backend.Logs(ctx, n.Root, opts)
+	if err != nil {
+		return err
+	}
+	defer rc.Close() //nolint:errcheck // closing a read-only log stream
+
+	if _, err := io.Copy(stdout, rc); err != nil && ctx.Err() == nil {
+		return err
+	}
+
+	return nil
+}
+
+func newCmdExec(cmdCtx *CommandContext) *cobra.Command {
+	return &cobra.Command{
+		Use:   "exec -- <command> [args...]",
+		Short: "Run a command in the node stack of this host's Kubernetes node",
+		Long: `Run a command where the node stack (containerd, kubelet) runs, whatever the
+isolation mode: inside the nspawn machine, on the host for mode none, or inside
+the container. The mode is read from the applied agent config.
+
+Example:
+  unbounded-agent exec -- crictl ps`,
+		DisableFlagsInUseLine: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer cancel()
+
+			cmdCtx.Setup()
+
+			return runExec(ctx, cmdCtx.Logger, resolveActiveNode, cmd.OutOrStdout(), args)
+		},
+	}
+}
+
+func newCmdLogs(cmdCtx *CommandContext) *cobra.Command {
+	var opts isolation.LogOptions
+
+	cmd := &cobra.Command{
+		Use:   "logs",
+		Short: "Show logs of the node stack of this host's Kubernetes node",
+		Long: `Show the journal of the node stack, whatever the isolation mode. Without
+--unit, all node stack units are shown.
+
+Examples:
+  unbounded-agent logs --unit kubelet --lines 200
+  unbounded-agent logs --unit containerd --follow`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer cancel()
+
+			cmdCtx.Setup()
+
+			return runLogs(ctx, cmdCtx.Logger, resolveActiveNode, cmd.OutOrStdout(), opts)
+		},
+	}
+
+	cmd.Flags().StringVar(&opts.Unit, "unit", "", "unit to show, for example kubelet or containerd (default: all)")
+	cmd.Flags().BoolVarP(&opts.Follow, "follow", "f", false, "keep streaming new entries")
+	cmd.Flags().IntVarP(&opts.Lines, "lines", "n", 0, "show only the last N entries")
+
+	return cmd
+}
