@@ -106,12 +106,21 @@ stop_node_none() {
   echo "Stopping host node units..."
   systemctl stop unbounded-kubelet.service 2>/dev/null || true
   systemctl stop unbounded-containerd.service 2>/dev/null || true
+  systemctl stop unbounded-localdns.service 2>/dev/null || true
 }
 
 remove_node_none() {
   echo "Removing host node units..."
   remove_unit unbounded-kubelet.service
   remove_unit unbounded-containerd.service
+  remove_unit unbounded-localdns.service
+  remove_unit unbounded-localdns-network.service
+  # Drop-ins the backend writes next to its units (PATH and LocalDNS ordering).
+  rm -rf "${ROOT}/etc/systemd/system/unbounded-kubelet.service.d" \
+    "${ROOT}/etc/systemd/system/unbounded-containerd.service.d" \
+    "${ROOT}/etc/systemd/system/unbounded-localdns.service.d"
+  # The NVIDIA CDI spec the agent generates for the host driver.
+  rm -f "${ROOT}/etc/cdi/nvidia.yaml"
   echo "Removing ${ROOT}/opt/unbounded/node..."
   rm -rf "${ROOT}/opt/unbounded/node"
 }
@@ -140,7 +149,6 @@ remove_node_container() {
   echo "Removing ${ROOT}/var/lib/unbounded/containers/${SLOT}..."
   rm -rf "${ROOT}/var/lib/unbounded/containers/${SLOT}"
 }
-
 
 # -----------------------------------------------------------------
 # 1. Stop the node stack (mode specific)
@@ -182,7 +190,7 @@ rm -f "${ROOT}/etc/wireguard/server.priv" "${ROOT}/etc/wireguard/server.pub"
 remove_node_${ISOLATION_MODE}
 
 # -----------------------------------------------------------------
-# 6. Remove nftables flush service and unbounded-kube config dir
+# 5. Remove nftables flush service and unbounded-kube config dir
 # -----------------------------------------------------------------
 echo "Removing nftables flush service..."
 systemctl disable --now nftables-flush.service 2>/dev/null || true
@@ -190,14 +198,14 @@ rm -f "${ROOT}/etc/systemd/system/nftables-flush.service"
 rm -rf "${ROOT}/etc/unbounded/kube"
 
 # -----------------------------------------------------------------
-# 7. Remove sysctl configuration and reload
+# 6. Remove sysctl configuration and reload
 # -----------------------------------------------------------------
 echo "Removing Kubernetes sysctl configuration..."
 rm -f "${ROOT}/etc/sysctl.d/99-kubernetes.conf"
 sysctl --system &>/dev/null || true
 
 # -----------------------------------------------------------------
-# 8. Restore Docker
+# 7. Restore Docker
 # -----------------------------------------------------------------
 echo "Restoring Docker configuration..."
 systemctl unmask docker.service 2>/dev/null || true
@@ -205,7 +213,7 @@ systemctl unmask docker.socket 2>/dev/null || true
 rm -f "${ROOT}/etc/docker/daemon.json"
 
 # -----------------------------------------------------------------
-# 9. Restore swap
+# 8. Restore swap
 # -----------------------------------------------------------------
 if [ -f "${ROOT}/etc/fstab.bak" ]; then
   echo "Restoring swap from /etc/fstab.bak..."
@@ -217,7 +225,7 @@ else
 fi
 
 # -----------------------------------------------------------------
-# 10. Clean up any leftover routes
+# 9. Clean up any leftover routes
 #
 # Routes programmed by unbounded-net use the unbounded0, geneve0,
 # wg*, and cbr0 devices. Deleting those interfaces in step 2
@@ -237,7 +245,7 @@ for table in $(seq 51820 51899); do
 done
 
 # -----------------------------------------------------------------
-# 11. Remove agent binaries and config artifacts
+# 10. Remove agent binaries and config artifacts
 # -----------------------------------------------------------------
 echo "Removing agent binaries and configuration..."
 rm -f "${ROOT}/usr/local/bin/unbounded-agent"
@@ -248,7 +256,7 @@ rm -rf "${ROOT}/tmp/unbounded-agent"
 rm -f "${ROOT}"/tmp/unbounded-agent-config.*.json
 
 # -----------------------------------------------------------------
-# 12. Reload systemd
+# 11. Reload systemd
 # -----------------------------------------------------------------
 echo "Reloading systemd daemon..."
 systemctl daemon-reload

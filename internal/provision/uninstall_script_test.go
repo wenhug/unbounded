@@ -177,7 +177,16 @@ func TestUninstallScriptNone(t *testing.T) {
 	h.writeApplied("kube1", `{"MachineName":"kube1","Isolation":"none"}`)
 	h.touch("etc/systemd/system/unbounded-containerd.service")
 	h.touch("etc/systemd/system/unbounded-kubelet.service")
+	h.touch("etc/systemd/system/unbounded-localdns.service")
+	h.touch("etc/systemd/system/unbounded-localdns-network.service")
+	h.touch("etc/systemd/system/unbounded-kubelet.service.d/00-path.conf")
+	h.touch("etc/systemd/system/unbounded-kubelet.service.d/05-localdns.conf")
+	h.touch("etc/systemd/system/unbounded-containerd.service.d/00-path.conf")
+	h.touch("etc/systemd/system/unbounded-localdns.service.d/00-path.conf")
+	h.touch("etc/cdi/nvidia.yaml")
+	h.touch("etc/cdi/other-vendor.yaml")
 	h.touch("etc/systemd/system/unrelated.service")
+	h.touch("etc/systemd/system/unrelated.service.d/x.conf")
 	h.touch("opt/unbounded/node/v1.34.0/bin/kubelet")
 	h.touch("var/lib/machines/kube1/etc/os-release")
 
@@ -186,15 +195,28 @@ func TestUninstallScriptNone(t *testing.T) {
 	require.Contains(t, out, "Isolation mode: none")
 	require.Contains(t, calls, "systemctl disable --now unbounded-kubelet.service")
 	require.Contains(t, calls, "systemctl disable --now unbounded-containerd.service")
+	require.Contains(t, calls, "systemctl disable --now unbounded-localdns.service")
+	require.Contains(t, calls, "systemctl disable --now unbounded-localdns-network.service")
 	require.NotContains(t, calls, "machinectl")
 	require.Less(t, strings.Index(calls, "stop unbounded-kubelet.service"), strings.Index(calls, "stop unbounded-containerd.service"))
 	h.requireGone(
 		"etc/systemd/system/unbounded-containerd.service",
 		"etc/systemd/system/unbounded-kubelet.service",
+		"etc/systemd/system/unbounded-localdns.service",
+		"etc/systemd/system/unbounded-localdns-network.service",
+		"etc/systemd/system/unbounded-kubelet.service.d",
+		"etc/systemd/system/unbounded-containerd.service.d",
+		"etc/systemd/system/unbounded-localdns.service.d",
+		"etc/cdi/nvidia.yaml",
 		"opt/unbounded/node",
 		"etc/unbounded/agent",
 	)
-	h.requireExists("etc/systemd/system/unrelated.service", "var/lib/machines/kube1/etc/os-release")
+	h.requireExists(
+		"etc/systemd/system/unrelated.service",
+		"etc/systemd/system/unrelated.service.d/x.conf",
+		"etc/cdi/other-vendor.yaml",
+		"var/lib/machines/kube1/etc/os-release",
+	)
 }
 
 func TestUninstallScriptContainer(t *testing.T) {
