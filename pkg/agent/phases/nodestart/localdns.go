@@ -24,6 +24,13 @@ type configureLocalDNS struct {
 	goalState *goalstates.NodeStart
 }
 
+// ConfigureLocalDNSOnHost refreshes the LocalDNS inputs for a host-native node
+// stack. It writes the same files as ConfigureLocalDNS except the machine's
+// /etc/resolv.conf, which on a host would be the host's own resolver file.
+func ConfigureLocalDNSOnHost(goalState *goalstates.NodeStart) phases.Task {
+	return &configureLocalDNS{goalState: goalState}
+}
+
 // ConfigureLocalDNS refreshes machine-local CoreDNS inputs before each managed start.
 func ConfigureLocalDNS(goalState *goalstates.NodeStart) phases.Task {
 	return &configureLocalDNS{goalState: goalState}
@@ -83,10 +90,18 @@ func (c *configureLocalDNS) Do(_ context.Context) error {
 	resolverLines = append(resolverLines, "nameserver "+c.goalState.LocalDNS.NodeListenerIP.String())
 
 	resolverContent := []byte(strings.Join(resolverLines, "\n") + "\n")
-	for _, resolvPath := range []string{
+
+	resolvPaths := []string{
 		c.goalState.Root().Path("etc/resolv.conf"),
 		c.goalState.Root().Path(strings.TrimPrefix(goalstates.LocalDNSResolvConfPath, "/")),
-	} {
+	}
+	if c.goalState.HostNative() {
+		// The host keeps its own resolver configuration; only kubelet's
+		// dedicated resolver file carries the LocalDNS listener.
+		resolvPaths = resolvPaths[1:]
+	}
+
+	for _, resolvPath := range resolvPaths {
 		if err := utilio.WriteFile(resolvPath, resolverContent, 0o644); err != nil {
 			return fmt.Errorf("write machine resolver %s: %w", resolvPath, err)
 		}
@@ -163,6 +178,12 @@ func WriteLocalDNSNetworkFiles(goalState *goalstates.NodeStart) error {
 	unitPath := filepath.Join(goalstates.SystemdSystemDir, goalstates.LocalDNSNetworkUnit)
 	if err := utilio.WriteFile(unitPath, unit.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write LocalDNS network unit: %w", err)
+	}
+
+	if goalState.HostNative() {
+		// No nspawn machine to order against; the host-native units order
+		// themselves after the network unit.
+		return nil
 	}
 
 	dropIn := []byte("[Unit]\nRequires=" + goalstates.LocalDNSNetworkUnit + "\nAfter=" + goalstates.LocalDNSNetworkUnit + "\n")
