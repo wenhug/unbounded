@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -63,26 +64,45 @@ func ownerIdentity(cfg config.AgentConfig, goalState *goalstates.MachineGoalStat
 
 	kubeletExe, containerdExe = kubeletExecutablePath, containerdExecutablePath
 
-	if cfg.Isolation == string(isolation.ModeContainer) {
+	// An invalid mode is rejected by config validation before any check runs;
+	// should one get here, it is treated as nspawn, like the empty mode.
+	mode, _ := cfg.IsolationMode() //nolint:errcheck // see above
+
+	switch mode {
+	case isolation.ModeContainer:
 		// The node stack runs in a container whose root is the unpacked rootfs
 		// of the slot bootstrap builds, so its processes look like the nspawn
 		// machine's from the host: the process root is that directory and the
 		// executables are at the in-rootfs paths. PROVISIONAL: /proc/<pid>/root
 		// of a process in a runc container is assumed to resolve to the bundle
 		// rootfs path.
-		root = container.Layout{}.RootfsDir(goalstates.NSpawnMachineKube1)
-	}
-
-	if cfg.Isolation == string(isolation.ModeNone) {
+		root = container.Layout{}.RootfsDir(nodeSlot(goalState))
+	case isolation.ModeNone:
 		// The node stack runs on the host, so its processes have the host root
 		// and execute the active version's binaries through the current link.
 		// The executable is resolved through that link, so a listener started
 		// before an upgrade flip is still recognized as the agent's own.
 		bin := strings.TrimPrefix(none.Layout{}.BinDir(), "/")
 		root, kubeletExe, containerdExe = "/", bin+"/kubelet", bin+"/containerd"
+	case isolation.ModeNSpawn:
 	}
 
 	return root, kubeletExe, containerdExe
+}
+
+// nodeSlot is the blue/green slot the goal state builds the node in: the base
+// name of the root filesystem directory, then the node start's machine name.
+// Bootstrap builds kube1, which is what it falls back to.
+func nodeSlot(goalState *goalstates.MachineGoalState) string {
+	if goalState.RootFS != nil && goalState.RootFS.MachineDir != "" {
+		return filepath.Base(goalState.RootFS.MachineDir)
+	}
+
+	if goalState.NodeStart != nil && goalState.NodeStart.MachineName != "" {
+		return goalState.NodeStart.MachineName
+	}
+
+	return goalstates.NSpawnMachineKube1
 }
 
 // CheckAPIServerReachable returns a non-mutating checker that validates the

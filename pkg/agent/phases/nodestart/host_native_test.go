@@ -196,3 +196,43 @@ func TestOwnerIdentityPerMode(t *testing.T) {
 	require.Equal(t, kubeletExecutablePath, kubelet)
 	require.Equal(t, containerdExecutablePath, containerd)
 }
+
+func TestOwnerIdentityContainerRootFollowsTheSlot(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.AgentConfig{Isolation: "container"}
+
+	// The slot comes from the root filesystem directory when there is one.
+	gs := &goalstates.MachineGoalState{
+		RootFS:    &goalstates.RootFS{MachineDir: "/var/lib/machines/kube2"},
+		NodeStart: &goalstates.NodeStart{MachineName: "kube1"},
+	}
+	root, _, _ := ownerIdentity(cfg, gs)
+	require.Equal(t, "/var/lib/unbounded/containers/kube2", root)
+
+	// Then from the node start's machine name.
+	gs = &goalstates.MachineGoalState{NodeStart: &goalstates.NodeStart{MachineName: "kube2"}}
+	root, _, _ = ownerIdentity(cfg, gs)
+	require.Equal(t, "/var/lib/unbounded/containers/kube2", root)
+
+	// Bootstrap builds kube1, which is the fallback.
+	gs = &goalstates.MachineGoalState{NodeStart: &goalstates.NodeStart{}}
+	root, _, _ = ownerIdentity(cfg, gs)
+	require.Equal(t, "/var/lib/unbounded/containers/kube1", root)
+}
+
+func TestOwnerIdentityTreatsAnUnsetOrInvalidModeAsNSpawn(t *testing.T) {
+	t.Parallel()
+
+	gs := &goalstates.MachineGoalState{
+		RootFS:    &goalstates.RootFS{MachineDir: "/var/lib/machines/kube1"},
+		NodeStart: &goalstates.NodeStart{},
+	}
+
+	for _, mode := range []string{"", "nspawn", "microvm"} {
+		root, kubelet, containerd := ownerIdentity(config.AgentConfig{Isolation: mode}, gs)
+		require.Equal(t, "/var/lib/machines/kube1", root, mode)
+		require.Equal(t, kubeletExecutablePath, kubelet, mode)
+		require.Equal(t, containerdExecutablePath, containerd, mode)
+	}
+}
