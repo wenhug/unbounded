@@ -108,7 +108,8 @@ func isSupportedOperationKind(kind v1alpha3.OperationKind) bool {
 		v1alpha3.OperationHostSoftReboot,
 		v1alpha3.OperationHostPowerOff,
 		v1alpha3.OperationHostPowerOn,
-		v1alpha3.OperationHostReplace:
+		v1alpha3.OperationHostReplace,
+		v1alpha3.OperationIsolationMigrate:
 		return true
 	default:
 		return false

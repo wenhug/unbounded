@@ -287,3 +287,25 @@ func TestRunInPlaceIncompleteSpec(t *testing.T) {
 	_, err := RunInPlace(context.Background(), InPlaceSpec{})
 	require.ErrorContains(t, err, "incomplete")
 }
+
+func TestParseParams(t *testing.T) {
+	t.Parallel()
+
+	got, err := ParseParams(map[string]string{"targetMode": "container", "strategy": "reprovision"})
+	require.NoError(t, err)
+	require.Equal(t, Request{Target: isolation.ModeContainer, Strategy: Reprovision}, got)
+
+	got, err = ParseParams(map[string]string{"targetMode": "none"})
+	require.NoError(t, err)
+	require.Equal(t, Request{Target: isolation.ModeNone}, got)
+
+	for name, params := range map[string]map[string]string{
+		"missing target":   {},
+		"empty target":     {"targetMode": ""},
+		"unknown target":   {"targetMode": "microvm"},
+		"unknown strategy": {"targetMode": "none", "strategy": "x"},
+	} {
+		_, err := ParseParams(params)
+		require.Error(t, err, name)
+	}
+}

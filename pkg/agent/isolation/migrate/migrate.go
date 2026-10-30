@@ -260,3 +260,36 @@ func (st *state) rollback(ctx context.Context) (bool, error) {
 
 	return restarted, errors.Join(errs...)
 }
+
+// Parameter keys of an IsolationMigrate MachineOperation.
+const (
+	ParamTargetMode = "targetMode"
+	ParamStrategy   = "strategy"
+)
+
+// Request is a validated IsolationMigrate request.
+type Request struct {
+	Target   isolation.Mode
+	Strategy Strategy
+}
+
+// ParseParams validates the Parameters of an IsolationMigrate operation.
+// targetMode is required; strategy is optional.
+func ParseParams(params map[string]string) (Request, error) {
+	raw := params[ParamTargetMode]
+	if raw == "" {
+		return Request{}, fmt.Errorf("IsolationMigrate requires parameter %s", ParamTargetMode)
+	}
+
+	target, err := isolation.ParseMode(raw)
+	if err != nil {
+		return Request{}, fmt.Errorf("parameter %s: %w", ParamTargetMode, err)
+	}
+
+	strategy, err := ParseStrategy(params[ParamStrategy])
+	if err != nil {
+		return Request{}, fmt.Errorf("parameter %s: %w", ParamStrategy, err)
+	}
+
+	return Request{Target: target, Strategy: strategy}, nil
+}

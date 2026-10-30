@@ -51,7 +51,7 @@ type MachineOperationList struct {
 // OperationKind identifies the kind of operation to perform. Predefined
 // operations cover common lifecycle actions; custom operations may be
 // supported by individual cloud controllers.
-// +kubebuilder:validation:Enum=NodeReboot;AgentUpgrade;AgentReset;HostHardReboot;HostSoftReboot;HostPowerOff;HostPowerOn;HostReplace
+// +kubebuilder:validation:Enum=NodeReboot;AgentUpgrade;AgentReset;HostHardReboot;HostSoftReboot;HostPowerOff;HostPowerOn;HostReplace;IsolationMigrate
 type OperationKind string
 
 const (
@@ -60,6 +60,12 @@ const (
 	// is restarted, and services are brought back up. Handled by the
 	// in-VM agent.
 	OperationNodeReboot OperationKind = "NodeReboot"
+
+	// OperationIsolationMigrate moves the node stack to another isolation mode.
+	// The target mode is Parameters["targetMode"] and the optional strategy is
+	// Parameters["strategy"] (inPlace or reprovision). Handled by the in-VM
+	// agent.
+	OperationIsolationMigrate OperationKind = "IsolationMigrate"
 
 	// OperationAgentUpgrade upgrades the host-side unbounded-agent binary.
 	// Handled by the in-VM agent.

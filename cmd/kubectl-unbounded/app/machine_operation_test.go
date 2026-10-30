@@ -471,3 +471,30 @@ func executeMachineOperationCreateCommand(t *testing.T, args ...string) (string,
 
 	return out.String(), err
 }
+
+func TestValidateIsolationMigrateParameters(t *testing.T) {
+	t.Parallel()
+
+	newOpts := func(params ...string) *machineOperationCreateOptions {
+		return &machineOperationCreateOptions{
+			name:          "migrate-worker-01",
+			kind:          v1alpha3.OperationIsolationMigrate,
+			machine:       "worker-01",
+			parameterArgs: params,
+			output:        operationOutputName,
+			dryRun:        dryRunNone,
+		}
+	}
+
+	require.NoError(t, newOpts("targetMode=container").validate())
+	require.NoError(t, newOpts("targetMode=none", "strategy=reprovision").validate())
+
+	require.ErrorContains(t, newOpts().validate(), "targetMode")
+	require.ErrorContains(t, newOpts("targetMode=microvm").validate(), "unsupported isolation mode")
+	require.ErrorContains(t, newOpts("targetMode=none", "strategy=x").validate(), "strategy")
+
+	op, err := newOpts("targetMode=container").build()
+	require.NoError(t, err)
+	require.Equal(t, v1alpha3.OperationIsolationMigrate, op.Spec.OperationKind)
+	require.Equal(t, "container", op.Spec.Parameters["targetMode"])
+}

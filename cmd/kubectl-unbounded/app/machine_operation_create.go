@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
+	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
 
 type machineOperationCreateOptions struct {
@@ -110,6 +111,7 @@ func addMachineOperationCreateFlags(cmd *cobra.Command, o *machineOperationCreat
 			string(v1alpha3.OperationHostPowerOff),
 			string(v1alpha3.OperationHostPowerOn),
 			string(v1alpha3.OperationHostReplace),
+			string(v1alpha3.OperationIsolationMigrate),
 		}, cobra.ShellCompDirectiveNoFileComp
 	})
 	_ = cmd.RegisterFlagCompletionFunc("output", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) { //nolint:errcheck
@@ -229,6 +231,12 @@ func (o *machineOperationCreateOptions) validate() error {
 
 	if o.kind == v1alpha3.OperationAgentUpgrade && parameters["downloadURL"] == "" {
 		return fmt.Errorf("AgentUpgrade requires --param downloadURL=<url>")
+	}
+
+	if o.kind == v1alpha3.OperationIsolationMigrate {
+		if _, err := migrate.ParseParams(parameters); err != nil {
+			return err
+		}
 	}
 
 	return nil
