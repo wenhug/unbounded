@@ -57,5 +57,55 @@ class SuiteTests(unittest.TestCase):
             self.assertIn(step, steps)
 
 
+class PlanStepTests(unittest.TestCase):
+    def test_drift_expectation_follows_the_controller(self):
+        self.assertEqual(e2e.isolation_drift_expectation("", "nspawn"), ("False", "AppliedModeMatches"))
+        self.assertEqual(e2e.isolation_drift_expectation("nspawn", "nspawn"), ("False", "AppliedModeMatches"))
+        self.assertEqual(e2e.isolation_drift_expectation("", "none"), ("True", "AppliedModeDiffers"))
+        self.assertEqual(e2e.isolation_drift_expectation("none", "container"), ("True", "AppliedModeDiffers"))
+
+    def test_preflight_report_skips_text_before_the_json(self):
+        report = e2e.parse_preflight_report('warning: x\n{"status": "ok", "checks": [{"name": "none-backend"}]}')
+        self.assertEqual(report["checks"][0]["name"], "none-backend")
+        with self.assertRaises(SystemExit):
+            e2e.parse_preflight_report("no json here")
+
+    def test_every_mode_has_a_preflight_check(self):
+        self.assertEqual(set(e2e.PREFLIGHT_MODE_CHECKS), set(e2e.ISOLATION_MODES))
+
+    def test_digest_differences(self):
+        before = {"/a": "1", "/b": "2", "/c": "3"}
+        after = {"/a": "1", "/b": "9", "/d": "4"}
+        self.assertEqual(e2e.digest_differences(before, after), ["changed /b", "removed /c", "added /d"])
+        self.assertEqual(e2e.digest_differences(before, dict(before)), [])
+
+    def test_uninstall_asset_has_the_placeholder_the_harness_replaces(self):
+        self.assertIn(e2e.UNINSTALL_SCRIPT_PLACEHOLDER, e2e.UNINSTALL_SCRIPT_ASSET.read_text())
+
+    def test_new_steps_and_suites_exist(self):
+        for step in ("validate-isolation-status", "reconcile-machine-isolation-spec", "validate-isolation-preflight",
+                     "validate-isolation-uninstall", "validate-migration-rollback-config",
+                     "migrate-to-container-reprovision", "collect-isolation-evidence"):
+            self.assertIn(step, e2e.COMMANDS)
+        for suite in ("isolation-operations", "isolation-uninstall", "isolation-roundtrip", "isolation-matrix",
+                      "isolation-drift", "isolation-rollback"):
+            self.assertIn(suite, e2e.SUITES)
+
+    def test_existing_suites_are_unchanged(self):
+        self.assertEqual(e2e.SUITES["lifecycle"][0], "run-agent")
+        self.assertNotIn("validate-isolation-status", e2e.SUITES["lifecycle"])
+        self.assertNotIn("validate-isolation-status", e2e.SUITES["isolation-migration"])
+
+    def test_nspawn_only_checks_stay_out_of_the_mode_neutral_suites(self):
+        for suite in ("isolation-operations", "isolation-uninstall", "isolation-roundtrip", "isolation-matrix",
+                      "isolation-drift", "isolation-rollback"):
+            self.assertNotIn("validate-host-nspawn-distro", e2e.SUITES[suite])
+            self.assertNotIn("validate-node-reboot-operation", e2e.SUITES[suite])
+
+    def test_suites_that_migrate_start_in_the_default_mode(self):
+        for suite in ("isolation-roundtrip", "isolation-matrix", "isolation-drift", "isolation-rollback"):
+            self.assertEqual(e2e.SUITES[suite][0], "run-agent")
+
+
 if __name__ == "__main__":
     unittest.main()

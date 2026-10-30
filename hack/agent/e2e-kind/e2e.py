@@ -50,6 +50,12 @@ Subcommands (called as individual workflow steps):
     validate-isolation-exec-logs       Verify unbounded-agent exec and logs reach the node stack.
     validate-isolation-soft-reboot     Verify NodeReboot restarts only the node stack.
     migrate-to-<mode>-<strategy>       Run an IsolationMigrate operation and verify the result.
+    validate-isolation-status          Verify status.observedIsolation and the IsolationDrift condition.
+    reconcile-machine-isolation-spec   Set spec.isolation to the applied mode and verify drift clears.
+    validate-isolation-preflight       Run preflight with --isolation and verify the mode's own check ran.
+    validate-isolation-uninstall       Run the uninstall script and verify the node stack is gone.
+    validate-migration-rollback-config Fail a migration and verify shared host config is restored.
+    collect-isolation-evidence         Print the mode state of the VM and Machine as one JSON line.
     validate-migration-rollback-to-container
                                        Fail an in-place migration and verify rollback.
     validate-node-repave-upgrade       Verify OnDelete repave applies a new MCV Kubernetes version.
@@ -6408,6 +6414,225 @@ def validate_migration_rejected(target: str, strategy: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# isolation test plan steps (see designs/agent-isolation-modes-test-plan.md)
+# ---------------------------------------------------------------------------
+# The unbounded-agent preflight check that belongs to each mode.
+PREFLIGHT_MODE_CHECKS = {
+    "nspawn": "nspawn-runtime",
+    "none": "none-backend",
+    "container": "container-backend",
+}
+UNINSTALL_SCRIPT_ASSET = REPO_ROOT / "internal" / "provision" / "assets" / "unbounded-agent-uninstall.sh"
+UNINSTALL_SCRIPT_PLACEHOLDER = "UNBOUNDED_MACHINE_NAME_PLACEHOLDER"
+# Host paths both node stacks of different modes write; a failed migration must
+# leave them as it found them (pkg/agent/confsnap.SharedPaths).
+SHARED_CONFIG_PATHS = (
+    "/etc/containerd",
+    "/var/lib/kubelet/config.yaml",
+    "/var/lib/kubelet/kubeconfig",
+    "/var/lib/kubelet/pki",
+    "/etc/kubernetes",
+    "/etc/cni/net.d",
+)
+
+
+def isolation_drift_expectation(spec_isolation: str, observed: str) -> tuple[str, str]:
+    """Return the IsolationDrift status and reason the machina controller sets
+    for a Machine spec and the mode the agent reported (an empty spec is
+    nspawn). cmd/machina/machina/controller/isolation_conditions.go."""
+    if (spec_isolation or "nspawn") == observed:
+        return "False", "AppliedModeMatches"
+    return "True", "AppliedModeDiffers"
+
+
+def machine_isolation_view() -> dict[str, Any]:
+    """Return the Machine's spec.isolation, status.observedIsolation and
+    IsolationDrift condition."""
+    machine = json.loads(kubectl_capture(["get", "machine", AGENT_MACHINE_NAME, "-o", "json"]))
+    conditions = machine.get("status", {}).get("conditions", [])
+    return {
+        "spec": machine.get("spec", {}).get("isolation", ""),
+        "observed": machine.get("status", {}).get("observedIsolation", ""),
+        "drift": next((c for c in conditions if c.get("type") == "IsolationDrift"), None),
+    }
+
+
+def validate_isolation_status() -> None:
+    """Assert the daemon reported the applied mode in status.observedIsolation
+    and the controller's IsolationDrift condition agrees with spec.isolation."""
+    mode = isolation_mode()
+    deadline = time.monotonic() + 180
+    problem = ""
+    while True:
+        view = machine_isolation_view()
+        problem = ""
+        if view["observed"] != mode:
+            problem = f"status.observedIsolation is {view['observed']!r}, expected {mode!r}"
+        else:
+            want_status, want_reason = isolation_drift_expectation(view["spec"], view["observed"])
+            drift = view["drift"]
+            if drift is None:
+                problem = "IsolationDrift condition is absent although the mode was reported"
+            elif drift.get("status") != want_status or drift.get("reason") != want_reason:
+                problem = (f"IsolationDrift is {drift.get('status')}/{drift.get('reason')}, "
+                           f"expected {want_status}/{want_reason}")
+        if not problem:
+            break
+        if time.monotonic() > deadline:
+            die(problem)
+        time.sleep(5)
+    log(f"Machine reports observedIsolation={view['observed']} (spec.isolation={view['spec'] or '<unset>'}, "
+        f"IsolationDrift={view['drift'].get('status')}/{view['drift'].get('reason')})")
+
+
+def reconcile_machine_isolation_spec() -> None:
+    """Set the Machine's spec.isolation to the mode under test, as an operator
+    does after a migration, and assert IsolationDrift clears."""
+    mode = isolation_mode()
+    kubectl(["patch", "machine", AGENT_MACHINE_NAME, "--type=merge", "-p",
+             json.dumps({"spec": {"isolation": mode}})])
+    validate_isolation_status()
+    view = machine_isolation_view()
+    if view["spec"] != mode or view["drift"].get("status") != "False":
+        die(f"IsolationDrift did not clear after spec.isolation={mode}: {view}")
+    log(f"IsolationDrift cleared with spec.isolation={mode}")
+
+
+def parse_preflight_report(text: str) -> dict[str, Any]:
+    """Parse `unbounded-agent preflight --output json`. Warnings the agent
+    prints before the JSON document are skipped."""
+    start = text.find("{")
+    if start < 0:
+        die(f"preflight produced no JSON document: {text[:200]!r}")
+    return json.loads(text[start:])
+
+
+def validate_isolation_preflight() -> None:
+    """Run the agent preflight on the installed host with --isolation set to the
+    mode under test. The report must be valid JSON and include the mode's own
+    check; other checks are recorded, not asserted, since an installed host
+    legitimately trips the existing-deployment check."""
+    mode = isolation_mode()
+    result = ssh_capture_quiet(
+        f"sudo env UNBOUNDED_AGENT_CONFIG_FILE=/etc/unbounded/agent/config.json "
+        f"{DAEMON_BINARY} preflight --isolation {mode} --output json"
+    )
+    report = parse_preflight_report(result.stdout)
+    names = {check.get("name"): check for check in report.get("checks", [])}
+    want = PREFLIGHT_MODE_CHECKS[mode]
+    if want not in names:
+        die(f"preflight --isolation {mode} did not run the {want} check; ran {sorted(names)}")
+    for other_mode, other in PREFLIGHT_MODE_CHECKS.items():
+        if other_mode != mode and other in names:
+            die(f"preflight --isolation {mode} ran the {other} check of mode {other_mode}")
+    for name, check in sorted(names.items()):
+        log(f"preflight {name}: {check.get('severity')} {check.get('message', '')}")
+    mode_check = names[want]
+    if mode_check.get("severity") == "error":
+        die(f"{want} check failed on a running {mode} host: {mode_check.get('message')}")
+    log(f"Preflight ran the {want} check for {mode} (status {report.get('status')})")
+
+
+def shared_config_digest() -> dict[str, str]:
+    """Return a sha256 for every file under the shared configuration paths on
+    the VM, plus link targets, keyed by path."""
+    script = ("for p in " + " ".join(SHARED_CONFIG_PATHS) + "; do "
+              "[ -e \"$p\" ] || [ -L \"$p\" ] || continue; "
+              "find \"$p\" -xdev \\( -type f -o -type l \\) | sort | while read -r f; do "
+              "if [ -L \"$f\" ]; then echo \"link $(readlink \"$f\") $f\"; "
+              "else echo \"$(sha256sum \"$f\" | cut -d' ' -f1) $f\"; fi; done; done")
+    out = ssh_capture(f"sudo sh -c {shlex.quote(script)}")
+    digest: dict[str, str] = {}
+    for line in out.splitlines():
+        value, _, path = line.rpartition(" ")
+        if path:
+            digest[path] = value
+    return digest
+
+
+def digest_differences(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """Describe how two shared_config_digest results differ."""
+    changes = []
+    for path in sorted(before.keys() | after.keys()):
+        if path not in after:
+            changes.append(f"removed {path}")
+        elif path not in before:
+            changes.append(f"added {path}")
+        elif before[path] != after[path]:
+            changes.append(f"changed {path}")
+    return changes
+
+
+def validate_migration_rollback_config(node_config: NodeConfig) -> None:
+    """Fail an in-place migration, then assert the shared host configuration is
+    byte for byte what it was before the migration started."""
+    before = shared_config_digest()
+    if not before:
+        die("no shared configuration files found on the host before the migration")
+    validate_migration_rollback(node_config, "container")
+    changes = digest_differences(before, shared_config_digest())
+    if changes:
+        die("rollback left the shared configuration different: " + "; ".join(changes[:20]))
+    log(f"Rollback restored all {len(before)} shared configuration files")
+
+
+def validate_isolation_uninstall() -> None:
+    """Run the generated uninstall script on the host and assert the node stack
+    of the mode under test is gone. The harness renders the script from the
+    repository asset the way internal/provision.UnboundedAgentUninstallScript
+    does. The Node and Machine are then removed so the host can be bootstrapped
+    again."""
+    mode = isolation_mode()
+    slot = active_nspawn_machine() if mode == "nspawn" else "kube1"
+    script = UNINSTALL_SCRIPT_ASSET.read_text().replace(UNINSTALL_SCRIPT_PLACEHOLDER, slot)
+    local = VM_DIR / "unbounded-agent-uninstall.sh"
+    VM_DIR.mkdir(parents=True, exist_ok=True)
+    local.write_text(script)
+    remote = "/var/tmp/unbounded-agent-uninstall.sh"
+    scp_cmd(str(local), f"{SSH_TARGET}:{remote}")
+    out = ssh_capture(f"sudo bash {remote}")
+    if f"Isolation mode: {mode}" not in out:
+        die(f"uninstall did not detect isolation mode {mode}: {out[-400:]!r}")
+    validate_node_stack_removed()
+    run_quiet([KUBECTL, "delete", "node", AGENT_MACHINE_NAME, "--ignore-not-found"], check=False)
+    delete_machine_cr()
+    log(f"Uninstall removed the {mode} node stack")
+
+
+def collect_isolation_evidence() -> None:
+    """Print one JSON document describing the mode state of the VM and the
+    Machine, for the test plan report. Every query is best effort."""
+    evidence: dict[str, Any] = {"isolation_mode_under_test": isolation_mode()}
+
+    def attempt(name: str, fn: Callable[[], Any]) -> None:
+        try:
+            evidence[name] = fn()
+        except SystemExit:
+            evidence[name] = {"error": "query failed"}
+        except Exception as exc:  # noqa: BLE001 - evidence must never fail the run
+            evidence[name] = {"error": str(exc)}
+
+    def run_ssh(command: str) -> str:
+        result = ssh_capture_quiet(command)
+        return result.stdout.strip() if result.returncode == 0 else f"exit {result.returncode}"
+
+    attempt("machine", lambda: {k: v for k, v in machine_isolation_view().items()})
+    attempt("applied_isolation", lambda: [
+        {"file": f, "isolation": parse_applied_isolation(ssh_capture(f"sudo cat {f}"))}
+        for f in applied_config_files()])
+    attempt("node_stack_units", lambda: run_ssh(
+        "sudo systemctl list-units --no-legend --all "
+        "'unbounded-*.service' 'systemd-nspawn@*.service'"))
+    attempt("none_current_version", none_current_version)
+    attempt("machinectl", lambda: run_ssh("sudo machinectl list --no-legend"))
+    attempt("agent_daemon", lambda: run_ssh("sudo systemctl is-active unbounded-agent-daemon.service"))
+    attempt("agent_version", lambda: run_ssh(f"sudo {DAEMON_BINARY} version"))
+    attempt("host_boot_id", lambda: run_ssh("cat /proc/sys/kernel/random/boot_id"))
+    attempt("node", lambda: kubectl_capture(["get", "node", AGENT_MACHINE_NAME, "-o", "wide", "--no-headers"]).strip())
+    print("ISOLATION_EVIDENCE " + json.dumps(evidence, sort_keys=True), flush=True)
+
+
+# ---------------------------------------------------------------------------
 # collect-logs
 # ---------------------------------------------------------------------------
 def _write_command_log(path: Path, args: list[str]) -> None:
@@ -6821,6 +7046,71 @@ SUITES: dict[str, list[str]] = {
                             "migrate-to-nspawn-inplace",
                             "migrate-to-none-reprovision", "validate-isolation-soft-reboot",
                             "migrate-to-nspawn-reprovision", "reset-agent"],
+    # The isolation test plan suites. Run with ISOLATION_MODE unset (nspawn by
+    # default, no --isolation flag), nspawn, none or container; the suite is the
+    # same for every mode. Every agent and host operation that applies to a
+    # node stack: join, status, preflight, exec/logs, soft reboot (NodeReboot),
+    # host-driven and operation-driven AgentUpgrade with rollback, repave, host
+    # reboot, AgentReset, reinstall on the same disk.
+    "isolation-operations": [
+        "run-agent", "wait-for-node", "validate-isolation-mode", "validate-host-root",
+        "validate-controllers-healthy", "validate-node-config", "dump-persisted-agent-config",
+        "validate-kube-proxy", "validate-machine-cr-created", "validate-isolation-status",
+        "validate-isolation-preflight", "validate-isolation-exec-logs", "validate-workload",
+        "validate-isolation-soft-reboot", "validate-host-agent-upgrade", "validate-agent-upgrade-operation",
+        "validate-agent-upgrade-rollback", "validate-workload", "validate-node-repave-upgrade",
+        "validate-workload", "validate-host-reboot", "validate-isolation-mode", "validate-isolation-status",
+        "reset-agent", "delete-machine-cr", "ensure-kind-bridge", "reinstall-agent", "wait-for-node",
+        "validate-isolation-mode", "validate-isolation-exec-logs", "validate-workload",
+    ],
+    # The uninstall script removes the node stack of the mode, then the host
+    # is bootstrapped again.
+    "isolation-uninstall": [
+        "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
+        "validate-isolation-uninstall", "ensure-kind-bridge", "reinstall-agent", "wait-for-node",
+        "validate-isolation-mode", "validate-workload",
+    ],
+    # Start in the default mode (ISOLATION_MODE unset), move to none and back
+    # by reprovision, checking mode, status, exec/logs, a workload and a soft
+    # reboot at each stop.
+    "isolation-roundtrip": [
+        "run-agent", "wait-for-node", "validate-isolation-mode", "validate-isolation-status",
+        "validate-isolation-exec-logs", "validate-workload", "validate-isolation-soft-reboot",
+        "migrate-to-none-reprovision", "validate-isolation-status", "validate-isolation-exec-logs",
+        "validate-isolation-soft-reboot", "validate-isolation-preflight", "validate-host-reboot",
+        "validate-workload", "migrate-to-nspawn-reprovision", "validate-isolation-status",
+        "validate-isolation-exec-logs", "validate-isolation-soft-reboot", "validate-host-reboot",
+        "validate-workload", "reset-agent",
+    ],
+    # Every ordered pair of modes: nspawn -> container (in place), container ->
+    # none and none -> container (reprovision), container -> nspawn (in place),
+    # nspawn -> none and none -> nspawn (reprovision), then nspawn ->
+    # container and back by reprovision.
+    "isolation-matrix": [
+        "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
+        "migrate-to-container-inplace", "validate-isolation-status", "validate-isolation-exec-logs",
+        "migrate-to-none-reprovision", "validate-isolation-status", "validate-isolation-exec-logs",
+        "migrate-to-container-reprovision", "validate-isolation-status", "validate-isolation-exec-logs",
+        "migrate-to-nspawn-inplace", "validate-isolation-status", "validate-isolation-exec-logs",
+        "migrate-to-none-reprovision", "validate-isolation-status",
+        "migrate-to-nspawn-reprovision", "validate-isolation-status",
+        "migrate-to-container-reprovision", "validate-isolation-status",
+        "migrate-to-nspawn-reprovision", "validate-isolation-status", "validate-workload", "reset-agent",
+    ],
+    # The drift condition in both directions: set spec.isolation to the
+    # applied mode, migrate away (drift appears), then set spec again.
+    "isolation-drift": [
+        "run-agent", "wait-for-node", "validate-isolation-status", "migrate-to-none-reprovision",
+        "validate-isolation-status", "reconcile-machine-isolation-spec", "migrate-to-nspawn-reprovision",
+        "validate-isolation-status", "reconcile-machine-isolation-spec", "reset-agent",
+    ],
+    # A failed in-place migration restores the source and the shared host
+    # configuration; an unsupported pair is rejected without touching the node.
+    "isolation-rollback": [
+        "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
+        "validate-migration-unsupported-pair", "validate-migration-rollback-config",
+        "validate-isolation-status", "reset-agent",
+    ],
 }
 
 
@@ -6913,10 +7203,17 @@ COMMANDS: dict[str, Command] = {
     "validate-isolation-soft-reboot": _without_node_config(validate_isolation_soft_reboot),
     "migrate-to-container-inplace": lambda nc: migrate_isolation(nc, "container", "inPlace"),
     "migrate-to-nspawn-inplace": lambda nc: migrate_isolation(nc, "nspawn", "inPlace"),
+    "migrate-to-container-reprovision": lambda nc: migrate_isolation(nc, "container", "reprovision"),
     "migrate-to-none-reprovision": lambda nc: migrate_isolation(nc, "none", "reprovision"),
     "migrate-to-nspawn-reprovision": lambda nc: migrate_isolation(nc, "nspawn", "reprovision"),
     "validate-migration-rollback-to-container": lambda nc: validate_migration_rollback(nc, "container"),
     "validate-migration-unsupported-pair": lambda _nc: validate_migration_rejected("none", "inPlace"),
+    "validate-migration-rollback-config": validate_migration_rollback_config,
+    "validate-isolation-status": _without_node_config(validate_isolation_status),
+    "reconcile-machine-isolation-spec": _without_node_config(reconcile_machine_isolation_spec),
+    "validate-isolation-preflight": _without_node_config(validate_isolation_preflight),
+    "validate-isolation-uninstall": _without_node_config(validate_isolation_uninstall),
+    "collect-isolation-evidence": _without_node_config(collect_isolation_evidence),
     "cleanup": _without_node_config(cleanup),
 }
 
