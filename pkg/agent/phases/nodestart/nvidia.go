@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
-	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
@@ -51,7 +50,17 @@ func SetupNVIDIA(log *slog.Logger, goalState *goalstates.NodeStart) phases.Task 
 	return &setupNVIDIA{
 		log:       log,
 		goalState: goalState,
-		run:       nspawn.Exec,
+		run:       nodeExec(goalState),
+	}
+}
+
+// nodeExec adapts the goal state's Exec, which runs in the node stack of
+// whichever isolation mode resolved it, to the machine-named runner the NVIDIA
+// tasks take. For an nspawn goal state this is nspawn.Exec on the machine, as
+// before.
+func nodeExec(gs *goalstates.NodeStart) func(context.Context, *slog.Logger, string, ...string) (string, error) {
+	return func(ctx context.Context, log *slog.Logger, _ string, args ...string) (string, error) {
+		return gs.Exec(ctx, log, args...)
 	}
 }
 
@@ -108,15 +117,14 @@ func (s *setupNVIDIA) setupLibraries(ctx context.Context) error {
 	// Rootfs images without Debian multiarch paths, such as Azure Linux, lack
 	// this directory and do not search it.
 	for _, args := range nvidiaContainerLibDirCommands(s.goalState.Nvidia.ContainerLibDir) {
-		if _, err := nspawn.Exec(ctx, s.log, machine, args...); err != nil {
+		if _, err := s.goalState.Exec(ctx, s.log, args...); err != nil {
 			return fmt.Errorf("prepare NVIDIA library directory %s: %w", s.goalState.Nvidia.ContainerLibDir, err)
 		}
 	}
 
 	// Clean stale symlinks from a previous session that may point into
 	// /run/host-nvidia/ paths that no longer exist.
-	if _, err := nspawn.Exec(ctx, s.log, machine,
-		"find", s.goalState.Nvidia.ContainerLibDir, "-maxdepth", "1",
+	if _, err := s.goalState.Exec(ctx, s.log, "find", s.goalState.Nvidia.ContainerLibDir, "-maxdepth", "1",
 		"-lname", goalstates.NvidiaHostLibDir+"/*", "-delete",
 	); err != nil {
 		return fmt.Errorf("removing stale nvidia symlinks: %w", err)
@@ -126,11 +134,9 @@ func (s *setupNVIDIA) setupLibraries(ctx context.Context) error {
 	for _, lib := range libs {
 		// Remove any existing file/symlink, then create the new symlink.
 		// Errors from rm -f are intentionally ignored - the file may not exist.
-		nspawn.Exec(ctx, s.log, machine, "rm", "-f", lib.LinkPath) //nolint:errcheck // rm -f is best-effort.
+		s.goalState.Exec(ctx, s.log, "rm", "-f", lib.LinkPath) //nolint:errcheck // rm -f is best-effort.
 
-		if _, err := nspawn.Exec(ctx, s.log, machine,
-			"ln", "-s", lib.ContainerPath, lib.LinkPath,
-		); err != nil {
+		if _, err := s.goalState.Exec(ctx, s.log, "ln", "-s", lib.ContainerPath, lib.LinkPath); err != nil {
 			return fmt.Errorf("symlink %s -> %s: %w", lib.LinkPath, lib.ContainerPath, err)
 		}
 
@@ -141,7 +147,7 @@ func (s *setupNVIDIA) setupLibraries(ctx context.Context) error {
 	}
 
 	// Update the dynamic linker cache so the libraries are discoverable.
-	if _, err := nspawn.Exec(ctx, s.log, machine, "ldconfig"); err != nil {
+	if _, err := s.goalState.Exec(ctx, s.log, "ldconfig"); err != nil {
 		return fmt.Errorf("ldconfig failed: %w", err)
 	}
 
@@ -223,8 +229,7 @@ func (s *setupNVIDIA) driverRootPaths() nvidiaDriverRootPaths {
 }
 
 func (s *setupNVIDIA) initializeDriverRoot(ctx context.Context, paths nvidiaDriverRootPaths) error {
-	machine := s.goalState.MachineName
-	if _, err := nspawn.Exec(ctx, s.log, machine, "rm", "-rf", paths.rootDir); err != nil {
+	if _, err := s.goalState.Exec(ctx, s.log, "rm", "-rf", paths.rootDir); err != nil {
 		return fmt.Errorf("remove NVIDIA driver root: %w", err)
 	}
 
@@ -232,8 +237,7 @@ func (s *setupNVIDIA) initializeDriverRoot(ctx context.Context, paths nvidiaDriv
 	// mkdir -p /run/nvidia/driver/lib/x86_64-linux-gnu \
 	//   /run/nvidia/driver/lib/i386-linux-gnu /run/nvidia/driver/usr/bin \
 	//   /run/nvidia/driver/usr/lib /run/nvidia/driver/sbin /run/nvidia/driver/etc
-	if _, err := nspawn.Exec(ctx, s.log, machine,
-		"mkdir", "-p", paths.libDir, paths.i386LibDir,
+	if _, err := s.goalState.Exec(ctx, s.log, "mkdir", "-p", paths.libDir, paths.i386LibDir,
 		filepath.Join(paths.rootDir, "usr", "bin"),
 		filepath.Join(paths.rootDir, "usr", "lib"),
 		filepath.Join(paths.rootDir, "sbin"),
@@ -373,17 +377,13 @@ func (s *setupNVIDIA) copyNVIDIAIMEXBinaries(ctx context.Context, paths nvidiaDr
 }
 
 func (s *setupNVIDIA) createDriverRootLinks(ctx context.Context, paths nvidiaDriverRootPaths) error {
-	machine := s.goalState.MachineName
-
 	// Mirror the normal distribution multiarch layout under usr/lib. Relative
 	// targets are required here so the links remain inside the driver root when
 	// NVIDIA tooling mounts it at another path, such as /driver-root.
 	multiarchSource := filepath.Join("..", "..", "lib", paths.libDirName)
 
 	multiarchDestination := filepath.Join(paths.rootDir, "usr", "lib", paths.libDirName)
-	if _, err := nspawn.Exec(ctx, s.log, machine,
-		"ln", "-sfn", multiarchSource, multiarchDestination,
-	); err != nil {
+	if _, err := s.goalState.Exec(ctx, s.log, "ln", "-sfn", multiarchSource, multiarchDestination); err != nil {
 		return fmt.Errorf("link NVIDIA multiarch library directory: %w", err)
 	}
 
@@ -395,9 +395,7 @@ func (s *setupNVIDIA) createDriverRootLinks(ctx context.Context, paths nvidiaDri
 	i386Source := filepath.Join("..", "..", "lib", "i386-linux-gnu")
 
 	i386Destination := filepath.Join(paths.rootDir, "usr", "lib", "i386-linux-gnu")
-	if _, err := nspawn.Exec(ctx, s.log, machine,
-		"ln", "-sfn", i386Source, i386Destination,
-	); err != nil {
+	if _, err := s.goalState.Exec(ctx, s.log, "ln", "-sfn", i386Source, i386Destination); err != nil {
 		return fmt.Errorf("link NVIDIA i386 library directory: %w", err)
 	}
 
@@ -409,9 +407,7 @@ func (s *setupNVIDIA) createDriverRootLinks(ctx context.Context, paths nvidiaDri
 	// The NVIDIA update-ldcache hook invokes <driver-root>/sbin/ldconfig.
 	// Reuse the machine's binary instead of copying it and its dependencies.
 	ldconfigDestination := filepath.Join(paths.rootDir, "sbin", "ldconfig")
-	if _, err := nspawn.Exec(ctx, s.log, machine,
-		"ln", "-sfn", "/sbin/ldconfig", ldconfigDestination,
-	); err != nil {
+	if _, err := s.goalState.Exec(ctx, s.log, "ln", "-sfn", "/sbin/ldconfig", ldconfigDestination); err != nil {
 		return fmt.Errorf("link NVIDIA driver ldconfig: %w", err)
 	}
 
@@ -582,8 +578,7 @@ func (s *setupNVIDIA) generateCDISpec(ctx context.Context) error {
 	// can generate a spec from missing or mismatched image libraries and helper
 	// binaries. Device nodes remain at their normal bind-mounted paths in the
 	// nspawn machine, so their discovery root is still /.
-	if _, err := nspawn.Exec(ctx, s.log, machine,
-		goalstates.NvidiaCTKPath, "cdi", "generate",
+	if _, err := s.goalState.Exec(ctx, s.log, goalstates.NvidiaCTKPath, "cdi", "generate",
 		"--driver-root", goalstates.NvidiaDriverDir,
 		"--dev-root", "/",
 		"--output", goalstates.CDISpecFile,
