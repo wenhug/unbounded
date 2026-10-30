@@ -115,8 +115,8 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
 - Both slots share the same-path directories, so a repave rewrites the kubelet
   configuration and CNI files the previous slot also sees, and a rollback
   restarts the previous slot against those new files.
-- NVIDIA GPU setup, `IsolationMigrate` to or from this mode, and `crun` are not
-  implemented.
+- NVIDIA GPU setup and `crun` are not implemented. `IsolationMigrate` to and
+  from this mode is wired but has not run on a real host.
 - Whether Azure Container Linux accepts user-supplied Ignition when AKS
   provisions the node is unverified, as is whether a sysext would be a better
   delivery path.

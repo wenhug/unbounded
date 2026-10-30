@@ -170,7 +170,8 @@ drift. Nothing moves until an `IsolationMigrate` MachineOperation (section 9).
   comparing `spec.isolation` (empty means `nspawn`) with the new
   `status.observedIsolation`. It never moves the node. The agent daemon must
   still write `status.observedIsolation` (as it does for
-  `observedProvisioningFormat`); until it does, no drift is reported.
+  `observedProvisioningFormat`); it does at startup and after a migration (see
+  the status note in section 10.4).
 
 ## 7. Backend interface
 
@@ -358,8 +359,8 @@ after it is healthy; the node-lifecycle post-start hook asks the runtime, not
 `systemctl is-active`, because the unit is still activating while
 `ExecStartPost` runs (an inference from systemd semantics, not observed). Not
 done: NVIDIA library wiring (the nspawn lifecycle hook's job), `crun`, nspawn
-lifecycle hook commands supplied through config, and `IsolationMigrate` to or
-from `container`. Unverified, in addition to the assumptions above: everything
+lifecycle hook commands supplied through config. `IsolationMigrate` to and from
+`container` is wired; see the status note in section 10.4. Unverified, in addition to the assumptions above: everything
 against a real `runc`, systemd and Azure Container Linux; that
 `/proc/<pid>/root` of a containerized process resolves to the bundle rootfs
 (used by the bind-address ownership preflight); the `/lib/modules` bind on
@@ -430,6 +431,56 @@ Existing repave is not changed to adopt rollback in this plan.
 
 Pod data and the image store are re-pulled. Host-global state (invariant 2)
 is untouched.
+
+**Implementation status (WP3 step 6, migration wired to host operations).**
+`IsolationMigrate` is carried out by `cmd/agent/internal/daemon/migration*.go`;
+the handler is `reconcileIsolationMigrate`, and the nodeOperator method
+`MigrateIsolation` now takes a `migrationEnv` (operation name, Node name and a
+`nodeScheduler`, implemented by `internal/kube/nodedrain` on the daemon's own
+credentials).
+
+- *In place (nspawn <-> container).* `migrate.RunInPlace` with real hooks:
+  preflight is the target mode's host checker (`CheckNSpawnRuntime`,
+  `CheckContainerBackend`); download is the repave's override resolution and
+  archive staging; prepare runs in the alternate slot (the container adapter
+  uses `Node.Prepare`, whose `Node.Activate` is the tail of `Node.Upgrade`
+  factored out, so repave and migration share it); drain is cordon plus drain
+  through `nodedrain` (DaemonSet, mirror and finished pods skipped, unmanaged
+  pods refused, Eviction API, ten minute bound); the network cleanup is
+  `reset.CleanupNetwork`; the target persists the applied config under the
+  alternate slot with `Isolation` set; rollback removes the target's record and
+  rewrites the source's; readiness is the repave's local kubelet check followed
+  by the Node's Ready condition through the API, whose heartbeat must postdate
+  the target start (the previous kubelet's last `Ready=True` otherwise passes),
+  within five minutes; success uncordons (only if the migration cordoned),
+  removes the source and its record and patches `status.observedIsolation`.
+  Kubelet credentials are fresh because the target boots a new kubelet from the
+  applied config's bootstrap token, exactly as a repave does; nothing is copied.
+- *Crash safety.* `migrate.Journal` is a write-ahead step file at
+  `/etc/unbounded/agent/isolation-migration.json` (atomic write; the step is
+  saved before the step runs). An `InProgress` operation is not enqueued again,
+  so `recoverIsolationMigration` runs at daemon start, before the controller,
+  resolves the journal with `migrate.ResumeInPlace` (before the source stops:
+  drop the target; once it may have stopped: roll back; `awaiting-ready`: wait
+  again; `ready`: finish cleanup), reports the outcome on the operation and then
+  removes the journal. While both slots have an applied config, the journal
+  decides which one `FindActiveMachine` returns.
+- *Reprovision (any pair, required for `none`).* The reset removes the daemon
+  and the agent, so the daemon stages `/var/lib/unbounded-agent-reprovision`
+  (binary copy, target config, journal), validates it with the staged binary,
+  drains, and starts `unbounded-agent-reprovision.service`, whose hidden
+  `isolation-reprovision` command runs the existing reset (order unchanged),
+  then the target mode's bootstrap stage plan, and is retried by systemd and run
+  again at boot until it finishes. The daemon bootstrap installs reports the
+  operation once the applied config is in the target mode and the Node is Ready.
+- *Gaps.* A reprovision whose bootstrap never succeeds leaves the operation
+  `InProgress` (no daemon is left to fail it). A metalman-attested host
+  reprovisions with the applied config's bootstrap token, not a new attestation.
+  The `none` target's full preflight runs only after the reset. Container to
+  nspawn in place needs `systemd-container` already installed. The drain needs
+  `create` on `pods/eviction` for the daemon group, which the shipped ClusterRole
+  does not grant (RBAC was deliberately not widened). Everything is verified
+  against fakes and stubbed hosts only.
 
 ## 11. Work packages
 

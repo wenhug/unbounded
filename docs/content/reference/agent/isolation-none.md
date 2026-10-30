@@ -16,7 +16,8 @@ bootstrap, soft reboot, upgrade, reset, `exec` and `logs`. It has been exercised
 with unit tests and the shared backend conformance suite against stubbed systemd
 and containerd, not yet against a real host, so treat it as experimental until
 your release notes say otherwise. Moving a host to or from `none` is a
-reprovision; `IsolationMigrate` between modes is not wired to host operations.
+reprovision (see [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}})),
+which is wired but has not run on a real host.
 {{< /callout >}}
 
 ## Requirements

@@ -69,7 +69,8 @@ kubectl unbounded machine manual-bootstrap my-node --site mysite \
 
 Changing `spec.isolation` on a running Machine does not move the node. To switch
 a live host, run an `IsolationMigrate` operation; see
-[Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
+[Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}),
+which also lists the extra cluster permission the drain needs.
 
 ## Operations by mode
 
