@@ -253,7 +253,7 @@ func ResumeInPlace(ctx context.Context, s InPlaceSpec, at Step) (Result, error) 
 		}
 
 		return st.finish(ctx)
-	case StepPreparing, StepLegacyDraining:
+	case StepPreparing:
 		return st.rollbackInterrupted(ctx, nil)
 	case StepStoppingSource, StepStartingTarget:
 		st.sourceStopped, st.targetStarted = true, at == StepStartingTarget

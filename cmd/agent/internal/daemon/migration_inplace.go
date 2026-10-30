@@ -254,9 +254,7 @@ func (m *inPlaceMigration) waitReady(ctx context.Context) error {
 
 // conclude turns the outcome of a run or a resume into the journal's terminal
 // state.
-func (m *inPlaceMigration) conclude(ctx context.Context, res migrate.Result, runErr error) error {
-	ctx = context.WithoutCancel(ctx)
-
+func (m *inPlaceMigration) conclude(_ context.Context, res migrate.Result, runErr error) error {
 	switch {
 	case runErr == nil, res.Target != nil:
 		// The node runs in the target mode. A cleanup error leaves the journal

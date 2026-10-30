@@ -450,10 +450,6 @@ func TestMigrateInPlace_ResumeAtEveryStep(t *testing.T) {
 			target: []string{"destroy kube2"}, final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
 		},
 		{
-			step: migrate.StepLegacyDraining, wantErr: "interrupted",
-			target: []string{"destroy kube2"}, final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
-		},
-		{
 			step: migrate.StepStoppingSource, wantErr: "interrupted",
 			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"},
 			final: migrate.StepRolledBack, wantConfig: []string{"kube1"},
@@ -719,16 +715,6 @@ func TestResolveReprovision(t *testing.T) {
 		require.NoError(t, os.MkdirAll(reprovisionDir(), 0o700))
 	}
 
-	t.Run("interrupted before the reset is undone", func(t *testing.T) {
-		h := newMigHarness(t, isolation.ModeNSpawn)
-		stage(h, migrate.StepLegacyDraining)
-
-		j, _ := reprovisionJournalFor().Load() //nolint:errcheck // staged above
-		err := resolveJournal(context.Background(), discardLogger(), h.env(), j)
-		require.ErrorIs(t, err, migrate.ErrInterrupted)
-		assert.NoDirExists(t, reprovisionDir())
-	})
-
 	t.Run("still in progress until the target mode is applied", func(t *testing.T) {
 		h := newMigHarness(t, isolation.ModeNSpawn)
 		stage(h, migrate.StepBootstrapping)
@@ -753,7 +739,6 @@ func TestResolveReprovision(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, migrate.StepBootstrapped, got.Step)
 	})
-
 }
 
 func TestRenderReprovisionUnit(t *testing.T) {

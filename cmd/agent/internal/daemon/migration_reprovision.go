@@ -219,16 +219,11 @@ func removeReprovisionFiles(log *slog.Logger) {
 	}
 }
 
-// resolveReprovision is resolveJournal for a reprovision. A journal still at the
-// legacy draining step means the host was not reset, so the handoff is undone. After it, the handoff is in
-// charge: the outcome is success once the applied config records the target
-// mode, and still in progress until then.
+// resolveReprovision is resolveJournal for a reprovision. The
+// handoff is in charge: the outcome is success once the applied config records
+// the target mode, and still in progress until then.
 func resolveReprovision(_ context.Context, log *slog.Logger, _ migrationEnv, j migrate.Journal) error {
 	switch j.Step {
-	case migrate.StepLegacyDraining:
-		removeReprovisionFiles(log)
-
-		return fmt.Errorf("%w before the host was reset; the %s node was not changed", migrate.ErrInterrupted, j.From)
 	case migrate.StepReprovisioning, migrate.StepBootstrapping:
 		if !appliedInMode(log, j.To) {
 			return ErrMigrationHandedOff

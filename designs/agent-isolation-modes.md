@@ -269,7 +269,7 @@ Everything runs directly on the host.
   a documented difference for eBPF CNIs such as Cilium.
 - Exec: runs on the host as the unit's environment. Logs: `journalctl` for the
   agent-owned units.
-- Upgrade: drain, stop units, flip `current`, start units, wait for kubelet
+- Upgrade: stop units, flip `current`, start units, wait for kubelet
   Ready, flip back automatically on failure. The node is briefly down.
 
 **Implementation status (WP1, none end to end).** Implemented and registered:
@@ -444,7 +444,7 @@ builds no Kubernetes client for it).
   `CheckContainerBackend`); download is the repave's override resolution and
   archive staging; prepare runs in the alternate slot (the container adapter
   uses `Node.Prepare`, whose `Node.Activate` is the tail of `Node.Upgrade`
-  factored out, so repave and migration share it); there is no drain step; the network cleanup is
+  factored out, so repave and migration share it); the network cleanup is
   `reset.CleanupNetwork`; the target persists the applied config under the
   alternate slot with `Isolation` set; rollback removes the target's record and
   rewrites the source's; readiness is the repave's local kubelet check
@@ -472,9 +472,7 @@ builds no Kubernetes client for it).
   `InProgress` (no daemon is left to fail it). A metalman-attested host
   reprovisions with the applied config's bootstrap token, not a new attestation.
   The `none` target's full preflight runs only after the reset. Container to
-  nspawn in place needs `systemd-container` already installed. Journals
-  written by an earlier agent at a `draining` step are rolled back like
-  `preparing`. Everything is verified
+  nspawn in place needs `systemd-container` already installed. Everything is verified
   against fakes and stubbed hosts only.
 
 ## 11. Work packages

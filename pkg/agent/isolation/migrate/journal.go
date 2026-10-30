@@ -19,11 +19,6 @@ import (
 // JournalVersion is the schema version of a Journal.
 const JournalVersion = 1
 
-// StepLegacyDraining is the step an earlier agent wrote before it drained the
-// node. Nothing writes it now; a journal that carries it is resolved as if the
-// migration had not started changing the host.
-const StepLegacyDraining Step = "draining"
-
 // StepReprovisioning is the step of a reprovision migration whose reset and
 // bootstrap are carried out by the handoff command; the daemon that started the
 // migration is gone by then.

@@ -98,10 +98,6 @@ func TestResumeInPlace(t *testing.T) {
 			target: []string{"destroy kube2"},
 		},
 		{
-			name: "legacy draining removes the target and leaves the source", at: StepLegacyDraining, wantErr: ErrInterrupted,
-			target: []string{"destroy kube2"},
-		},
-		{
 			name: "stopping source restarts it", at: StepStoppingSource, wantErr: ErrInterrupted, rolledBack: true,
 			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"},
 		},
@@ -259,12 +255,12 @@ func TestJournalLoadToleratesLegacyFields(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "journal.json")
 	legacy := `{"version":1,"operation":"op-1","strategy":"inPlace","from":"nspawn","to":"container",` +
-		`"sourceSlot":"kube1","targetSlot":"kube2","step":"draining","cordoned":true,` +
+		`"sourceSlot":"kube1","targetSlot":"kube2","step":"preparing","cordoned":true,` +
 		`"startedAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","targetStartedAt":"2026-01-01T00:00:00Z"}`
 	require.NoError(t, os.WriteFile(path, []byte(legacy), 0o600))
 
 	j, err := JournalStore{Path: path}.Load()
 	require.NoError(t, err)
-	require.Equal(t, StepLegacyDraining, j.Step)
+	require.Equal(t, StepPreparing, j.Step)
 	require.False(t, j.Terminal())
 }

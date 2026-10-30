@@ -133,7 +133,7 @@ func TestReprovisionAlreadyFinishedDoesNothing(t *testing.T) {
 }
 
 func TestReprovisionRefusesAJournalItDoesNotRunFrom(t *testing.T) {
-	for _, step := range []migrate.Step{migrate.StepLegacyDraining, migrate.StepReady, migrate.StepRolledBack} {
+	for _, step := range []migrate.Step{migrate.StepReady, migrate.StepRolledBack} {
 		h := newReprovisionHarness(t, step)
 
 		require.ErrorContains(t, h.runner.run(t.Context(), h.store), "does not run from")
