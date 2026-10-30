@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/daemon"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/internal/fsutil"
@@ -64,14 +65,6 @@ func (p *nonePlan) persistApplied(log *slog.Logger, cfg *config.AgentConfig) pha
 
 	return daemon.PersistAppliedConfig(log, noneops.Slot, cfg)
 }
-
-type funcTask struct {
-	name string
-	do   func(context.Context) error
-}
-
-func (t funcTask) Name() string                 { return t.name }
-func (t funcTask) Do(ctx context.Context) error { return t.do(ctx) }
 
 func (nonePlan) EnsureHostClean(ctx context.Context, s *agentStages) error {
 	return host.EnsureNoExistingDeploymentFor(ctx, s.log, isolation.ModeNone)
@@ -148,7 +141,7 @@ func (p *nonePlan) PrepareNodeRoot(ctx context.Context, s *agentStages) error {
 
 	if err := phases.Serial(s.log,
 		p.downloadArchives(s),
-		funcTask{"install-none-node", p.node.Provision},
+		hostnode.Func("install-none-node", p.node.Provision),
 	).Do(ctx); err != nil {
 		return err
 	}
@@ -172,13 +165,13 @@ func (p *nonePlan) EnsureNodeStarted(ctx context.Context, s *agentStages) error 
 	var containerdChanged, kubeletChanged bool
 
 	tasks := []phases.Task{
-		funcTask{"configure-none-node", func(ctx context.Context) (err error) {
+		hostnode.Func("configure-none-node", func(ctx context.Context) (err error) {
 			containerdChanged, kubeletChanged, err = p.node.Configure(ctx)
 			return err
-		}},
-		funcTask{"start-none-node", func(ctx context.Context) error {
+		}),
+		hostnode.Func("start-none-node", func(ctx context.Context) error {
 			return p.node.Start(ctx, wasRunning, containerdChanged, kubeletChanged)
-		}},
+		}),
 	}
 
 	if !wasRunning {

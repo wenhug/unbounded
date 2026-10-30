@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/internal/provision"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/phases"
@@ -30,7 +31,7 @@ var attestRecordPath = func() string { return filepath.Join(goalstates.AgentConf
 // PersistAttestConfig returns a task that records the attestation settings the
 // host was bootstrapped with. It does nothing when attest is nil or has no URL.
 func PersistAttestConfig(log *slog.Logger, attest *provision.AgentAttestConfig) phases.Task {
-	return lifecycleTask{name: "persist-attest-config", run: func(context.Context) error {
+	return hostnode.Func("persist-attest-config", func(context.Context) error {
 		if attest == nil || attest.URL == "" {
 			return nil
 		}
@@ -48,7 +49,7 @@ func PersistAttestConfig(log *slog.Logger, attest *provision.AgentAttestConfig) 
 		log.Info("attestation settings persisted", "path", path)
 
 		return nil
-	}}
+	})
 }
 
 // readAttestRecord returns the recorded attestation settings, or nil when the

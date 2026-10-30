@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/containerops"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/internal/executil"
@@ -46,18 +47,10 @@ func ResetAgentForReprovision(log *slog.Logger) phases.Task {
 	return ownedReset(log, installstate.DefaultStore(), mode, phases.Serial(log, StopDaemon(log), resetNodeResourcesFor(log, mode)))
 }
 
-type lifecycleTask struct {
-	name string
-	run  func(context.Context) error
-}
-
-func (t lifecycleTask) Name() string                 { return t.name }
-func (t lifecycleTask) Do(ctx context.Context) error { return t.run(ctx) }
-
 func ownedReset(log *slog.Logger, store *installstate.Store, mode isolation.Mode, inner phases.Task) phases.Task {
 	// The composed name keeps the underlying cleanup sequence visible to callers
 	// and to the reset ordering test.
-	return lifecycleTask{name: "owned-reset(" + inner.Name() + ")", run: func(ctx context.Context) error {
+	return hostnode.Func("owned-reset("+inner.Name()+")", func(ctx context.Context) error {
 		lock, err := store.AcquireLock()
 		if err != nil {
 			return err
@@ -70,7 +63,7 @@ func ownedReset(log *slog.Logger, store *installstate.Store, mode isolation.Mode
 		}()
 
 		return resetUnderLock(ctx, log, store, mode, inner)
-	}}
+	})
 }
 
 // recordForTeardown returns the record reset should mark as resetting.

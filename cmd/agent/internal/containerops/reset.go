@@ -82,19 +82,11 @@ func (t *Teardown) Present() bool {
 // Present is the package level form of Teardown.Present for the real host.
 func Present() bool { return (&Teardown{}).Present() }
 
-type task struct {
-	name string
-	do   func(context.Context) error
-}
-
-func (t task) Name() string                 { return t.name }
-func (t task) Do(ctx context.Context) error { return t.do(ctx) }
-
 // Stop returns the task that stops both slots' containers. A slot that is not
 // there is skipped; the node stack inside is stopped first when the container
 // runs.
 func (t *Teardown) Stop() phases.Task {
-	return task{"stop-container-node", func(ctx context.Context) error {
+	return hostnode.Func("stop-container-node", func(ctx context.Context) error {
 		var errs []error
 
 		for _, slot := range slots {
@@ -108,7 +100,7 @@ func (t *Teardown) Stop() phases.Task {
 		}
 
 		return errors.Join(errs...)
-	}}
+	})
 }
 
 func (t *Teardown) slotPresent(slot string) bool { return t.node(slot).Backend().SlotExists(slot) }
@@ -116,13 +108,13 @@ func (t *Teardown) slotPresent(slot string) bool { return t.node(slot).Backend()
 // RemoveConfig returns the task that removes the configuration the agent wrote
 // outside the slots: the host kernel modules list (written by bootstrap).
 func (t *Teardown) RemoveConfig() phases.Task {
-	return task{"remove-container-config", func(context.Context) error {
+	return hostnode.Func("remove-container-config", func(context.Context) error {
 		if err := os.Remove(t.path(noneops.ModulesLoadPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 
 		return nil
-	}}
+	})
 }
 
 // Destroy returns the task that removes the nodes: for each slot the unit,
@@ -130,7 +122,7 @@ func (t *Teardown) RemoveConfig() phases.Task {
 // the host (pod mounts, kubelet state, CNI binaries and configuration), the
 // layout directory and the host runtime.
 func (t *Teardown) Destroy() phases.Task {
-	return task{"remove-container-node", func(ctx context.Context) error {
+	return hostnode.Func("remove-container-node", func(ctx context.Context) error {
 		var errs []error
 
 		// Pod volumes propagate to the host under /var/lib/kubelet, so unmount
@@ -162,7 +154,7 @@ func (t *Teardown) Destroy() phases.Task {
 		}
 
 		return errors.Join(errs...)
-	}}
+	})
 }
 
 // removeLayout removes the layout directory (slots and bundles) and the host

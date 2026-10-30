@@ -19,6 +19,7 @@ import (
 	"github.com/google/renameio/v2"
 	"k8s.io/client-go/rest"
 
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/internal/fsutil"
 	"github.com/Azure/unbounded/internal/provision"
@@ -330,7 +331,7 @@ func AbandonReprovision(ctx context.Context, log *slog.Logger, dir string) error
 // unit and a copy of the bootstrap token on the host. The handoff's own reset
 // does not include it, because it runs from that directory.
 func RemoveReprovisionHandoff(log *slog.Logger) phases.Task {
-	return lifecycleTask{name: "remove-reprovision-handoff", run: func(ctx context.Context) error {
+	return hostnode.Func("remove-reprovision-handoff", func(ctx context.Context) error {
 		if _, err := os.Lstat(reprovisionUnitPath()); err == nil {
 			// A handoff that is still running must not outlive its files.
 			if err := systemctlForMigration(ctx, log, "stop", "--no-block", ReprovisionUnit); err != nil {
@@ -341,7 +342,7 @@ func RemoveReprovisionHandoff(log *slog.Logger) phases.Task {
 		removeReprovisionFiles(log)
 
 		return nil
-	}}
+	})
 }
 
 // removeReprovisionUnit disables and removes the unit and reloads systemd.

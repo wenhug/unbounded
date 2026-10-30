@@ -341,14 +341,6 @@ func (n *Node) Running(ctx context.Context) (bool, error) {
 	return hostnode.Running(ctx, n.backend, n.root())
 }
 
-type funcTask struct {
-	name string
-	do   func(context.Context) error
-}
-
-func (t funcTask) Name() string                 { return t.name }
-func (t funcTask) Do(ctx context.Context) error { return t.do(ctx) }
-
 // Start brings the node up: starts the container, waits for systemd inside it,
 // then starts containerd and kubelet and waits for kubelet to bootstrap. When
 // the container was already running and its configuration changed, the changed
@@ -361,15 +353,15 @@ func (n *Node) Start(ctx context.Context, wasRunning, containerdChanged, kubelet
 	gs := n.gs.NodeStart
 
 	return phases.Serial(n.p.Log,
-		funcTask{"start-container", func(ctx context.Context) error { return n.backend.Start(ctx, n.root()) }},
-		funcTask{"wait-container-ready", n.waitReady},
-		funcTask{"wait-localdns", n.waitLocalDNS},
+		hostnode.Func("start-container", func(ctx context.Context) error { return n.backend.Start(ctx, n.root()) }),
+		hostnode.Func("wait-container-ready", n.waitReady),
+		hostnode.Func("wait-localdns", n.waitLocalDNS),
 		nodestart.StartContainerd(n.p.Log, gs),
 		nodestart.ImportContainerImages(n.p.Log, gs),
 		nodestart.StartKubelet(n.p.Log, gs),
-		funcTask{"restart-reconfigured-services", func(ctx context.Context) error {
+		hostnode.Func("restart-reconfigured-services", func(ctx context.Context) error {
 			return n.restartChanged(ctx, wasRunning, containerdChanged, kubeletChanged)
-		}},
+		}),
 		nodestart.WaitForKubeletBootstrapOnHost(n.p.Log, gs),
 	).Do(ctx)
 }
@@ -473,9 +465,9 @@ func (n *Node) Restart(ctx context.Context) error {
 	}
 
 	return phases.Serial(n.p.Log,
-		funcTask{"restart-container", func(ctx context.Context) error { return n.backend.Restart(ctx, n.root()) }},
-		funcTask{"wait-container-ready", n.waitReady},
-		funcTask{"wait-localdns", n.waitLocalDNS},
+		hostnode.Func("restart-container", func(ctx context.Context) error { return n.backend.Restart(ctx, n.root()) }),
+		hostnode.Func("wait-container-ready", n.waitReady),
+		hostnode.Func("wait-localdns", n.waitLocalDNS),
 		nodestart.WaitForKubeletOnHost(n.p.Log, n.gs.NodeStart, goalstates.SystemdUnitKubelet),
 	).Do(ctx)
 }
@@ -498,10 +490,10 @@ func (n *Node) Resume(ctx context.Context) error {
 	}
 
 	return phases.Serial(n.p.Log,
-		funcTask{"setup-localdns-network", n.setupNetwork},
-		funcTask{"start-container", func(ctx context.Context) error { return n.backend.Start(ctx, n.root()) }},
-		funcTask{"wait-container-ready", n.waitReady},
-		funcTask{"wait-localdns", n.waitLocalDNS},
+		hostnode.Func("setup-localdns-network", n.setupNetwork),
+		hostnode.Func("start-container", func(ctx context.Context) error { return n.backend.Start(ctx, n.root()) }),
+		hostnode.Func("wait-container-ready", n.waitReady),
+		hostnode.Func("wait-localdns", n.waitLocalDNS),
 		nodestart.WaitForKubeletOnHost(n.p.Log, n.gs.NodeStart, goalstates.SystemdUnitKubelet),
 	).Do(ctx)
 }

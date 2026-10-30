@@ -78,20 +78,12 @@ func (t *Teardown) Present() bool {
 	return false
 }
 
-type task struct {
-	name string
-	do   func(context.Context) error
-}
-
-func (t task) Name() string                 { return t.name }
-func (t task) Do(ctx context.Context) error { return t.do(ctx) }
-
 // Present is the package level form of Teardown.Present for the real host.
 func Present() bool { return (&Teardown{}).Present() }
 
 // Stop returns the task that stops the node stack's units.
 func (t *Teardown) Stop() phases.Task {
-	return task{"stop-none-node", func(ctx context.Context) error {
+	return hostnode.Func("stop-none-node", func(ctx context.Context) error {
 		b := t.backend()
 
 		var errs []error
@@ -109,13 +101,13 @@ func (t *Teardown) Stop() phases.Task {
 		}
 
 		return errors.Join(errs...)
-	}}
+	})
 }
 
 // RemoveConfig returns the task that removes the configuration the agent wrote
 // at the shared host paths.
 func (t *Teardown) RemoveConfig() phases.Task {
-	return task{"remove-none-config", func(context.Context) error {
+	return hostnode.Func("remove-none-config", func(context.Context) error {
 		var errs []error
 
 		files := []string{
@@ -149,7 +141,7 @@ func (t *Teardown) RemoveConfig() phases.Task {
 		}
 
 		return errors.Join(errs...)
-	}}
+	})
 }
 
 func (t *Teardown) removeGantryHosts() error {
@@ -175,13 +167,13 @@ func (t *Teardown) removeGantryHosts() error {
 // through the backend (which also ends container shims), then the node's data
 // directories after unmounting whatever pods left mounted below them.
 func (t *Teardown) Destroy() phases.Task {
-	return task{"remove-none-node", func(ctx context.Context) error {
+	return hostnode.Func("remove-none-node", func(ctx context.Context) error {
 		errs := []error{t.backend().Destroy(ctx, none.Root{Layout: t.Layout})}
 
 		errs = append(errs, t.removeData(ctx))
 
 		return errors.Join(errs...)
-	}}
+	})
 }
 
 // dataDirs are node state with no meaning once the node is gone. In the nspawn

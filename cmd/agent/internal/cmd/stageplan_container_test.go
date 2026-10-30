@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/containerops"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/internal/provision"
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
@@ -100,13 +101,13 @@ func newContainerPlan(t *testing.T, running bool) (*containerPlan, *agentStages,
 	p := &containerPlan{
 		sync: func(...string) error { return nil },
 		archives: func(*slog.Logger, *goalstates.ContainerImageArchiveStaging) phases.Task {
-			return funcTask{"archives", func(context.Context) error { return nil }}
+			return hostnode.Func("archives", func(context.Context) error { return nil })
 		},
 		persist: func(_ *slog.Logger, slot string, _ *config.AgentConfig) phases.Task {
-			return funcTask{"persist-applied-config", func(context.Context) error {
+			return hostnode.Func("persist-applied-config", func(context.Context) error {
 				persisted = append(persisted, slot)
 				return nil
-			}}
+			})
 		},
 	}
 	p.node = containerops.New(containerops.Params{

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Azure/unbounded/cmd/agent/internal/containerops"
 	"github.com/Azure/unbounded/cmd/agent/internal/daemon"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/internal/fsutil"
@@ -147,10 +148,10 @@ func (p *containerPlan) PrepareNodeRoot(ctx context.Context, s *agentStages) err
 
 	if err := phases.Serial(s.log,
 		p.downloadArchives(s),
-		funcTask{"prepare-container-node", func(ctx context.Context) error {
+		hostnode.Func("prepare-container-node", func(ctx context.Context) error {
 			_, err := p.node.Prepare(ctx)
 			return err
-		}},
+		}),
 	).Do(ctx); err != nil {
 		return err
 	}
@@ -174,13 +175,13 @@ func (p *containerPlan) EnsureNodeStarted(ctx context.Context, s *agentStages) e
 	var containerdChanged, kubeletChanged bool
 
 	tasks := []phases.Task{
-		funcTask{"configure-container-node", func(ctx context.Context) (err error) {
+		hostnode.Func("configure-container-node", func(ctx context.Context) (err error) {
 			containerdChanged, kubeletChanged, err = p.node.Configure(ctx)
 			return err
-		}},
-		funcTask{"start-container-node", func(ctx context.Context) error {
+		}),
+		hostnode.Func("start-container-node", func(ctx context.Context) error {
 			return p.node.Start(ctx, wasRunning, containerdChanged, kubeletChanged)
-		}},
+		}),
 	}
 
 	if !wasRunning {
