@@ -18,6 +18,7 @@ import (
 	"github.com/Azure/unbounded/internal/provision"
 	daemon "github.com/Azure/unbounded/pkg/agent/daemon"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestart"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestop"
@@ -30,6 +31,25 @@ import (
 type ActiveMachine struct {
 	Name   string
 	Config *provision.AgentConfig
+	// Mode is the isolation mode the machine was applied with. Configs written
+	// before the setting existed are nspawn.
+	Mode isolation.Mode
+}
+
+// activeMode resolves the isolation mode recorded in an applied config and
+// confirms this agent has a backend for it, so an agent that does not know a
+// mode fails with a clear error instead of operating on the machine as nspawn.
+func activeMode(cfg *provision.AgentConfig) (isolation.Mode, error) {
+	mode, err := cfg.IsolationMode()
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := isolation.New(mode, nil); err != nil {
+		return "", err
+	}
+
+	return mode, nil
 }
 
 // nodeOperator performs host-local nspawn node operations for the daemon.
@@ -129,7 +149,12 @@ func (nspawnNodeOperator) FindActiveMachine(log *slog.Logger) (*ActiveMachine, e
 			return nil, fmt.Errorf("backfill applied config node name %s: %w", path, err)
 		}
 
-		return &ActiveMachine{Name: name, Config: &cfg}, nil
+		mode, err := activeMode(&cfg)
+		if err != nil {
+			return nil, fmt.Errorf("applied config %s: %w", path, err)
+		}
+
+		return &ActiveMachine{Name: name, Config: &cfg, Mode: mode}, nil
 	}
 
 	return nil, fmt.Errorf("no applied config found in %s", goalstates.AgentConfigDir)

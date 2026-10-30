@@ -14,6 +14,7 @@ import (
 
 	"github.com/Azure/unbounded/internal/provision"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 )
 
 func baseConfig() *provision.AgentConfig {
@@ -175,4 +176,48 @@ func TestFindActiveMachine_Kube1(t *testing.T) {
 	_ = origPath // Note: nspawnNodeOperator uses the const, so this test
 	// validates the serialization/deserialization roundtrip rather than
 	// the full active-machine discovery flow (which requires root filesystem access).
+}
+
+// ---------------------------------------------------------------------------
+// Isolation mode of the active machine
+// ---------------------------------------------------------------------------
+
+func Test_activeMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		isolation string
+		want      isolation.Mode
+		wantErr   string
+	}{
+		{name: "legacy config without the field is nspawn", want: isolation.ModeNSpawn},
+		{name: "explicit nspawn", isolation: "nspawn", want: isolation.ModeNSpawn},
+		{name: "unknown mode is rejected", isolation: "microvm", wantErr: "unsupported isolation mode"},
+		// No backend is registered for this mode in the daemon yet, so the
+		// agent must refuse rather than operate on it as nspawn.
+		{name: "known mode without a backend is rejected", isolation: "none", wantErr: "no registered backend"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.Isolation = tt.isolation
+
+			got, err := activeMode(cfg)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func Test_hasDrift_IsolationChangeDoesNotTriggerRepave(t *testing.T) {
+	applied := baseConfig()
+	desired := baseConfig()
+	desired.Isolation = "container"
+	// A mode change moves nothing until an IsolationMigrate operation runs.
+	assert.False(t, hasDrift(applied, desired))
 }
