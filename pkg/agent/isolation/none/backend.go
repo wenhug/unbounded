@@ -56,6 +56,18 @@ type Backend struct {
 	// version starts on the configuration it was running with. A failure is
 	// reported with the rollback and does not stop it.
 	BeforeRollbackStart func(ctx context.Context) error
+
+	// BeforeStart runs at the start of Start and Restart, before any unit is
+	// touched. The agent uses it to prepare GPU support, which depends on the
+	// devices and driver present at that start. A failure stops the start.
+	BeforeStart func(ctx context.Context) error
+	// HostRoot prefixes the host paths grants name. Empty is the real host;
+	// tests point it at a directory tree.
+	HostRoot string
+	// GPUHostPaths are host paths that must exist when a grant asks for NVIDIA
+	// devices, because the stack cannot run GPU workloads without them. The
+	// agent sets the NVIDIA Container Toolkit's tools; empty checks nothing.
+	GPUHostPaths []string
 	// CheckPaths replaces Requirements().WritablePaths in Preflight when set.
 	// Tests and offline tooling use it to probe a temporary tree instead of the
 	// real /etc, /opt and /var.
@@ -227,6 +239,12 @@ func root(version string) isolation.NodeRoot {
 // artifacts themselves are placed in the returned layout's bin directory by the
 // installers; the current link is not touched until Activate.
 func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.NodeRoot, error) {
+	// Refuse a grant the host-native stack cannot honor before anything is
+	// written, so a failed Prepare leaves the node as it was.
+	if err := b.checkGrants(n.Grants); err != nil {
+		return nil, fmt.Errorf("grants: %w", err)
+	}
+
 	if _, err := b.Layout.Ensure(n.Slot); err != nil {
 		return nil, err
 	}
@@ -272,6 +290,10 @@ func (b *Backend) Activate(r isolation.NodeRoot) (string, error) {
 // Start starts the stack in order, running the AfterStart gate of each unit
 // before the next one starts.
 func (b *Backend) Start(ctx context.Context, _ isolation.NodeRoot) error {
+	if err := b.beforeStart(ctx); err != nil {
+		return err
+	}
+
 	for _, u := range b.stack() {
 		if err := b.systemctl(ctx, "enable", "--now", u); err != nil {
 			return fmt.Errorf("start %s: %w", u, err)
@@ -304,6 +326,10 @@ func (b *Backend) Stop(ctx context.Context, _ isolation.NodeRoot) error {
 
 // Restart restarts the stack in start order. The host is never rebooted.
 func (b *Backend) Restart(ctx context.Context, _ isolation.NodeRoot) error {
+	if err := b.beforeStart(ctx); err != nil {
+		return err
+	}
+
 	for _, u := range b.stack() {
 		if err := b.systemctl(ctx, "restart", u); err != nil {
 			return fmt.Errorf("restart %s: %w", u, err)
@@ -543,6 +569,18 @@ func (b *Backend) Upgrade(ctx context.Context, r isolation.NodeRoot, waitReady f
 	}
 
 	return fmt.Errorf("%w (rolled back to %s)", err, prev)
+}
+
+func (b *Backend) beforeStart(ctx context.Context) error {
+	if b.BeforeStart == nil {
+		return nil
+	}
+
+	if err := b.BeforeStart(ctx); err != nil {
+		return fmt.Errorf("prepare host before start: %w", err)
+	}
+
+	return nil
 }
 
 func (b *Backend) beforeUpgradeStart(ctx context.Context) error {
