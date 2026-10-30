@@ -90,6 +90,21 @@ const (
 	// configuration is assigned.
 	MachineConditionConfigurationPending = "ConfigurationPending"
 
+	// MachineConditionIsolationSupported reports whether the Machine's
+	// requested non-default isolation mode can be emitted for its pinned
+	// agent version. It is False (reasons AgentVersionTooOld or
+	// AgentVersionInvalid) when the mode is withheld from generated agent
+	// config, True when supported, and absent when spec.isolation is empty
+	// or nspawn.
+	MachineConditionIsolationSupported = "IsolationSupported"
+
+	// MachineConditionIsolationDrift is True when spec.isolation differs
+	// from the mode the agent reports as applied
+	// (status.observedIsolation). Nothing moves on drift; use an
+	// IsolationMigrate MachineOperation. False when they match, absent when
+	// the applied mode has not been reported.
+	MachineConditionIsolationDrift = "IsolationDrift"
+
 	// MachineConditionRepavePending indicates that the Machine's desired
 	// configuration version has not yet been applied to the running Node.
 	// For OnDelete updates this remains True until the operator deletes
@@ -731,6 +746,14 @@ type MachineStatus struct {
 	// It does not override desired replacement image settings.
 	// +optional
 	ObservedProvisioningFormat ProvisioningFormat `json:"observedProvisioningFormat,omitempty"`
+
+	// ObservedIsolation is the isolation mode the agent reports as applied
+	// on the host. Empty means the agent has not reported one. It is
+	// compared with spec.isolation (empty meaning nspawn) to report drift.
+	// +kubebuilder:validation:Enum=nspawn;none;container
+	// +optional
+	ObservedIsolation IsolationMode `json:"observedIsolation,omitempty"`
+
 	// Phase is the current phase of the machine. Intended for human
 	// consumption; follows the state machine rather than driving it.
 	Phase MachinePhase `json:"phase,omitempty"`

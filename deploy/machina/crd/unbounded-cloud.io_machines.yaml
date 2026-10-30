@@ -1049,6 +1049,16 @@ spec:
               message:
                 description: Message provides additional status information.
                 type: string
+              observedIsolation:
+                description: |-
+                  ObservedIsolation is the isolation mode the agent reports as applied
+                  on the host. Empty means the agent has not reported one. It is
+                  compared with spec.isolation (empty meaning nspawn) to report drift.
+                enum:
+                - nspawn
+                - none
+                - container
+                type: string
               observedProvisioningFormat:
                 description: |-
                   ObservedProvisioningFormat is the agent's explicit installation observation.
