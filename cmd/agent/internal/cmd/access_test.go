@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 )
 
 // logsBackend wraps FakeBackend to return fixed log content and record options.
@@ -161,4 +162,16 @@ func TestExecLogsRegistered(t *testing.T) {
 	require.NotNil(t, newCmdLogs(cmdCtx).Flags().Lookup("follow"))
 	require.NotNil(t, newCmdLogs(cmdCtx).Flags().Lookup("lines"))
 	require.NotNil(t, newCmdLogs(cmdCtx).Flags().Lookup("unit"))
+}
+
+// The none backend must come from the registry with the production wiring.
+func TestBackendForModeNoneIsRegistryBuilt(t *testing.T) {
+	t.Parallel()
+
+	b, err := backendForMode(isolation.ModeNone, slog.Default())
+	require.NoError(t, err)
+
+	nb, ok := b.(*none.Backend)
+	require.True(t, ok)
+	require.Equal(t, "/proc", nb.Proc)
 }

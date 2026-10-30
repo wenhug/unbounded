@@ -48,7 +48,6 @@ func (nspawnPlan) ResolveInputs(ctx context.Context, s *agentStages) error {
 	return nil
 }
 
-
 func (nspawnPlan) PrepareHost(ctx context.Context, s *agentStages) error {
 	if err := hostroot.Prepare(ctx, s.log, "bin", "libexec"); err != nil {
 		return err
@@ -124,4 +123,3 @@ func (nspawnPlan) EnsureNodeStarted(ctx context.Context, s *agentStages) error {
 	// disk before this stage reports success.
 	return fsutil.SyncFilesystems(s.gs.RootFS.Root().Path("/"), goalstates.AgentConfigDir, goalstates.SystemdSystemDir)
 }
-

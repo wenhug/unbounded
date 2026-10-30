@@ -29,18 +29,23 @@ type nodeAccess struct {
 // accessResolver finds the active node. It is a seam for tests.
 type accessResolver func(*slog.Logger) (*nodeAccess, error)
 
-// backendForMode builds the backend for a mode. The none backend is not in the
-// isolation registry yet, so it is constructed here; once it is registered this
-// reduces to isolation.New.
+// backendForMode builds the backend for a mode through the isolation registry.
+// The registry hands each factory the deps it understands: the nspawn backend
+// takes its logger, the none backend its logger and the host's /proc.
 func backendForMode(mode isolation.Mode, log *slog.Logger) (isolation.Backend, error) {
-	if mode == isolation.ModeNone {
-		return &none.Backend{Log: log}, nil
+	var deps any
+
+	switch mode {
+	case isolation.ModeNone:
+		deps = &none.Backend{Log: log, Proc: "/proc"}
+	default:
+		deps = &nspawn.Backend{Log: log}
 	}
 
-	b, err := isolation.New(mode, &nspawn.Backend{Log: log})
+	b, err := isolation.New(mode, deps)
 	if err != nil {
-		// Only nspawn and none can run exec and logs from this binary today;
-		// say so clearly rather than leaking the registry wording.
+		// Say plainly which modes this binary cannot serve rather than leaking
+		// the registry wording.
 		return nil, fmt.Errorf("isolation mode %q is not supported by exec and logs: %w", mode, err)
 	}
 

@@ -192,9 +192,11 @@ func Test_activeMode(t *testing.T) {
 		{name: "legacy config without the field is nspawn", want: isolation.ModeNSpawn},
 		{name: "explicit nspawn", isolation: "nspawn", want: isolation.ModeNSpawn},
 		{name: "unknown mode is rejected", isolation: "microvm", wantErr: "unsupported isolation mode"},
-		// No backend is registered for this mode in the daemon yet, so the
-		// agent must refuse rather than operate on it as nspawn.
-		{name: "known mode without a backend is rejected", isolation: "none", wantErr: "no registered backend"},
+		// The none backend is registered now, so the case that used "none" here
+		// uses "container", which still has no registered backend. The agent
+		// must refuse rather than operate on it as nspawn.
+		{name: "known mode without a backend is rejected", isolation: "container", wantErr: "no registered backend"},
+		{name: "none is accepted once its backend is registered", isolation: "none", want: isolation.ModeNone},
 	}
 
 	for _, tt := range tests {

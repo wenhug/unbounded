@@ -54,6 +54,7 @@ func TestStagesDelegateEveryModeDependentStageToThePlan(t *testing.T) {
 	require.Equal(t, []string{"clean", "resolve", "host", "root", "start"}, plan.calls)
 
 	plan.err = errors.New("boom")
+
 	require.ErrorContains(t, s.PrepareHost(ctx), "boom")
 }
 
@@ -80,6 +81,7 @@ func TestPlanResolvesFromConfiguredMode(t *testing.T) {
 
 			_, isNSpawn := p.(nspawnPlan)
 			_, isNone := p.(*nonePlan)
+
 			require.Equal(t, tc.wantNSpwn, isNSpawn)
 			require.Equal(t, tc.wantNone, isNone)
 
@@ -196,8 +198,10 @@ func newNonePlan(t *testing.T, running bool) (*nonePlan, *agentStages, *fakeHost
 	var persisted []string
 
 	p := &nonePlan{
-		sync:     func(...string) error { return nil },
-		archives: func(*slog.Logger, *goalstates.ContainerImageArchiveStaging) phases.Task { return funcTask{"archives", func(context.Context) error { return nil }} },
+		sync: func(...string) error { return nil },
+		archives: func(*slog.Logger, *goalstates.ContainerImageArchiveStaging) phases.Task {
+			return funcTask{"archives", func(context.Context) error { return nil }}
+		},
 		persist: func(_ *slog.Logger, slot string, _ *config.AgentConfig) phases.Task {
 			return funcTask{"persist-applied-config", func(context.Context) error {
 				persisted = append(persisted, slot)

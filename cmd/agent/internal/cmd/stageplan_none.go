@@ -38,7 +38,7 @@ type nonePlan struct {
 	// sync and persist are the host-touching steps; tests replace them.
 	sync     func(paths ...string) error
 	archives func(*slog.Logger, *goalstates.ContainerImageArchiveStaging) phases.Task
-	persist func(log *slog.Logger, slot string, cfg *config.AgentConfig) phases.Task
+	persist  func(log *slog.Logger, slot string, cfg *config.AgentConfig) phases.Task
 }
 
 func (p *nonePlan) syncFS(paths ...string) error {

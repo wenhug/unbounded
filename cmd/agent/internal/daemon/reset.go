@@ -15,10 +15,14 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
+	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/internal/fsutil"
 	"github.com/Azure/unbounded/internal/hostroot"
+	"github.com/Azure/unbounded/pkg/agent/appliedconfig"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 	"github.com/Azure/unbounded/pkg/agent/phases/reset"
 )
@@ -92,7 +96,13 @@ func resetUnderLock(ctx context.Context, log *slog.Logger, store *installstate.S
 		return err
 	}
 
-	return durableReset(ctx, store, inner, teardownSyncPaths(store.Root()), unix.Syncfs)
+	paths := teardownSyncPaths(store.Root())
+	if hostIsNone() {
+		// The node's own directory may be on another filesystem than /etc.
+		paths = append(paths, none.DefaultBase)
+	}
+
+	return durableReset(ctx, store, inner, paths, unix.Syncfs)
 }
 
 // teardownSyncPaths returns the directories whose filesystems a teardown has to
@@ -165,7 +175,49 @@ func durableReset(ctx context.Context, store *installstate.Store, inner phases.T
 	return store.Remove()
 }
 
+// hostIsNone reports whether the host runs, or has traces of, a host-native
+// node, from the applied config or from the node's own units and directory. The
+// second source matters for a reset retried after the applied config is gone.
+// Reading the applied config can fail on a damaged host; reset must still
+// proceed, so any failure falls back to the traces.
+var hostIsNone = func() bool {
+	if applied, err := appliedconfig.Read(); err == nil && applied.Mode == isolation.ModeNone {
+		return true
+	}
+
+	return noneops.Present()
+}
+
+// resetResources builds the reset sequence. The order is the same for every
+// mode: daemon unit, stop, WireGuard keys, config, root, bpffs, network and
+// routes, bootstrap unit, artifacts, systemd reload. Only the node steps differ.
+// For a host-native node the stop, config and root steps are the none
+// teardown's, and there is no per-machine bpffs mount to clean.
 func resetResources(log *slog.Logger) phases.Task {
+	if hostIsNone() {
+		return resetResourcesNone(log, noneTeardown(log))
+	}
+
+	return resetResourcesNSpawn(log)
+}
+
+func resetResourcesNone(log *slog.Logger, td *noneops.Teardown) phases.Task {
+	return phases.Serial(log,
+		RemoveDaemonUnit(log),
+		td.Stop(),
+		reset.RemoveWireGuardKeys(log),
+		td.RemoveConfig(),
+		td.Destroy(),
+		reset.CleanupNetwork(log),
+		// Before the artifacts, so a failure stops the reset while the host is
+		// still recognizably installed.
+		RemoveFirstBootBootstrapUnit(log),
+		RemoveAgentArtifacts(log),
+		reset.ReloadSystemd(log),
+	)
+}
+
+func resetResourcesNSpawn(log *slog.Logger) phases.Task {
 	return phases.Serial(log,
 		RemoveDaemonUnit(log),
 		phases.Parallel(log,

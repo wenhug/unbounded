@@ -73,7 +73,9 @@ func newStagePlan(mode isolation.Mode) (stagePlan, error) {
 	}
 
 	stagePlanMu.RLock()
+
 	factory, ok := stagePlanFactories[mode]
+
 	stagePlanMu.RUnlock()
 
 	if !ok {
