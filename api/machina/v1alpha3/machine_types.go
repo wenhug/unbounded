@@ -131,6 +131,13 @@ type MachineSpec struct {
 	// +optional
 	Agent *AgentSpec `json:"agent,omitempty"`
 
+	// Isolation selects where the node stack (containerd, kubelet, CNI and
+	// CoreDNS) runs on the host. Defaults to nspawn. Changing it on a running
+	// Machine does not move the node; use an IsolationMigrate operation.
+	// +kubebuilder:validation:Enum=nspawn;none;container
+	// +optional
+	Isolation IsolationMode `json:"isolation,omitempty"`
+
 	// Provider identifies the legacy external control provider for this machine.
 	// New callers should use Host.External.Provider or Host.Azure.
 	// +optional
@@ -553,6 +560,19 @@ type KubernetesSpec struct {
 	// +optional
 	BootstrapTokenRef *LocalObjectReference `json:"bootstrapTokenRef,omitempty"`
 }
+
+// IsolationMode names where the node stack runs on a host.
+type IsolationMode string
+
+const (
+	// IsolationNSpawn runs the node stack in a systemd-nspawn machine. It is
+	// the default.
+	IsolationNSpawn IsolationMode = "nspawn"
+	// IsolationNone runs the node stack directly on the host.
+	IsolationNone IsolationMode = "none"
+	// IsolationContainer runs the node stack in a privileged OCI container.
+	IsolationContainer IsolationMode = "container"
+)
 
 // AgentSpec defines settings for the unbounded node agent.
 type AgentSpec struct {

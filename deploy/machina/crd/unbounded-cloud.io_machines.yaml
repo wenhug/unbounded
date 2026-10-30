@@ -579,6 +579,16 @@ spec:
                   rule: '!has(oldSelf.azure) || has(self.azure)'
                 - message: external host ownership is immutable once set
                   rule: '!has(oldSelf.external) || has(self.external)'
+              isolation:
+                description: |-
+                  Isolation selects where the node stack (containerd, kubelet, CNI and
+                  CoreDNS) runs on the host. Defaults to nspawn. Changing it on a running
+                  Machine does not move the node; use an IsolationMigrate operation.
+                enum:
+                - nspawn
+                - none
+                - container
+                type: string
               kubernetes:
                 description: Kubernetes contains Kubernetes-specific configuration.
                 properties:
