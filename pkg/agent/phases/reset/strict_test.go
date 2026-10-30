@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Azure/unbounded/pkg/agent/internal/utilio"
 	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 )
 
@@ -180,9 +181,9 @@ func TestFileCleanupPropagatesSubstantiveFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "child"), []byte("data"), 0o600))
 
 	log := slog.New(slog.DiscardHandler)
-	require.Error(t, removeFileIfExists(log, dir))
-	require.NoError(t, removeAllIfExists(log, dir))
-	require.NoError(t, removeFileIfExists(log, dir))
+	require.Error(t, utilio.RemoveFileIfExists(log, dir))
+	require.NoError(t, utilio.RemoveAllIfExists(log, dir))
+	require.NoError(t, utilio.RemoveFileIfExists(log, dir))
 }
 
 // TestFirstRegisteredMachineInventoriesOnce covers the scan callers use to ask

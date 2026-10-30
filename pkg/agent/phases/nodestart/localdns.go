@@ -28,7 +28,7 @@ type configureLocalDNS struct {
 // stack. It writes the same files as ConfigureLocalDNS except the machine's
 // /etc/resolv.conf, which on a host would be the host's own resolver file.
 func ConfigureLocalDNSOnHost(goalState *goalstates.NodeStart) phases.Task {
-	return &configureLocalDNS{goalState: goalState}
+	return ConfigureLocalDNS(goalState)
 }
 
 // ConfigureLocalDNS refreshes machine-local CoreDNS inputs before each managed start.

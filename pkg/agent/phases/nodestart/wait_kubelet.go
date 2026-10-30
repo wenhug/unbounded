@@ -33,20 +33,22 @@ type waitForKubeletBootstrap struct {
 	exec    execFunc
 }
 
-func (w *waitForKubelet) run(ctx context.Context, args ...string) (string, error) {
-	if w.exec != nil {
-		return w.exec(ctx, w.log, args...)
+// execInNode runs a command in the node stack: through exec when set, in the
+// nspawn machine otherwise.
+func execInNode(ctx context.Context, log *slog.Logger, exec execFunc, machine string, args ...string) (string, error) {
+	if exec != nil {
+		return exec(ctx, log, args...)
 	}
 
-	return nspawn.Exec(ctx, w.log, w.machine, args...)
+	return nspawn.Exec(ctx, log, machine, args...)
+}
+
+func (w *waitForKubelet) run(ctx context.Context, args ...string) (string, error) {
+	return execInNode(ctx, w.log, w.exec, w.machine, args...)
 }
 
 func (w *waitForKubeletBootstrap) run(ctx context.Context, args ...string) (string, error) {
-	if w.exec != nil {
-		return w.exec(ctx, w.log, args...)
-	}
-
-	return nspawn.Exec(ctx, w.log, w.machine, args...)
+	return execInNode(ctx, w.log, w.exec, w.machine, args...)
 }
 
 // WaitForKubeletOnHost is WaitForKubelet for a host-native node stack: it

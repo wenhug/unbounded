@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Azure/unbounded/internal/executil"
+	"github.com/Azure/unbounded/pkg/agent/internal/utilio"
 )
 
 // Runner abstracts the small set of machinectl and systemctl operations the
@@ -442,30 +443,12 @@ func Remove(ctx context.Context, log *slog.Logger, name string) error {
 		return fmt.Errorf("refusing to remove registered machine %s", name)
 	}
 
-	return removeAllIfExists(log, machineDir)
+	return utilio.RemoveAllIfExists(log, machineDir)
 }
 
 // serviceIsActive returns true if the named systemd service is currently active.
 func serviceIsActive(ctx context.Context, log *slog.Logger, service string) bool {
 	return executil.RunCmd(ctx, log, executil.Systemctl(), "is-active", "--quiet", service) == nil
-}
-
-func removeAllIfExists(log *slog.Logger, path string) error {
-	if err := os.RemoveAll(path); err != nil {
-		log.Warn("failed to remove directory", "path", path, "error", err)
-		return fmt.Errorf("remove %s: %w", path, err)
-	}
-
-	return nil
-}
-
-func removeFileIfExists(log *slog.Logger, path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("failed to remove file", "path", path, "error", err)
-		return fmt.Errorf("remove %s: %w", path, err)
-	}
-
-	return nil
 }
 
 // ConfigPaths are the host files the backend renders for one machine.
@@ -485,7 +468,7 @@ type ConfigPaths struct {
 func RemoveConfig(log *slog.Logger, p ConfigPaths) error {
 	log.Info("removing nspawn configuration", "nspawn_file", p.NSpawnFile, "override_dir", p.OverrideDir, "config_regeneration_unit", p.ConfigRegenerationUnit)
 
-	return errors.Join(removeFileIfExists(log, p.NSpawnFile), removeAllIfExists(log, p.OverrideDir), removeFileIfExists(log, p.ConfigRegenerationUnit))
+	return errors.Join(utilio.RemoveFileIfExists(log, p.NSpawnFile), utilio.RemoveAllIfExists(log, p.OverrideDir), utilio.RemoveFileIfExists(log, p.ConfigRegenerationUnit))
 }
 
 // RemoveBPFFSMount unmounts and removes the machine's private bpffs mount.
@@ -510,5 +493,5 @@ func RemoveBPFFSMount(ctx context.Context, log *slog.Logger, mountPath string) e
 		}
 	}
 
-	return removeAllIfExists(log, mountPath)
+	return utilio.RemoveAllIfExists(log, mountPath)
 }
