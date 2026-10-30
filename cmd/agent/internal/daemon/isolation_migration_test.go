@@ -138,7 +138,7 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 		h.events = append(h.events, "kubelet-on-host "+slot)
 		return h.failAt["kubelet-on-host"]
 	})
-	h.replace(&preflightMigrationTarget, func(_ context.Context, _ *slog.Logger, mode isolation.Mode, _ *provision.AgentConfig) error {
+	h.replace(&preflightMigrationTarget, func(_ context.Context, _ *slog.Logger, mode isolation.Mode) error {
 		h.events = append(h.events, "preflight "+string(mode))
 		return h.failAt["preflight"]
 	})
@@ -227,9 +227,9 @@ func (h *migHarness) replace(target any, value any) {
 		*p = value.(func(context.Context, *slog.Logger, isolation.Mode, string) error)
 
 		h.t.Cleanup(func() { *p = old })
-	case *func(context.Context, *slog.Logger, isolation.Mode, *provision.AgentConfig) error:
+	case *func(context.Context, *slog.Logger, isolation.Mode) error:
 		old := *p
-		*p = value.(func(context.Context, *slog.Logger, isolation.Mode, *provision.AgentConfig) error)
+		*p = value.(func(context.Context, *slog.Logger, isolation.Mode) error)
 
 		h.t.Cleanup(func() { *p = old })
 	case *func(*slog.Logger, string) (*ActiveMachine, error):

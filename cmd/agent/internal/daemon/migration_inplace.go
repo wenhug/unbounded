@@ -151,7 +151,7 @@ var (
 		return nodestart.WaitForKubelet(log, slot).Do(ctx)
 	}
 
-	readMigrationConfig = readAppliedSlot
+	readMigrationConfig = readActiveSlot
 )
 
 // inPlaceMigration carries one in-place migration, fresh or resumed.
@@ -213,7 +213,7 @@ func newInPlaceMigration(
 		// The target backend's own host requirements, checked before anything
 		// is changed.
 		Preflight: func(ctx context.Context, _ isolation.Backend) error {
-			return preflightMigrationTarget(ctx, log, j.To, targetCfg)
+			return preflightMigrationTarget(ctx, log, j.To)
 		},
 		// The target's artifacts for the same configuration a repave would use.
 		Download: func(ctx context.Context) error { return stageMigrationArchives(ctx, log, archives) },
@@ -399,10 +399,4 @@ func resumeInPlace(ctx context.Context, log *slog.Logger, env migrationEnv, j mi
 	res, runErr := migrate.ResumeInPlace(ctx, m.spec, j.Step)
 
 	return m.conclude(ctx, res, runErr)
-}
-
-// readAppliedSlot reads the applied config recorded for one slot, with the
-// integrity and name resolution FindActiveMachine applies.
-func readAppliedSlot(log *slog.Logger, slot string) (*ActiveMachine, error) {
-	return readActiveSlot(log, slot)
 }

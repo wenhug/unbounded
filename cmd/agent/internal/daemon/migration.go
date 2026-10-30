@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
@@ -109,7 +108,7 @@ func resolveJournal(ctx context.Context, log *slog.Logger, env migrationEnv, j m
 
 // preflightMigrationTarget checks the target mode's host requirements without
 // changing anything, before the first mutation.
-var preflightMigrationTarget = func(ctx context.Context, log *slog.Logger, mode isolation.Mode, _ *config.AgentConfig) error {
+var preflightMigrationTarget = func(ctx context.Context, log *slog.Logger, mode isolation.Mode) error {
 	var checks []preflight.Checker
 
 	switch mode {

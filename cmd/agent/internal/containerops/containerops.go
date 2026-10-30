@@ -165,7 +165,6 @@ func New(p Params) *Node {
 }
 
 // SlotName is the slot this node manages.
-func (n *Node) SlotName() string { return n.slot }
 
 // Backend is the container backend wired to this node. Its Unpack is bound on
 // first use of the goal state.
