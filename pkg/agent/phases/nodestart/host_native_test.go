@@ -172,3 +172,27 @@ func TestPreflightNoneUsesTheHostRootAndCurrentLink(t *testing.T) {
 
 	require.Len(t, host, len(nspawn), "the same checks run in both modes")
 }
+
+func TestOwnerIdentityPerMode(t *testing.T) {
+	t.Parallel()
+
+	gs := &goalstates.MachineGoalState{
+		RootFS:    &goalstates.RootFS{MachineDir: "/var/lib/machines/kube1"},
+		NodeStart: &goalstates.NodeStart{},
+	}
+
+	root, _, _ := ownerIdentity(config.AgentConfig{}, gs)
+	require.Equal(t, "/var/lib/machines/kube1", root)
+
+	root, kubelet, containerd := ownerIdentity(config.AgentConfig{Isolation: "none"}, gs)
+	require.Equal(t, "/", root)
+	require.Contains(t, kubelet, "kubelet")
+	require.Contains(t, containerd, "containerd")
+
+	// A container's listeners have the slot's unpacked rootfs as their root and
+	// the same in-rootfs executables as the nspawn machine's.
+	root, kubelet, containerd = ownerIdentity(config.AgentConfig{Isolation: "container"}, gs)
+	require.Equal(t, "/var/lib/unbounded/containers/kube1", root)
+	require.Equal(t, kubeletExecutablePath, kubelet)
+	require.Equal(t, containerdExecutablePath, containerd)
+}

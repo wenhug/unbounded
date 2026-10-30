@@ -180,9 +180,9 @@ func WriteLocalDNSNetworkFiles(goalState *goalstates.NodeStart) error {
 		return fmt.Errorf("write LocalDNS network unit: %w", err)
 	}
 
-	if goalState.HostNative() {
-		// No nspawn machine to order against; the host-native units order
-		// themselves after the network unit.
+	if !goalState.NSpawnMachine() {
+		// No nspawn machine to order against; the host-native units and the
+		// container supervising unit order themselves after the network unit.
 		return nil
 	}
 

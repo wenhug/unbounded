@@ -17,6 +17,7 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/container"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/preflight"
 )
@@ -32,25 +33,7 @@ type apiServerReachableChecker struct {
 // Preflight returns the standard node-start checks that can run before the
 // nspawn machine starts.
 func Preflight(log *slog.Logger, cfg config.AgentConfig, goalState *goalstates.MachineGoalState) []preflight.Checker {
-	// A listener is acceptable only when its process root and executable match
-	// this installation's rootfs, which lets an interrupted bootstrap retry while
-	// its node keeps running. Foreign and uninspectable owners still fail, and on
-	// a clean host the rootfs is absent so the check behaves as a plain port test.
-	var root string
-	if goalState.RootFS != nil {
-		root = goalState.RootFS.Root().Path("/")
-	}
-
-	kubeletExe, containerdExe := kubeletExecutablePath, containerdExecutablePath
-
-	if cfg.Isolation == string(isolation.ModeNone) {
-		// The node stack runs on the host, so its processes have the host root
-		// and execute the active version's binaries through the current link.
-		// The executable is resolved through that link, so a listener started
-		// before an upgrade flip is still recognized as the agent's own.
-		bin := strings.TrimPrefix(none.Layout{}.BinDir(), "/")
-		root, kubeletExe, containerdExe = "/", bin+"/kubelet", bin+"/containerd"
-	}
+	root, kubeletExe, containerdExe := ownerIdentity(cfg, goalState)
 
 	return []preflight.Checker{
 		// TODO: Consider moving the kubelet bind address to the kubelet goal state.
@@ -65,6 +48,41 @@ func Preflight(log *slog.Logger, cfg config.AgentConfig, goalState *goalstates.M
 		),
 		CheckAPIServerReachable(log, cfg),
 	}
+}
+
+// ownerIdentity returns the process root and executable paths a listener must
+// have to count as this installation's own, for the configured isolation mode.
+func ownerIdentity(cfg config.AgentConfig, goalState *goalstates.MachineGoalState) (root, kubeletExe, containerdExe string) {
+	// A listener is acceptable only when its process root and executable match
+	// this installation's rootfs, which lets an interrupted bootstrap retry while
+	// its node keeps running. Foreign and uninspectable owners still fail, and on
+	// a clean host the rootfs is absent so the check behaves as a plain port test.
+	if goalState.RootFS != nil {
+		root = goalState.RootFS.Root().Path("/")
+	}
+
+	kubeletExe, containerdExe = kubeletExecutablePath, containerdExecutablePath
+
+	if cfg.Isolation == string(isolation.ModeContainer) {
+		// The node stack runs in a container whose root is the unpacked rootfs
+		// of the slot bootstrap builds, so its processes look like the nspawn
+		// machine's from the host: the process root is that directory and the
+		// executables are at the in-rootfs paths. PROVISIONAL: /proc/<pid>/root
+		// of a process in a runc container is assumed to resolve to the bundle
+		// rootfs path.
+		root = container.Layout{}.RootfsDir(goalstates.NSpawnMachineKube1)
+	}
+
+	if cfg.Isolation == string(isolation.ModeNone) {
+		// The node stack runs on the host, so its processes have the host root
+		// and execute the active version's binaries through the current link.
+		// The executable is resolved through that link, so a listener started
+		// before an upgrade flip is still recognized as the agent's own.
+		bin := strings.TrimPrefix(none.Layout{}.BinDir(), "/")
+		root, kubeletExe, containerdExe = "/", bin+"/kubelet", bin+"/containerd"
+	}
+
+	return root, kubeletExe, containerdExe
 }
 
 // CheckAPIServerReachable returns a non-mutating checker that validates the
