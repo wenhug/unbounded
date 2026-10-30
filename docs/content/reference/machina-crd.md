@@ -27,6 +27,16 @@ This document describes the custom resource definitions shipped with machina: **
 | K8s Version | `.spec.kubernetes.version` | Desired Kubernetes version |
 | Age | standard | Time since creation |
 
+### spec.isolation
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `spec.isolation` | string | No | Where the node stack (containerd, kubelet, CNI, CoreDNS) runs on the host. One of `nspawn`, `none`, or `container`. Empty means `nspawn`. Passed to the agent config as `Isolation`. Changing it on a running Machine does not move the node; run an `IsolationMigrate` operation. |
+
+See [Isolation Modes]({{< relref "reference/agent/isolation" >}}). `none` and
+`container` may not be available in every agent build, and `container` is
+experimental.
+
 ### spec.ssh
 
 SSH connection details. When `ssh` is nil, the machina controller skips the Machine entirely.
@@ -186,7 +196,7 @@ spec:
 |-------|------|----------|-------------|
 | `spec.machineRef` | string | No | Target `Machine` name. Either `machineRef` or `machineSelector` must be set. |
 | `spec.machineSelector` | LabelSelector | No | Selects Machines by label. Supported for agent-handled operations (`NodeReboot`, `AgentUpgrade`, `AgentReset`). Each matching agent independently picks up the operation. Not supported for host operations. |
-| `spec.operationKind` | string | Yes | One of `NodeReboot`, `AgentUpgrade`, `AgentReset`, `HostHardReboot`, `HostSoftReboot`, `HostPowerOff`, `HostPowerOn`, `HostReplace`. |
+| `spec.operationKind` | string | Yes | One of `NodeReboot`, `AgentUpgrade`, `AgentReset`, `HostHardReboot`, `HostSoftReboot`, `HostPowerOff`, `HostPowerOn`, `HostReplace`, `IsolationMigrate`. |
 | `spec.parameters` | map[string]string | No | Operation-specific parameters. |
 | `spec.ttlSecondsAfterFinished` | int32 | No | Delete completed or failed operations after this many seconds. |
 | `status.phase` | string | No | `Pending`, `InProgress`, `Complete`, or `Failed`. |
@@ -195,6 +205,8 @@ spec:
 | `status.completedAt` | time | No | Terminal phase timestamp. |
 | `status.targets` | []TargetStatus | No | Per-Machine target status snapshot used by host operation controllers. |
 | `status.conditions` | []Condition | No | Operation conditions. `Completed` tracks terminal state. `BootLoaderDownloaded=True` is latched by metalman when a target first downloads the initial PXE boot loader, usually over TFTP. `BootImageWritten` starts as `Unknown` for metalman `HostReplace`, transitions to `False` when the PXE installer requests `disk.img.gz`, and transitions to `True` when the existing `/pxe/disable` completion signal is received. `CloudInitDone` starts as `Unknown`, transitions to `False` when first-boot cloud-init starts, and transitions to `True` on final cloud-init success or `False` with reason `Failed` and a summarized error when cloud-init reports a failure. |
+
+`IsolationMigrate` is handled by the in-host agent and moves the node stack to another isolation mode. It requires `spec.parameters.targetMode` (`nspawn`, `none`, or `container`) and accepts `spec.parameters.strategy` (`inPlace` or `reprovision`). When `strategy` is omitted the agent uses `inPlace` where the pair supports it and `reprovision` otherwise. Unsupported pairs, and a target equal to the current mode, fail the operation without changing the node. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 
 `AgentUpgrade` is handled by the in-host agent and requires `spec.parameters.downloadURL`. The URL may use HTTP or HTTPS and must point to an `unbounded-agent` release tarball. The optional `spec.parameters.sha256` is the expected digest of the compressed archive. The agent verifies the digest when provided, stages the archive's exact `unbounded-agent` member as the inactive blue/green daemon binary, records the previous binary as last known good, and restarts `unbounded-agent-daemon.service`. If systemd cannot keep the upgraded daemon running, `unbounded-agent-daemon-recovery.service` switches the daemon back to the last known good binary.
 

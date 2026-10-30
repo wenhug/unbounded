@@ -1,18 +1,25 @@
 ---
 title: "Node Operations"
 weight: 2
-description: "Restarting the nspawn container and recreating nodes."
+description: "Restarting the node stack, moving it between isolation modes, and recreating nodes."
 ---
 
-Node operations act on the `systemd-nspawn` container that runs kubelet,
-containerd, CNI plugins, and pod workloads. They leave the host running and are
-handled by `unbounded-agent`.
+Node operations act on the node stack that runs kubelet, containerd, CNI
+plugins, and pod workloads. By default that is a `systemd-nspawn` container; the
+[isolation mode]({{< relref "reference/agent/isolation" >}}) can also place it on
+the host (`none`) or in a privileged OCI container (`container`, experimental).
+They leave the host running and are handled by `unbounded-agent`. This page
+describes the default `nspawn` mode unless it says otherwise.
 
 ## NodeReboot
 
 Stops kubelet and containerd inside the nspawn machine, stops the nspawn
 container, then restarts it and brings kubelet and containerd back up. The rootfs
 is not replaced.
+
+In `none` mode, `NodeReboot` restarts containerd and then kubelet on the host.
+In `container` mode it restarts the container unit. In every mode the host is not
+rebooted.
 
 Use this when you need to restart Kubernetes components without touching the
 host, for example after applying node-level configuration changes or to clear
@@ -42,6 +49,21 @@ node-reboot-worker-01    NodeReboot    worker-01    Complete     30s
 
 After the operation completes, the Node object remains and kubelet re-registers
 with the API server.
+
+## IsolationMigrate
+
+Moves the node stack to another isolation mode with the parameters `targetMode`
+and `strategy` (`inPlace` or `reprovision`). A change to `spec.isolation` alone
+only reports drift. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
+
+## Inspecting the node stack
+
+`unbounded-agent exec` and `unbounded-agent logs` work in every isolation mode:
+
+```bash
+sudo unbounded-agent exec -- crictl ps
+sudo unbounded-agent logs --unit kubelet --follow --lines 200
+```
 
 ## Node Recreation
 

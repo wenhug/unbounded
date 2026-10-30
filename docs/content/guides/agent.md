@@ -21,12 +21,26 @@ in sequence:
    conflict with kubelet (Docker, swap).
 2. **Rootfs preparation** (`rootfs`) -- detects host settings such as CPU
    architecture and GPU devices, creates a
-   [systemd-nspawn]({{< relref "reference/agent/nspawn" >}}) machine rootfs
+   [systemd-nspawn]({{< relref "reference/agent/isolation-nspawn" >}}) machine rootfs
    (from an OCI image), and downloads containerd, runc, CNI
    plugins, and Kubernetes binaries.
 3. **Node start** (`node-start`) -- boots the nspawn machine and starts
    containerd and kubelet inside it. Kubelet performs TLS bootstrapping against
    the API server using the configured bootstrap token.
+
+This is the default `nspawn` [isolation mode]({{< relref "reference/agent/isolation" >}}).
+The agent always runs on the host, and the isolation mode decides only where the
+node stack runs. Phases 2 and 3 differ by mode:
+
+| Mode | Rootfs preparation | Node start |
+|---|---|---|
+| `nspawn` (default) | Unpack an OCI rootfs into `/var/lib/machines/<slot>` and render the nspawn config. | Boot the nspawn machine and start the stack inside it. |
+| `none` | Install versioned artifacts under `/opt/unbounded/node` and write agent-owned units. | Start the units on the host. |
+| `container` (experimental) | Unpack an OCI rootfs and generate an OCI runtime bundle. | Start the container unit, then the stack inside it. |
+
+Select the mode with `--isolation` on `manual-bootstrap`, `spec.isolation` on the
+Machine, or `Isolation` in the agent config. See
+[Isolation Modes]({{< relref "reference/agent/isolation" >}}) to choose one.
 
 ## Retrying bootstrap and repairing the daemon
 
@@ -394,7 +408,8 @@ spec:
 ### Mirroring the rootfs downloads (air-gapped deployments)
 
 After installing the `unbounded-agent`, the agent downloads five additional
-binaries into the nspawn machine rootfs:
+binaries into the nspawn machine rootfs (in `none` mode, into a versioned
+directory under `/opt/unbounded/node`):
 
 | Artifact | Upstream default |
 |---|---|
@@ -541,6 +556,12 @@ paths needed by Kubernetes device plugins:
   sysfs paths read-only so the AMD Kubernetes device plugin can detect GPUs
   inside nspawn.
 
+This describes `nspawn` mode. In `none` mode the node stack sees the host's
+devices natively, and in `container` mode the same requests become OCI mounts and
+devices. See the per-mode sections in the
+[NVIDIA]({{< relref "reference/gpu/nvidia#gpu-support-by-isolation-mode" >}}) and
+[AMD]({{< relref "reference/gpu/amd#gpu-support-by-isolation-mode" >}}) references.
+
 The agent does not deploy GPU device plugins. Install the vendor device plugin
 for Kubernetes resource advertisement. See the [GPU reference]({{< relref "reference/gpu" >}})
 for details.
@@ -552,11 +573,16 @@ contains valid JSON. Check that all required fields are present.
 
 **Node not joining the cluster** -- Ensure the host has HTTPS connectivity to
 the API server and that the bootstrap token has not expired. Inspect the
-kubelet logs inside the nspawn machine:
+kubelet logs in the node stack:
 
 ```bash
-machinectl shell <machine-name> /bin/journalctl -u kubelet
+sudo unbounded-agent logs --unit kubelet --lines 200
+sudo unbounded-agent exec -- journalctl -u kubelet --no-pager -n 100
 ```
+
+`exec` and `logs` work in every isolation mode. On an `nspawn` host whose agent
+predates them, `machinectl shell <slot> /bin/journalctl -u kubelet` still works;
+see [nspawn Mode]({{< relref "reference/agent/isolation-nspawn#troubleshooting" >}}).
 
 **GPU not detected** -- Confirm that the vendor driver is installed and loaded
 on the host. For NVIDIA, check `/dev/nvidia*`. For AMD, check `/dev/kfd`,
@@ -568,5 +594,7 @@ on the host. For NVIDIA, check `/dev/nvidia*`. For AMD, check `/dev/kfd`,
   fits into the broader system.
 - **[Architecture Reference]({{< relref "reference/architecture" >}})** -- Deep
   dive into component internals.
-- **[nspawn Isolation]({{< relref "reference/agent/nspawn" >}})** -- How the
-  agent uses systemd-nspawn to isolate worker node components.
+- **[Isolation Modes]({{< relref "reference/agent/isolation" >}})** -- Where the
+  node stack runs, and how to choose and migrate between modes.
+- **[nspawn Mode]({{< relref "reference/agent/isolation-nspawn" >}})** -- How the
+  default mode uses systemd-nspawn to isolate worker node components.

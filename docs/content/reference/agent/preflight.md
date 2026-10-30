@@ -164,7 +164,7 @@ set is organized around the same bootstrap phases as `unbounded-agent start`.
 | `is-privileged-user` | Error | Preflight is running as root. Bootstrap requires root privileges. |
 | `host-packages` | Error or warning | A supported package manager is available (`apt-get`, `tdnf`, or `dnf`) and required host packages are installed. Missing package manager support is fatal. Missing packages are warnings because bootstrap may install them. |
 | `host-os-configuration` | Error | Host OS configuration paths are writable, including the sysctl config directory and systemd unit directory. |
-| `nspawn-runtime` | Warning | Required nspawn runtime tools are available: `systemctl`, `machinectl`, and `systemd-nspawn`. It also checks that `/run/systemd/system` is available. Missing tools are warnings because bootstrap may install them. |
+| `nspawn-runtime` | Warning | In `nspawn` mode, required nspawn runtime tools are available: `systemctl`, `machinectl`, and `systemd-nspawn`. It also checks that `/run/systemd/system` is available. Missing tools are warnings because bootstrap may install them. |
 | `docker-active` | Warning | Docker is active. Bootstrap will disable Docker when needed. |
 | `containerd-active` | Warning | The host containerd service is active. Bootstrap will disable it before starting the node. |
 | `kubelet-active` | Warning | The host kubelet service is active. Bootstrap will disable it before starting the node. |
@@ -223,5 +223,5 @@ certificate data, URLs, image references, or file contents.
 ## Related Pages
 
 - [Agent Configuration]({{< relref "reference/agent/configuration" >}})
-- [systemd-nspawn Isolation]({{< relref "reference/agent/nspawn" >}})
+- [systemd-nspawn Isolation]({{< relref "reference/agent/isolation-nspawn" >}})
 - [Agent Guide]({{< relref "guides/agent" >}})

@@ -295,6 +295,27 @@ kubectl unbounded machine register \
 
 ---
 
+### `kubectl unbounded machine manual-bootstrap`
+
+Generate the bootstrap script or cloud-init payload for a host. The
+`--isolation` flag selects where the node stack runs and is written to the
+Machine as `spec.isolation` and to the agent config as `Isolation`.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--isolation` | string | empty (`nspawn`) | `nspawn`, `none`, or `container`. Other values are rejected. |
+
+```bash
+kubectl unbounded machine manual-bootstrap my-node --site mysite \
+  --isolation none | ssh user@host sudo bash
+```
+
+See [Isolation Modes]({{< relref "reference/agent/isolation" >}}). `none` and
+`container` may not be available in every agent build, and `container` is
+experimental.
+
+---
+
 ### `kubectl unbounded machine operation`
 
 Create and watch `MachineOperation` resources.
@@ -314,10 +335,12 @@ Create a `MachineOperation`.
 | Name | Type | Description |
 |------|------|-------------|
 | `NAME` | argument | Name of the `MachineOperation` resource |
-| `--kind` | string | Operation kind: `NodeReboot`, `AgentUpgrade`, `AgentReset`, `HostHardReboot`, `HostSoftReboot`, `HostPowerOff`, `HostPowerOn`, or `HostReplace` |
+| `--kind` | string | Operation kind: `NodeReboot`, `AgentUpgrade`, `AgentReset`, `HostHardReboot`, `HostSoftReboot`, `HostPowerOff`, `HostPowerOn`, `HostReplace`, or `IsolationMigrate` |
 | `--machine` or `--selector` | string | Target one Machine by name or select Machines by label selector |
 
 `AgentUpgrade` requires `--param downloadURL=<url>` and optionally accepts `--param sha256=<archive-sha256>`.
+
+`IsolationMigrate` requires `--param targetMode=<nspawn|none|container>` and optionally accepts `--param strategy=<inPlace|reprovision>`. The command validates both before it creates the operation. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 
 #### Optional Flags
 
@@ -374,6 +397,17 @@ kubectl unbounded machine operation create upgrade-worker-01 \
   --param sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
+Move a node to another isolation mode:
+
+```bash
+kubectl unbounded machine operation create migrate-worker-01 \
+  --kind IsolationMigrate \
+  --machine worker-01 \
+  --param targetMode=container \
+  --param strategy=inPlace \
+  --wait
+```
+
 Selector support is implemented at the CRD level. Agent operations support
 selectors. Metalman bare-metal host operations support selectors when the
 selector includes `unbounded-cloud.io/site=<site>`. Cloud VM host operations
@@ -406,7 +440,7 @@ name, default `--ttl 300`, and `--wait=true`.
 
 | Command | Operation kind | Notes |
 |---------|----------------|-------|
-| `kubectl unbounded machine node-reboot NAME` | `NodeReboot` | Restarts the nspawn-backed Kubernetes node. |
+| `kubectl unbounded machine node-reboot NAME` | `NodeReboot` | Restarts the node stack (nspawn machine, host units, or container, by isolation mode). The host does not reboot. |
 | `kubectl unbounded machine host-hard-reboot NAME` | `HostHardReboot` | Reboots or power-cycles the host through the owning backend. |
 | `kubectl unbounded machine host-soft-reboot NAME` | `HostSoftReboot` | Reboots the host OS through the in-host agent (`systemctl reboot`). |
 | `kubectl unbounded machine power-off NAME` | `HostPowerOff` | Powers off the host. |
@@ -477,8 +511,22 @@ kubectl unbounded overrides status
 |----------|-------------|
 | `KUBECONFIG` | Fallback kubeconfig path when `--kubeconfig` is not provided |
 
+## Agent subcommands for node access
+
+Two `unbounded-agent` subcommands, run on the host, reach the node stack in every
+isolation mode. They replace mode-specific recipes such as `machinectl shell`:
+
+| Command | Description |
+|---------|-------------|
+| `unbounded-agent exec -- <cmd...>` | Run a command in the node stack. |
+| `unbounded-agent logs [--unit NAME] [--follow] [--lines N]` | Stream the journal of a unit in the node stack. |
+
+See [Isolation Modes]({{< relref "reference/agent/isolation" >}}).
+
 ## See Also
 
+- **[Isolation Modes]({{< relref "reference/agent/isolation" >}})** -- Where the
+  node stack runs, and how to choose and migrate between modes.
 - **[Getting Started]({{< relref "guides/getting-started" >}})** -- Walks
   through `site init` and `machine register` step by step.
 - **[SSH Guide]({{< relref "guides/ssh" >}})** -- Detailed SSH provisioning

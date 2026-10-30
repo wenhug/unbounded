@@ -147,6 +147,13 @@ the MachineOperation path.
 
 ### What Reset Does
 
+Reset reads the isolation mode recorded in the host's applied config and removes
+the node stack of that mode: nspawn machines, the `none` units and
+`/opt/unbounded/node` tree, or the container, bundle, and rootfs. A host with no
+recorded mode is an `nspawn` host and gets the nspawn cleanup. Host-global state
+is cleaned the same way in every mode. The steps below describe the `nspawn`
+cleanup, which is the default.
+
 The reset process performs these steps in order:
 
 1. **Stops the nspawn machines** - gracefully stops `kube1` and `kube2`, then

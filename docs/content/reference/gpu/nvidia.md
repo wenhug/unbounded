@@ -5,8 +5,12 @@ description: "How the unbounded-agent discovers, configures, and exposes NVIDIA 
 ---
 
 The unbounded-agent automatically detects NVIDIA GPUs on the host, forwards the
-driver's userspace libraries into the nspawn container, generates a CDI
+driver's userspace libraries into the node stack, generates a CDI
 specification, and configures containerd so that GPU workloads can be scheduled on the node.
+Most of this page describes the default `nspawn`
+[isolation mode]({{< relref "reference/agent/isolation" >}}); see
+[GPU support by isolation mode](#gpu-support-by-isolation-mode) for `none` and
+`container`.
 
 ## Prerequisites
 
@@ -27,13 +31,30 @@ The GPU OCI images (`agent-ubuntu2404-nvidia`, `agent-ubuntu2604-nvidia`,
 `nvidia-container-runtime`) but **not** the kernel driver or userspace
 libraries. Those come from the host.
 
+## GPU support by isolation mode
+
+An [isolation mode]({{< relref "reference/agent/isolation" >}}) decides where
+containerd and kubelet run. The agent describes GPU, device, and extra mount
+requests once, and each mode applies them its own way.
+
+| Mode | How GPU devices and libraries reach the node stack |
+|---|---|
+| [`nspawn`]({{< relref "reference/agent/isolation-nspawn" >}}) | Device and library bind-mounts plus `DeviceAllow=` entries in the nspawn config. The rest of this page describes this mode. |
+| [`none`]({{< relref "reference/agent/isolation-none" >}}) | Native. The node stack runs on the host and sees the driver, libraries, and `/dev/nvidia*` directly, so there is nothing to bind-mount and no `/run/host-nvidia` indirection. The host prerequisites above still apply. The NVIDIA Container Toolkit comes from the host, not from an `agent-*-nvidia` image. Toolkit and CDI setup for this mode is not yet documented or verified. |
+| [`container`]({{< relref "reference/agent/isolation-container" >}}) | The same grants become OCI mounts, devices, and cgroup device rules for the container. Provisional: GPU support on Azure Container Linux is unverified. |
+
+The Fabric Manager and persistence mode prerequisites are host requirements in
+every mode.
+
 ## How It Works
+
+This section describes `nspawn` mode.
 
 The agent's GPU support spans two bootstrap phases: **rootfs** (nspawn
 configuration) and **node-start** (runtime setup inside the container). The
 full sequence is:
 
-![NVIDIA GPU architecture: Host devices and libraries bind-mounted into nspawn container running nvidia-ctk, containerd with nvidia runtime, and kubelet](../../../img/gpu-nvidia-host-container.svg)
+![NVIDIA GPU architecture (nspawn mode only): Host devices and libraries bind-mounted into nspawn container running nvidia-ctk, containerd with nvidia runtime, and kubelet](../../../img/gpu-nvidia-host-container.svg)
 
 1. **Device discovery.** Scans `/dev` for NVIDIA device nodes (per-GPU,
    control, UVM, capability, and DRI render nodes). If none are found, the
@@ -184,7 +205,7 @@ sudo systemctl start nvidia-fabricmanager
 
 ### `nvidia-ctk cdi generate` fails with `ERROR_LIBRARY_NOT_FOUND`
 
-The host NVIDIA libraries are not visible inside the nspawn. Check that:
+The host NVIDIA libraries are not visible inside the nspawn machine (`nspawn` mode). Check that:
 
 - The bind-mounts in the `.nspawn` config include the host library directory.
 - The symlinks in the container's multiarch lib dir point to valid paths
@@ -196,3 +217,7 @@ The host NVIDIA libraries are not visible inside the nspawn. Check that:
 Ensure the kernel driver is loaded (`lsmod | grep nvidia`) and that
 `/dev/nvidia0` exists. If the driver is installed but not loaded, reboot the
 host.
+
+In `none` mode the node stack is on the host, so use `ldconfig -p | grep nvidia`
+on the host directly. To inspect the node stack in any mode, use
+`unbounded-agent exec`, for example `sudo unbounded-agent exec -- nvidia-smi`.
