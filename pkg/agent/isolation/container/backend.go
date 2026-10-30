@@ -35,12 +35,14 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/Azure/unbounded/internal/executil"
+	"github.com/Azure/unbounded/internal/fsutil"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 )
 
-// Runner runs a host command and returns its stdout. It is a seam for tests.
-type Runner func(ctx context.Context, log *slog.Logger, name string, args ...string) (string, error)
+// Runner runs a host command and returns its stdout. It is a seam for tests,
+// shared with the none backend.
+type Runner = none.Runner
 
 // Streamer starts a long running host command and returns its stdout.
 type Streamer func(ctx context.Context, name string, args ...string) (io.ReadCloser, error)
@@ -248,7 +250,7 @@ func (b *Backend) RenderBundle(slot string, grants []isolation.Grant) error {
 		return err
 	}
 
-	return writeAtomic(b.Layout.ConfigPath(slot), data, 0o644)
+	return fsutil.WriteFileAtomic(b.Layout.ConfigPath(slot), data, 0o644)
 }
 
 // extraBinds are the nspawn machine's other host binds. A bind whose source is
@@ -306,7 +308,7 @@ func (b *Backend) Regenerate(ctx context.Context, slot string) error {
 				return err
 			}
 
-			if err := writeAtomic(b.Layout.SpecPath(slot), specData, 0o644); err != nil {
+			if err := fsutil.WriteFileAtomic(b.Layout.SpecPath(slot), specData, 0o644); err != nil {
 				return err
 			}
 		}
@@ -344,7 +346,7 @@ func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.
 		return nil, err
 	}
 
-	if err := writeAtomic(b.Layout.SpecPath(n.Slot), specData, 0o644); err != nil {
+	if err := fsutil.WriteFileAtomic(b.Layout.SpecPath(n.Slot), specData, 0o644); err != nil {
 		return nil, err
 	}
 
@@ -372,7 +374,7 @@ func (b *Backend) writeUnit(slot string) error {
 		After:       b.Requirements().After,
 		Requires:    b.UnitRequires,
 	})
-	if err := writeAtomic(filepath.Join(b.unitDir(), UnitName(slot)), unit, 0o644); err != nil {
+	if err := fsutil.WriteFileAtomic(filepath.Join(b.unitDir(), UnitName(slot)), unit, 0o644); err != nil {
 		return fmt.Errorf("write unit: %w", err)
 	}
 
@@ -676,23 +678,4 @@ func (c *cmdReader) Close() error {
 	_ = c.cmd.Wait() //nolint:errcheck // exit status of a closed log stream is not meaningful
 
 	return err
-}
-
-func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp) //nolint:errcheck // best effort cleanup
-
-		return err
-	}
-
-	return nil
 }

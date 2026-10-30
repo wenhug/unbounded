@@ -3,7 +3,11 @@
 
 package none
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/Azure/unbounded/pkg/agent/goalstates"
+)
 
 // UnitLocalDNS is the agent-owned CoreDNS unit. LocalDNS needs no machine to
 // run in, so on this backend CoreDNS is a host unit. The network unit that
@@ -13,7 +17,7 @@ const UnitLocalDNS = "unbounded-localdns.service"
 
 // UnitLocalDNSNetwork is the host network unit shared by every mode. It is
 // written by the node-start phases, never by this backend.
-const UnitLocalDNSNetwork = "unbounded-localdns-network.service"
+const UnitLocalDNSNetwork = goalstates.LocalDNSNetworkUnit
 
 // RenderLocalDNS returns the CoreDNS supervisor unit. supervisor is the path of
 // the supervisor script in the version directory.

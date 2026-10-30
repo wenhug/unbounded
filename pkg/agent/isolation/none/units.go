@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/Azure/unbounded/internal/fsutil"
+	"github.com/Azure/unbounded/pkg/agent/goalstates"
 )
 
 // Agent-owned unit names. They differ from the distro names so the agent never
@@ -35,7 +38,7 @@ type UnitSpec struct {
 
 // DefaultKubeletConfigPath is where the node-start phases write the kubelet
 // configuration, the same path the nspawn machine uses.
-const DefaultKubeletConfigPath = "/var/lib/kubelet/config.yaml"
+const DefaultKubeletConfigPath = goalstates.KubeletConfigurationPath
 
 // RenderContainerd returns the containerd unit.
 func RenderContainerd(s UnitSpec) []byte {
@@ -107,7 +110,7 @@ func WriteUnits(dir string, s UnitSpec) ([]string, error) {
 
 	for _, u := range units {
 		path := filepath.Join(dir, u.name)
-		if err := writeAtomic(path, u.body, 0o644); err != nil {
+		if err := fsutil.WriteFileAtomic(path, u.body, 0o644); err != nil {
 			return paths, err
 		}
 
@@ -115,25 +118,6 @@ func WriteUnits(dir string, s UnitSpec) ([]string, error) {
 	}
 
 	return paths, nil
-}
-
-func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp) //nolint:errcheck // best effort cleanup
-
-		return err
-	}
-
-	return nil
 }
 
 // DropInDir is the drop-in directory of an agent-owned unit.
@@ -184,7 +168,7 @@ func WriteDropIns(dir string, s UnitSpec) ([]string, error) {
 	var paths []string
 
 	for _, f := range files {
-		if err := writeAtomic(f.path, f.body, 0o644); err != nil {
+		if err := fsutil.WriteFileAtomic(f.path, f.body, 0o644); err != nil {
 			return paths, err
 		}
 
