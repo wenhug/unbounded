@@ -224,3 +224,44 @@ the VM.
 `MIGRATION_TIMEOUT` (seconds, default 900) bounds each migration operation.
 NodeConfig variants that check nspawn files (`additional-host-mounts.json`) are
 nspawn-only and are not part of the isolation suites.
+
+## Isolation test plan and report
+
+`isolation_plan.py` runs the scenarios in
+`designs/agent-isolation-modes-test-plan.md` (every operation in each mode,
+every ordered mode transition, drift, rollback, uninstall) and writes a report.
+Each scenario is one e2e suite on a fresh VM; a failed scenario does not stop the
+run unless `--fail-fast`.
+
+```sh
+sudo apt-get install -y qemu-system-x86 qemu-utils genisoimage iptables   # once
+sudo usermod -aG kvm "$USER"                  # once; log in again, or wrap with `sg kvm -c`
+PATH="$PWD/tmp/bin:$PATH" python3 hack/agent/e2e-kind/isolation_plan.py run
+```
+
+| Command | Effect |
+|---|---|
+| `isolation_plan.py list` | The scenario catalog (IDs, mode, suite). |
+| `run --scenario D01 T01` | Run only these scenarios. Also `--category`, `--tag`, `--exclude-tag provisional`. |
+| `run --dry-run` | Show what would run and what is skipped, without touching anything. |
+| `run --no-up` | Use a Kind cluster and bridge you created; create and remove nothing. |
+| `run --keep-env` | Leave the cluster, bridge and VM in place afterward. |
+| `render <results.json> --html` | Regenerate `report.md` and `report.html` from saved results. |
+
+The run creates the Kind cluster, VM bridge and controllers once (the `setup`
+suite through `run-local.sh`), then for each scenario retires the previous VM,
+launches a new one, runs `e2e.py run-suite`, and captures a JSON snapshot of the
+Machine and node stack. Everything lands in
+`tmp/isolation-report/<run-id>/`: `report.md`, `report.html`, `results.json`,
+and a log per scenario (`<ID>/suite.log`, plus `<ID>/diagnostics/` for a
+failure). Bootstrap tokens are redacted. The report has the environment, a
+summary, an operation by mode coverage matrix, a transition matrix and the
+detail of each scenario. Scenarios that need other hardware (GPU) or an
+Azure Container Linux host (`HOST_BASE_OS=acl`) are reported as skipped with the
+reason.
+
+The new suites (`isolation-operations`, `isolation-uninstall`,
+`isolation-roundtrip`, `isolation-matrix`, `isolation-drift`,
+`isolation-rollback`) can also be run directly with `E2E_SUITE` through
+`run-local.sh`, with `ISOLATION_MODE` set for the mode-neutral ones.
+
