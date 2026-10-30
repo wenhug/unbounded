@@ -329,7 +329,7 @@ func registerMachine(ctx context.Context, log *slog.Logger, c client.Client, cfg
 			slog.String("machineID", string(machine.UID)),
 		)
 
-		return reportProvisioningFormat(ctx, c, cfg)
+		return reportMachineObservations(ctx, c, cfg)
 	} else if apimeta.IsNoMatchError(err) {
 		return fmt.Errorf("machine CRD is not installed (machina not deployed?): %w", err)
 	} else if !apierrors.IsNotFound(err) {
@@ -342,7 +342,7 @@ func registerMachine(ctx context.Context, log *slog.Logger, c client.Client, cfg
 	machine = buildMachineCR(cfg)
 	if err := c.Create(ctx, &machine); apierrors.IsAlreadyExists(err) {
 		log.Info("Machine CR was created by another client", slog.String("machine", machineName))
-		return reportProvisioningFormat(ctx, c, cfg)
+		return reportMachineObservations(ctx, c, cfg)
 	} else if err != nil {
 		return fmt.Errorf("create Machine CR %q: %w", machineName, err)
 	}
@@ -353,7 +353,45 @@ func registerMachine(ctx context.Context, log *slog.Logger, c client.Client, cfg
 		slog.String("machineID", string(machine.UID)),
 	)
 
-	return reportProvisioningFormat(ctx, c, cfg)
+	return reportMachineObservations(ctx, c, cfg)
+}
+
+// reportMachineObservations reports everything the agent observes about its own
+// installation to the Machine status.
+func reportMachineObservations(ctx context.Context, c client.Client, cfg *provision.AgentConfig) error {
+	if err := reportProvisioningFormat(ctx, c, cfg); err != nil {
+		return err
+	}
+
+	return reportObservedIsolation(ctx, c, cfg)
+}
+
+// reportObservedIsolation reports the isolation mode the node was applied
+// with, so Machina can show drift from spec.isolation. A config without the
+// setting is nspawn. It never changes the node.
+func reportObservedIsolation(ctx context.Context, c client.Client, cfg *provision.AgentConfig) error {
+	mode, err := cfg.IsolationMode()
+	if err != nil {
+		return err
+	}
+
+	observed := v1alpha3.IsolationMode(mode)
+
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var machine v1alpha3.Machine
+		if err := c.Get(ctx, client.ObjectKey{Name: cfg.MachineName}, &machine); err != nil {
+			return err
+		}
+
+		if machine.Status.ObservedIsolation == observed {
+			return nil
+		}
+
+		before := machine.DeepCopy()
+		machine.Status.ObservedIsolation = observed
+
+		return c.Status().Patch(ctx, &machine, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	})
 }
 
 // Report only explicit installation observations, using existing status

@@ -35,6 +35,7 @@ func fakeClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(fakeScheme()).
 		WithObjects(objs...).
+		WithStatusSubresource(&v1alpha3.Machine{}).
 		Build()
 }
 
