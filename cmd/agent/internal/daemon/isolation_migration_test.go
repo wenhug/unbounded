@@ -24,6 +24,7 @@ import (
 
 	v1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
 	"github.com/Azure/unbounded/internal/provision"
+	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
@@ -1081,4 +1082,31 @@ func TestMigrateInPlace_ResumeOfAFinishedMigrationDropsTheSnapshot(t *testing.T)
 
 	assert.Equal(t, "target: config\n", h.hostRead("var/lib/kubelet/config.yaml"), "a migration that held keeps the target's files")
 	assert.NoDirExists(t, inPlaceConfigSnapshotDir())
+}
+
+func TestMigrateReprovision_LeavingNoneDropsTheHostToolkitLocation(t *testing.T) {
+	for _, target := range []isolation.Mode{isolation.ModeNSpawn, isolation.ModeContainer} {
+		t.Run(string(target), func(t *testing.T) {
+			h := newMigHarness(t, isolation.ModeNone)
+			h.active.Config.NvidiaToolkit = &config.NvidiaToolkitConfig{CTKPath: "/opt/tk/nvidia-ctk"}
+
+			// The setting is only valid for mode none, so keeping it would make
+			// the target configuration invalid.
+			require.ErrorIs(t, h.run(target, migrate.Reprovision), ErrMigrationHandedOff)
+
+			data, err := os.ReadFile(filepath.Join(reprovisionDir(), ReprovisionConfigName))
+			require.NoError(t, err)
+			assert.NotContains(t, string(data), "NvidiaToolkit")
+		})
+	}
+}
+
+func TestMigrateReprovision_EnteringNoneDoesNotInventAToolkitLocation(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+
+	require.ErrorIs(t, h.run(isolation.ModeNone, migrate.Reprovision), ErrMigrationHandedOff)
+
+	data, err := os.ReadFile(filepath.Join(reprovisionDir(), ReprovisionConfigName))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "NvidiaToolkit", "an unset location stays unset")
 }

@@ -99,6 +99,11 @@ func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMac
 	targetCfg := active.Config.DeepCopy()
 	targetCfg.Isolation = string(req.Target)
 
+	// The toolkit location describes the host install that only mode none uses.
+	if req.Target != isolation.ModeNone {
+		targetCfg.NvidiaToolkit = nil
+	}
+
 	if err := targetCfg.Validate(); err != nil {
 		return fmt.Errorf("configuration for isolation mode %s is invalid: %w", req.Target, err)
 	}
