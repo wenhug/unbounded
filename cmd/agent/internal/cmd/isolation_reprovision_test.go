@@ -26,8 +26,9 @@ type reprovisionHarness struct {
 	store  migrate.JournalStore
 	runner *reprovisionRunner
 
-	resetErrs []error
-	startErr  error
+	resetErrs  []error
+	startErr   error
+	abandonErr error
 }
 
 func newReprovisionHarness(t *testing.T, step migrate.Step) *reprovisionHarness {
@@ -58,7 +59,12 @@ func newReprovisionHarness(t *testing.T, step migrate.Step) *reprovisionHarness 
 			h.events = append(h.events, "start")
 			return h.startErr
 		},
-		sleep: func(time.Duration) { h.events = append(h.events, "sleep") },
+		abandon: func(context.Context) error {
+			h.events = append(h.events, "abandon")
+			return h.abandonErr
+		},
+		maxAttempts: 3,
+		sleep:       func(time.Duration) { h.events = append(h.events, "sleep") },
 	}
 
 	return h
@@ -183,4 +189,88 @@ func TestIsolationReprovisionIsHiddenAndRegistered(t *testing.T) {
 	assert.True(t, c.Hidden)
 	assert.NotNil(t, c.Flags().Lookup("handoff-dir"))
 	assert.NotNil(t, c.Flags().Lookup("check"))
+}
+
+func (h *reprovisionHarness) journal(t *testing.T) migrate.Journal {
+	t.Helper()
+
+	j, err := h.store.Load()
+	require.NoError(t, err)
+
+	return j
+}
+
+func TestReprovisionRetriesThenSucceedsWithinTheAttemptBudget(t *testing.T) {
+	h := newReprovisionHarness(t, migrate.StepReprovisioning)
+	h.startErr = errors.New("kubelet did not join")
+
+	// Two runs fail, as systemd would run the unit again after each.
+	for attempt := 1; attempt <= 2; attempt++ {
+		require.ErrorContains(t, h.runner.run(t.Context(), h.store), "kubelet did not join")
+		assert.Equal(t, attempt, h.journal(t).Attempts)
+	}
+
+	h.startErr = nil
+	h.events = nil
+	require.NoError(t, h.runner.run(t.Context(), h.store))
+
+	assert.Equal(t, []string{"start"}, h.events)
+	assert.Equal(t, migrate.StepBootstrapped, h.step(t))
+}
+
+func TestReprovisionGivesUpAfterTheAttemptBudget(t *testing.T) {
+	h := newReprovisionHarness(t, migrate.StepReprovisioning)
+	h.startErr = errors.New("kubelet did not join")
+
+	for range 3 {
+		require.ErrorContains(t, h.runner.run(t.Context(), h.store), "kubelet did not join")
+	}
+
+	h.events = nil
+
+	// The next run starts nothing: it records the failure and stops systemd
+	// from running the unit again by succeeding.
+	require.NoError(t, h.runner.run(t.Context(), h.store))
+
+	assert.Equal(t, []string{"abandon"}, h.events, "neither reset nor bootstrap runs again")
+
+	j := h.journal(t)
+	assert.Equal(t, migrate.StepFailed, j.Step)
+	assert.Equal(t, 3, j.Attempts)
+	assert.Contains(t, j.Message, "gave up after 3 attempts")
+	assert.Contains(t, j.Message, "isolation mode none")
+	assert.Contains(t, j.Message, "kubelet did not join", "the last error is kept for the report")
+}
+
+func TestReprovisionGivesUpWhenTheResetNeverWorks(t *testing.T) {
+	h := newReprovisionHarness(t, migrate.StepReprovisioning)
+	h.resetErrs = []error{errors.New("busy"), errors.New("busy"), errors.New("busy")}
+
+	for range 3 {
+		require.Error(t, h.runner.run(t.Context(), h.store))
+	}
+
+	h.events = nil
+	require.NoError(t, h.runner.run(t.Context(), h.store))
+
+	assert.Equal(t, migrate.StepFailed, h.step(t))
+	assert.Contains(t, h.journal(t).Message, "busy")
+}
+
+func TestReprovisionGaveUpFinishesAnInterruptedCleanup(t *testing.T) {
+	h := newReprovisionHarness(t, migrate.StepFailed)
+
+	// The previous run saved StepFailed and died before it removed the unit.
+	require.NoError(t, h.runner.run(t.Context(), h.store))
+
+	assert.Equal(t, []string{"abandon"}, h.events)
+	assert.Equal(t, migrate.StepFailed, h.step(t))
+}
+
+func TestReprovisionGiveUpSurvivesACleanupFailure(t *testing.T) {
+	h := newReprovisionHarness(t, migrate.StepFailed)
+	h.abandonErr = errors.New("read-only file system")
+
+	require.NoError(t, h.runner.run(t.Context(), h.store), "the failure is recorded; a leftover file must not make systemd retry")
+	assert.Equal(t, migrate.StepFailed, h.step(t))
 }

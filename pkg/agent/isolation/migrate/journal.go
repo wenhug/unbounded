@@ -58,6 +58,9 @@ type Journal struct {
 	Step       Step      `json:"step"`
 	StartedAt  time.Time `json:"startedAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+	// Attempts counts the runs of a reprovision handoff that started, so the
+	// handoff can give up after a bounded number of them.
+	Attempts int `json:"attempts,omitempty"`
 	// Message is the last failure the handoff command saw, for operators.
 	Message string `json:"message,omitempty"`
 }

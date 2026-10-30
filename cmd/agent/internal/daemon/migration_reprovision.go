@@ -21,6 +21,7 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
+	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
 // Reprovision resets the host and bootstraps it again in the target mode. The
@@ -31,14 +32,16 @@ import (
 // the unit ReprovisionUnit, whose command (the hidden isolation-reprovision
 // subcommand) runs the existing reset, then the bootstrap stage plan for the
 // target mode, and is retried by systemd (and run again at boot) until it
-// succeeds. The daemon that bootstrap installs finds the journal at startup,
+// succeeds or ReprovisionMaxAttempts runs have failed. The daemon that bootstrap installs finds the journal at startup,
 // sees the applied config in the target mode and reports the operation.
 //
 // The unit and ReprovisionDir are not touched by the reset, so a crash or a
-// reboot at any point leaves the handoff to continue. What is not covered: a
-// bootstrap that keeps failing leaves the host reset, the unit failed and the
-// operation InProgress, because no daemon is left to report it; the Machine
-// conditions set by the bootstrap reporter and the unit's journal say why.
+// reboot at any point leaves the handoff to continue. When the runs are used
+// up, the handoff records StepFailed in the journal, removes the unit and the
+// staged binary and configuration, and stops. The host is then reset and has
+// no daemon, so the operation is reported Failed by the first daemon that
+// starts on the host afterward (see recoverIsolationMigration), for example
+// after the operator runs the install script again.
 
 // Seams for the host-mutating parts, replaced in tests.
 var (
@@ -198,24 +201,67 @@ func installReprovisionUnit(ctx context.Context, log *slog.Logger, dir string) e
 
 // removeReprovisionFiles removes the unit and the handoff directory.
 func removeReprovisionFiles(log *slog.Logger) {
-	ctx := context.Background()
-
-	if _, err := os.Lstat(reprovisionUnitPath()); err == nil {
-		if err := systemctlForMigration(ctx, log, "disable", ReprovisionUnit); err != nil {
-			log.Warn("could not disable the reprovision unit", "error", err)
-		}
-
-		if err := os.Remove(reprovisionUnitPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Warn("could not remove the reprovision unit", "error", err)
-		}
-
-		if err := systemctlForMigration(ctx, log, "daemon-reload"); err != nil {
-			log.Warn("could not reload systemd after removing the reprovision unit", "error", err)
-		}
-	}
+	removeReprovisionUnit(context.Background(), log)
 
 	if err := os.RemoveAll(reprovisionDir()); err != nil {
 		log.Warn("could not remove the reprovision directory", "dir", reprovisionDir(), "error", err)
+	}
+}
+
+// AbandonReprovision ends a handoff that gave up: it disables and removes the
+// unit and removes the staged binary and configuration, which holds the
+// bootstrap token. The journal stays in dir, so the next daemon to start on the
+// host reports the failure on the MachineOperation and then removes it.
+func AbandonReprovision(ctx context.Context, log *slog.Logger, dir string) error {
+	removeReprovisionUnit(ctx, log)
+
+	var errs []error
+
+	for _, name := range []string{ReprovisionBinaryName, ReprovisionConfigName} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// RemoveReprovisionHandoff is the part of an agent reset that removes what a
+// reprovision left behind: the unit, the staged binary and configuration, and
+// the journal. Without it, a reset after a handoff that gave up would leave a
+// unit and a copy of the bootstrap token on the host. The handoff's own reset
+// does not include it, because it runs from that directory.
+func RemoveReprovisionHandoff(log *slog.Logger) phases.Task {
+	return lifecycleTask{name: "remove-reprovision-handoff", run: func(ctx context.Context) error {
+		if _, err := os.Lstat(reprovisionUnitPath()); err == nil {
+			// A handoff that is still running must not outlive its files.
+			if err := systemctlForMigration(ctx, log, "stop", "--no-block", ReprovisionUnit); err != nil {
+				log.Warn("could not stop the reprovision unit", "error", err)
+			}
+		}
+
+		removeReprovisionFiles(log)
+
+		return nil
+	}}
+}
+
+// removeReprovisionUnit disables and removes the unit and reloads systemd.
+func removeReprovisionUnit(ctx context.Context, log *slog.Logger) {
+	if _, err := os.Lstat(reprovisionUnitPath()); err != nil {
+		return
+	}
+
+	if err := systemctlForMigration(ctx, log, "disable", ReprovisionUnit); err != nil {
+		log.Warn("could not disable the reprovision unit", "error", err)
+	}
+
+	if err := os.Remove(reprovisionUnitPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn("could not remove the reprovision unit", "error", err)
+	}
+
+	if err := systemctlForMigration(ctx, log, "daemon-reload"); err != nil {
+		log.Warn("could not reload systemd after removing the reprovision unit", "error", err)
 	}
 }
 

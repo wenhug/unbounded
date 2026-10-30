@@ -38,7 +38,12 @@ type reprovisionRunner struct {
 	// loadPlan validates the staged configuration and that a bootstrap plan
 	// exists for its mode.
 	loadPlan func() error
-	sleep    func(time.Duration)
+	// abandon removes the unit and the staged binary and configuration once the
+	// handoff has given up. The journal stays for the daemon that reports it.
+	abandon func(ctx context.Context) error
+	// maxAttempts bounds the runs that may start before the handoff gives up.
+	maxAttempts int
+	sleep       func(time.Duration)
 }
 
 // newCmdIsolationReprovision is the hidden command the reprovision unit runs.
@@ -70,8 +75,12 @@ func newCmdIsolationReprovision(cmdCtx *CommandContext) *cobra.Command {
 			r := &reprovisionRunner{
 				log: cmdCtx.Logger,
 				reset: func(ctx context.Context) error {
-					return daemon.ResetAgent(cmdCtx.Logger).Do(ctx)
+					return daemon.ResetAgentForReprovision(cmdCtx.Logger).Do(ctx)
 				},
+				abandon: func(ctx context.Context) error {
+					return daemon.AbandonReprovision(ctx, cmdCtx.Logger, dir)
+				},
+				maxAttempts: daemon.ReprovisionMaxAttempts,
 				start:    func(ctx context.Context) error { return runStart(ctx, cmdCtx) },
 				loadPlan: func() error { return checkStagedConfig(cmdCtx.Logger) },
 				sleep:    time.Sleep,
@@ -128,6 +137,21 @@ func (r *reprovisionRunner) run(ctx context.Context, store migrate.JournalStore)
 		r.log.Info("reprovision already finished")
 
 		return nil
+	case migrate.StepFailed:
+		// A run that gave up may have been interrupted before it cleaned up.
+		return r.abandonHandoff(ctx)
+	case migrate.StepReprovisioning, migrate.StepBootstrapping:
+		if j.Attempts >= r.maxAttempts {
+			return r.giveUp(ctx, store, j)
+		}
+
+		j.Attempts++
+		if err := store.Save(j); err != nil {
+			return err
+		}
+	}
+
+	switch j.Step {
 	case migrate.StepReprovisioning:
 		if err := r.resetWithRetry(ctx); err != nil {
 			return r.fail(store, j, fmt.Errorf("reset: %w", err))
@@ -173,6 +197,43 @@ func (r *reprovisionRunner) resetWithRetry(ctx context.Context) error {
 		r.log.Info("waiting for the daemon to release installation ownership before resetting")
 		r.sleep(reprovisionLockPoll)
 	}
+}
+
+// giveUp is the end of a handoff whose runs are used up. It records the failure
+// as terminal, removes the unit and the staged credentials, and returns nil so
+// that systemd does not run the unit again. The host is reset and has no daemon
+// to tell the MachineOperation; the first daemon that starts on it does.
+func (r *reprovisionRunner) giveUp(ctx context.Context, store migrate.JournalStore, j migrate.Journal) error {
+	last := j.Message
+	if last == "" {
+		last = "no error was recorded"
+	}
+
+	j.Step = migrate.StepFailed
+	j.Message = fmt.Sprintf("reprovision to isolation mode %s gave up after %d attempts; the host was reset and is not bootstrapped: %s",
+		j.To, j.Attempts, last)
+
+	if err := store.Save(j); err != nil {
+		return err
+	}
+
+	r.log.Error("reprovision gave up", "to", j.To, "attempts", j.Attempts, "last_error", last)
+
+	return r.abandonHandoff(ctx)
+}
+
+func (r *reprovisionRunner) abandonHandoff(ctx context.Context) error {
+	if r.abandon == nil {
+		return nil
+	}
+
+	if err := r.abandon(ctx); err != nil {
+		// The journal says the handoff is over; a leftover file does not change
+		// that, and a reset removes it.
+		r.log.Warn("could not remove the reprovision unit and staged files", "error", err)
+	}
+
+	return nil
 }
 
 // fail records why the handoff stopped, for operators, and returns the error so

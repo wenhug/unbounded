@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -276,4 +277,87 @@ func TestNewMigrationBackendKnowsInPlaceModesOnly(t *testing.T) {
 
 	_, _, err = newMigrationBackend(discardLogger(), migrationEndpoint{Mode: isolation.ModeContainer, Slot: "bogus", Config: cfg})
 	require.Error(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// A reprovision whose bootstrap never succeeded
+// ---------------------------------------------------------------------------
+
+func stageGivenUpHandoff(t *testing.T, h *migHarness) {
+	t.Helper()
+
+	dir := reprovisionDir()
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ReprovisionBinaryName), []byte("binary"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ReprovisionConfigName), []byte(`{"token":"secret"}`), 0o600))
+	require.NoError(t, os.MkdirAll(reprovisionUnitDir(), 0o755))
+	require.NoError(t, os.WriteFile(reprovisionUnitPath(), []byte("[Unit]\n"), 0o644))
+	require.NoError(t, reprovisionJournalFor().Save(migrate.Journal{
+		Operation: "op-1", Strategy: migrate.Reprovision, From: isolation.ModeNSpawn, To: isolation.ModeNone,
+		Step: migrate.StepFailed, Attempts: ReprovisionMaxAttempts,
+		Message: "reprovision to isolation mode none gave up after 5 attempts; the host was reset and is not bootstrapped: kubelet did not join",
+	}))
+}
+
+func TestAbandonReprovisionKeepsOnlyTheJournal(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	stageGivenUpHandoff(t, h)
+
+	require.NoError(t, AbandonReprovision(context.Background(), discardLogger(), reprovisionDir()))
+
+	assert.NoFileExists(t, reprovisionUnitPath())
+	assert.NoFileExists(t, filepath.Join(reprovisionDir(), ReprovisionBinaryName))
+	assert.NoFileExists(t, filepath.Join(reprovisionDir(), ReprovisionConfigName), "the staged configuration holds the bootstrap token")
+	assert.FileExists(t, reprovisionJournalOf(), "the journal is what the next daemon reports")
+	assert.Equal(t, []string{"systemctl disable " + ReprovisionUnit, "systemctl daemon-reload"}, h.events)
+
+	// Running it again, as an interrupted handoff does, is harmless.
+	require.NoError(t, AbandonReprovision(context.Background(), discardLogger(), reprovisionDir()))
+}
+
+func TestRecoverIsolationMigration_ReportsAReprovisionThatGaveUp(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	stageGivenUpHandoff(t, h)
+	require.NoError(t, AbandonReprovision(context.Background(), discardLogger(), reprovisionDir()))
+
+	c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
+
+	// The first daemon to start on the reset host, after a new bootstrap.
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
+
+	op := getOp(t, c)
+	assert.Equal(t, v1alpha3.OperationPhaseFailed, op.Status.Phase)
+	assert.Contains(t, op.Status.Message, "gave up after 5 attempts")
+	assert.Contains(t, op.Status.Message, "kubelet did not join")
+
+	_, err := reprovisionJournalFor().Load()
+	assert.ErrorIs(t, err, migrate.ErrNoJournal, "the journal goes once the failure is reported")
+	assert.NoDirExists(t, reprovisionDir())
+}
+
+func TestRemoveReprovisionHandoffLeavesNothingBehind(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+
+	// Nothing staged: a reset on an ordinary host does nothing.
+	require.NoError(t, RemoveReprovisionHandoff(discardLogger()).Do(context.Background()))
+	assert.Empty(t, h.events)
+
+	stageGivenUpHandoff(t, h)
+
+	require.NoError(t, RemoveReprovisionHandoff(discardLogger()).Do(context.Background()))
+
+	assert.NoFileExists(t, reprovisionUnitPath())
+	assert.NoDirExists(t, reprovisionDir())
+	assert.Equal(t, []string{
+		"systemctl stop --no-block " + ReprovisionUnit,
+		"systemctl disable " + ReprovisionUnit,
+		"systemctl daemon-reload",
+	}, h.events)
+}
+
+func TestResetIncludesTheHandoffCleanupExceptForTheHandoffsOwnReset(t *testing.T) {
+	log := discardLogger()
+
+	assert.Contains(t, resetResources(log).Name(), "remove-reprovision-handoff")
+	assert.NotContains(t, resetNodeResources(log).Name(), "remove-reprovision-handoff")
 }

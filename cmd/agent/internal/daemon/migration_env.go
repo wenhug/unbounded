@@ -46,6 +46,10 @@ const (
 	ReprovisionBinaryName  = "unbounded-agent"
 	// ReprovisionUnit is the systemd unit that runs the handoff command.
 	ReprovisionUnit = "unbounded-agent-reprovision.service"
+	// ReprovisionMaxAttempts is how many runs of the handoff command may start
+	// before it gives up. It stays below the unit's StartLimitBurst, so the
+	// handoff records why it stopped before systemd stops it without a word.
+	ReprovisionMaxAttempts = 5
 )
 
 // Paths are variables so tests can point them at a temporary tree.

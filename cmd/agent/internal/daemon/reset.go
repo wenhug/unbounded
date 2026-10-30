@@ -36,6 +36,12 @@ func ResetAgent(log *slog.Logger) phases.Task {
 	return ownedReset(log, installstate.DefaultStore(), phases.Serial(log, StopDaemon(log), resetResources(log)))
 }
 
+// ResetAgentForReprovision is ResetAgent for the reprovision handoff: it leaves
+// the handoff's unit, binary, configuration and journal in place.
+func ResetAgentForReprovision(log *slog.Logger) phases.Task {
+	return ownedReset(log, installstate.DefaultStore(), phases.Serial(log, StopDaemon(log), resetNodeResources(log)))
+}
+
 type lifecycleTask struct {
 	name string
 	run  func(context.Context) error
@@ -212,6 +218,13 @@ var hostIsContainer = func() bool {
 // For a host-native node the stop, config and root steps are the none
 // teardown's, and there is no per-machine bpffs mount to clean.
 func resetResources(log *slog.Logger) phases.Task {
+	return phases.Serial(log, resetNodeResources(log), RemoveReprovisionHandoff(log))
+}
+
+// resetNodeResources is the reset without the cleanup of a reprovision
+// handoff. The handoff's own reset uses it, since the handoff runs from the
+// directory the cleanup removes.
+func resetNodeResources(log *slog.Logger) phases.Task {
 	switch {
 	case hostIsNone():
 		return resetResourcesNone(log, noneTeardown(log))
