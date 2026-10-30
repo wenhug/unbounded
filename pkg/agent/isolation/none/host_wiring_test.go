@@ -394,3 +394,14 @@ func TestRegisteredBackendConformance(t *testing.T) {
 		}
 	})
 }
+
+func TestPreflightCheckPathsOverride(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "ro")
+	require.NoError(t, os.WriteFile(file, nil, 0o644))
+
+	b := &Backend{Host: &HostFS{Proc: filepath.Join(t.TempDir(), "proc")}, CheckPaths: []string{file}}
+	require.ErrorContains(t, b.Preflight(), "not a directory")
+
+	b.CheckPaths = []string{t.TempDir()}
+	require.NoError(t, b.Preflight())
+}

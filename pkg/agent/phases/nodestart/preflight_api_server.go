@@ -16,6 +16,8 @@ import (
 
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/preflight"
 )
 
@@ -39,16 +41,27 @@ func Preflight(log *slog.Logger, cfg config.AgentConfig, goalState *goalstates.M
 		root = goalState.RootFS.Root().Path("/")
 	}
 
+	kubeletExe, containerdExe := kubeletExecutablePath, containerdExecutablePath
+
+	if cfg.Isolation == string(isolation.ModeNone) {
+		// The node stack runs on the host, so its processes have the host root
+		// and execute the active version's binaries through the current link.
+		// The executable is resolved through that link, so a listener started
+		// before an upgrade flip is still recognized as the agent's own.
+		bin := strings.TrimPrefix(none.Layout{}.BinDir(), "/")
+		root, kubeletExe, containerdExe = "/", bin+"/kubelet", bin+"/containerd"
+	}
+
 	return []preflight.Checker{
 		// TODO: Consider moving the kubelet bind address to the kubelet goal state.
-		checkOwnedBindAddress(log, checkKubeletBindAddressName, kubeletBindAddress, "kubelet bind address", root, kubeletExecutablePath),
+		checkOwnedBindAddress(log, checkKubeletBindAddressName, kubeletBindAddress, "kubelet bind address", root, kubeletExe),
 		checkOwnedBindAddress(
 			log,
 			checkContainerdMetricsBindAddressName,
 			goalState.NodeStart.Containerd.MetricsAddress,
 			"containerd metrics bind address",
 			root,
-			containerdExecutablePath,
+			containerdExe,
 		),
 		CheckAPIServerReachable(log, cfg),
 	}

@@ -158,3 +158,17 @@ func TestImportContainerImagesOnHostUsesHostPath(t *testing.T) {
 
 	require.Equal(t, "/machine/a.tar", task.archivePath(archive))
 }
+
+func TestPreflightNoneUsesTheHostRootAndCurrentLink(t *testing.T) {
+	t.Parallel()
+
+	gs := &goalstates.MachineGoalState{
+		RootFS:    &goalstates.RootFS{MachineDir: "/var/lib/machines/kube1"},
+		NodeStart: &goalstates.NodeStart{Containerd: goalstates.Containerd{MetricsAddress: "0.0.0.0:10257"}},
+	}
+
+	nspawn := Preflight(slog.New(slog.DiscardHandler), config.AgentConfig{}, gs)
+	host := Preflight(slog.New(slog.DiscardHandler), config.AgentConfig{Isolation: "none"}, gs)
+
+	require.Len(t, host, len(nspawn), "the same checks run in both modes")
+}

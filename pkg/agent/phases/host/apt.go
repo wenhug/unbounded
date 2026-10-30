@@ -11,6 +11,7 @@ import (
 	"os/exec"
 
 	"github.com/Azure/unbounded/pkg/agent/internal/utilio"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
@@ -62,6 +63,23 @@ func HardenAPT(log *slog.Logger) phases.Task {
 		lookupPath:            exec.LookPath,
 	}
 }
+
+// HardenAPTFor is HardenAPT for an isolation mode. The drop-ins exist to keep a
+// package upgrade from restarting systemd-machined and killing the nspawn
+// machine, so only the nspawn mode writes them; any other mode gets a task that
+// does nothing.
+func HardenAPTFor(log *slog.Logger, mode isolation.Mode) phases.Task {
+	if mode == "" || mode == isolation.ModeNSpawn {
+		return HardenAPT(log)
+	}
+
+	return skippedHardenAPT{}
+}
+
+type skippedHardenAPT struct{}
+
+func (skippedHardenAPT) Name() string               { return "harden-apt" }
+func (skippedHardenAPT) Do(_ context.Context) error { return nil }
 
 func (h *hardenAPT) Name() string { return "harden-apt" }
 

@@ -51,6 +51,10 @@ type Backend struct {
 	// the previous version starts on rollback. The agent uses it to clean up
 	// host networking as repave does.
 	BeforeUpgradeStart func(ctx context.Context) error
+	// CheckPaths replaces Requirements().WritablePaths in Preflight when set.
+	// Tests and offline tooling use it to probe a temporary tree instead of the
+	// real /etc, /opt and /var.
+	CheckPaths []string
 	// Proc is the procfs mount Destroy scans for containerd shims that outlive
 	// the stopped units. Empty skips the scan, so tests and tools that build a
 	// Backend never signal processes by accident; the agent sets it to /proc.
@@ -125,7 +129,12 @@ func (b *Backend) Preflight() error {
 		errs = append(errs, errors.New("use isolation mode nspawn or container, or remove the existing kubelet and containerd"))
 	}
 
-	if err := CheckWritable(b.Requirements().WritablePaths...); err != nil {
+	paths := b.Requirements().WritablePaths
+	if b.CheckPaths != nil {
+		paths = b.CheckPaths
+	}
+
+	if err := CheckWritable(paths...); err != nil {
 		errs = append(errs, err)
 	}
 
