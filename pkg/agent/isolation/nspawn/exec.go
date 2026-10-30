@@ -10,8 +10,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os/exec"
-	"strconv"
 
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
@@ -49,36 +47,7 @@ func Logs(ctx context.Context, slot string, opts isolation.LogOptions) (io.ReadC
 		args = append(args, "--unit="+opts.Unit)
 	}
 
-	if opts.Follow {
-		args = append(args, "--follow")
-	}
+	args = append(args, isolation.JournalTailArgs(opts)...)
 
-	if opts.Lines > 0 {
-		args = append(args, "--lines="+strconv.Itoa(opts.Lines))
-	}
-
-	cmd := exec.CommandContext(ctx, "journalctl", args...)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	return &cmdReader{ReadCloser: stdout, cmd: cmd}, nil
-}
-
-type cmdReader struct {
-	io.ReadCloser
-	cmd *exec.Cmd
-}
-
-func (c *cmdReader) Close() error {
-	err := c.ReadCloser.Close()
-	_ = c.cmd.Wait() //nolint:errcheck // exit status of a closed log stream is not meaningful
-
-	return err
+	return isolation.StartLogStream(ctx, "journalctl", args...)
 }

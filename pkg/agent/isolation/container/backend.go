@@ -25,7 +25,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -664,44 +663,11 @@ func (b *Backend) Logs(ctx context.Context, r isolation.NodeRoot, opts isolation
 		args = append(args, "--unit="+opts.Unit)
 	}
 
-	if opts.Follow {
-		args = append(args, "--follow")
-	}
-
-	if opts.Lines > 0 {
-		args = append(args, "--lines="+strconv.Itoa(opts.Lines))
-	}
+	args = append(args, isolation.JournalTailArgs(opts)...)
 
 	if b.Stream != nil {
 		return b.Stream(ctx, b.runtimePath(), args...)
 	}
 
-	return startStream(ctx, b.runtimePath(), args...)
-}
-
-func startStream(ctx context.Context, name string, args ...string) (io.ReadCloser, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	return &cmdReader{ReadCloser: stdout, cmd: cmd}, nil
-}
-
-type cmdReader struct {
-	io.ReadCloser
-	cmd *exec.Cmd
-}
-
-func (c *cmdReader) Close() error {
-	err := c.ReadCloser.Close()
-	_ = c.cmd.Wait() //nolint:errcheck // exit status of a closed log stream is not meaningful
-
-	return err
+	return isolation.StartLogStream(ctx, b.runtimePath(), args...)
 }

@@ -10,9 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/Azure/unbounded/internal/executil"
@@ -454,26 +452,9 @@ func (b *Backend) Logs(ctx context.Context, _ isolation.NodeRoot, opts isolation
 		}
 	}
 
-	if opts.Follow {
-		args = append(args, "--follow")
-	}
+	args = append(args, isolation.JournalTailArgs(opts)...)
 
-	if opts.Lines > 0 {
-		args = append(args, "--lines="+strconv.Itoa(opts.Lines))
-	}
-
-	cmd := exec.CommandContext(ctx, "journalctl", args...)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	return &cmdReader{ReadCloser: stdout, cmd: cmd}, nil
+	return isolation.StartLogStream(ctx, "journalctl", args...)
 }
 
 // agentUnit maps the names users know to the agent-owned unit names.
@@ -488,18 +469,6 @@ func agentUnit(name string) string {
 	default:
 		return name
 	}
-}
-
-type cmdReader struct {
-	io.ReadCloser
-	cmd *exec.Cmd
-}
-
-func (c *cmdReader) Close() error {
-	err := c.ReadCloser.Close()
-	_ = c.cmd.Wait() //nolint:errcheck // exit status of a closed log stream is not meaningful
-
-	return err
 }
 
 // Upgrade switches to an installed version: stop the stack, flip the link,
