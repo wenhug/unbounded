@@ -55,6 +55,9 @@ type Backend struct {
 	// Tests and offline tooling use it to probe a temporary tree instead of the
 	// real /etc, /opt and /var.
 	CheckPaths []string
+	// LookPath resolves host commands for PreflightStatic. Nil skips the
+	// command check; the agent sets it to exec.LookPath.
+	LookPath func(file string) (string, error)
 	// Proc is the procfs mount Destroy scans for containerd shims that outlive
 	// the stopped units. Empty skips the scan, so tests and tools that build a
 	// Backend never signal processes by accident; the agent sets it to /proc.
@@ -112,21 +115,33 @@ func (b *Backend) Requirements() isolation.Requirements {
 
 // Preflight refuses to proceed when the host already has a kubelet or
 // containerd the agent does not own, or a required path is read only. It
-// mutates nothing.
+// mutates nothing. It is PreflightStatic followed by PreflightOwnership.
 func (b *Backend) Preflight() error {
-	host := DefaultHostFS
-	if b.Host != nil {
-		host = *b.Host
-	}
+	return errors.Join(b.PreflightStatic(), b.PreflightOwnership())
+}
+
+// PreflightStatic checks what the host must provide whatever it runs now: the
+// cgroup filesystem, the required host commands (when LookPath is set) and
+// writable /etc, the node base and /var. None of it depends on the absence of
+// a kubelet or containerd, so it is valid on a host that is a running node.
+// A migration runs it before it resets or stops anything.
+func (b *Backend) PreflightStatic() error {
+	host := b.hostFS()
 
 	var errs []error
 
-	if findings := host.DetectUnmanaged(b.Layout.base()); len(findings) > 0 {
-		for _, f := range findings {
-			errs = append(errs, errors.New(f))
+	if host.Cgroup != "" {
+		if _, err := os.Stat(host.Cgroup); err != nil {
+			errs = append(errs, fmt.Errorf("cgroup filesystem is required at %s: %w", host.Cgroup, err))
 		}
+	}
 
-		errs = append(errs, errors.New("use isolation mode nspawn or container, or remove the existing kubelet and containerd"))
+	if b.LookPath != nil {
+		for _, cmd := range b.Requirements().HostCommands {
+			if _, err := b.LookPath(cmd); err != nil {
+				errs = append(errs, fmt.Errorf("required command %q not found: %w", cmd, err))
+			}
+		}
 	}
 
 	paths := b.Requirements().WritablePaths
@@ -139,6 +154,33 @@ func (b *Backend) Preflight() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// PreflightOwnership refuses a host that already has a kubelet or containerd
+// the agent does not own (unit, binary or running process). It fails on a host
+// that is a running node, so a migration runs it only after the reset.
+func (b *Backend) PreflightOwnership() error {
+	findings := b.hostFS().DetectUnmanaged(b.Layout.base())
+	if len(findings) == 0 {
+		return nil
+	}
+
+	errs := make([]error, 0, len(findings)+1)
+	for _, f := range findings {
+		errs = append(errs, errors.New(f))
+	}
+
+	errs = append(errs, errors.New("use isolation mode nspawn or container, or remove the existing kubelet and containerd"))
+
+	return errors.Join(errs...)
+}
+
+func (b *Backend) hostFS() HostFS {
+	if b.Host != nil {
+		return *b.Host
+	}
+
+	return DefaultHostFS
 }
 
 func (b *Backend) unitDir() string {

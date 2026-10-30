@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"strings"
 
 	"github.com/Azure/unbounded/pkg/agent/config"
@@ -117,11 +118,11 @@ var preflightMigrationTarget = func(ctx context.Context, log *slog.Logger, mode 
 	case isolation.ModeContainer:
 		checks = append(checks, host.CheckContainerBackend(log))
 	case isolation.ModeNone:
-		// The none backend's full preflight refuses a host that runs a kubelet
+		// The none backend's ownership check refuses a host that runs a kubelet
 		// or containerd it does not own, and the node being migrated is one.
-		// Bootstrap runs it after the reset, on the clean host. Before it, only
-		// what can be checked without that: writable paths.
-		if err := none.CheckWritable("/etc", none.DefaultBase, "/var"); err != nil {
+		// Bootstrap runs it after the reset, on the clean host. Before it, the
+		// static checks: cgroups, required commands and writable paths.
+		if err := (&none.Backend{Log: log, LookPath: exec.LookPath}).PreflightStatic(); err != nil {
 			return fmt.Errorf("host cannot run isolation mode none: %w", err)
 		}
 

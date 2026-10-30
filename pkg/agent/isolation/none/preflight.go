@@ -21,6 +21,8 @@ type HostFS struct {
 	BinDirs []string
 	// Proc is the procfs mount.
 	Proc string
+	// Cgroup is the cgroup filesystem mount. Empty skips the cgroup check.
+	Cgroup string
 }
 
 // DefaultHostFS is the real host.
@@ -28,6 +30,7 @@ var DefaultHostFS = HostFS{
 	UnitDirs: []string{"/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"},
 	BinDirs:  []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"},
 	Proc:     "/proc",
+	Cgroup:   "/sys/fs/cgroup",
 }
 
 // foreign names the components that must not already be on the host.
