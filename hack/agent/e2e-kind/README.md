@@ -186,3 +186,41 @@ cloud-init host:
 HOST_BASE_OS=ubuntu2404 E2E_SUITE=migration KEEP_ENV=1 \
   bash hack/agent/e2e-kind/run-local.sh
 ```
+
+## Isolation modes
+
+The agent runs the node stack in one of three isolation modes: `nspawn` (the
+default), `none` and `container` (provisional). `ISOLATION_MODE` selects the
+mode under test and adds `--isolation <mode>` to `kubectl unbounded machine
+manual-bootstrap`. Left unset, no flag is passed and the existing suites behave
+exactly as before.
+
+| Suite | Run with | Covers |
+|---|---|---|
+| `isolation-lifecycle` | `ISOLATION_MODE=none` or `container` | Bootstrap, `unbounded-agent exec` and `logs`, soft reboot (`NodeReboot`), repave upgrade, host reboot, reset. |
+| `isolation-migration` | `ISOLATION_MODE` unset | `IsolationMigrate`: unsupported pair rejected, in-place rollback, `nspawn` to `container` and back (in place), `nspawn` to `none` and back (reprovision). |
+
+```sh
+HOST_BASE_OS=ubuntu2404 ISOLATION_MODE=none E2E_SUITE=isolation-lifecycle KEEP_ENV=1 \
+  bash hack/agent/e2e-kind/run-local.sh
+HOST_BASE_OS=ubuntu2404 E2E_SUITE=isolation-migration KEEP_ENV=1 \
+  bash hack/agent/e2e-kind/run-local.sh
+```
+
+These suites were written against the design and the `none` backend and
+migration orchestrator on the branch. They have not been run: they need QEMU, KVM
+and a Kind cluster. They also depend on pieces that may not be wired when you
+read this: the `exec` and `logs` subcommands, daemon host operations for
+`IsolationMigrate`, and the `container` backend. Expect to adjust assertions that
+name backend internals (the `container` root `/var/lib/unbounded/containers`,
+the `none` units `unbounded-containerd.service` and `unbounded-kubelet.service`).
+
+The rollback case needs a fault that fails the migration target after the
+source stopped. The default fault places a directory where the alternate slot's
+applied config belongs, which makes persisting the target fail. Replace it with
+`MIGRATION_FAULT_CMD` and `MIGRATION_FAULT_CLEANUP_CMD`, shell commands run on
+the VM.
+
+`MIGRATION_TIMEOUT` (seconds, default 900) bounds each migration operation.
+NodeConfig variants that check nspawn files (`additional-host-mounts.json`) are
+nspawn-only and are not part of the isolation suites.

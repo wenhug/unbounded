@@ -46,6 +46,12 @@ Subcommands (called as individual workflow steps):
     validate-host-agent-upgrade        Verify host-driven upgrade adopts a single-binary deployment.
     validate-agent-upgrade-operation   Verify AgentUpgrade switches the host daemon binary.
     validate-agent-upgrade-rollback    Verify AgentUpgrade rollback restores last-known-good.
+    validate-isolation-mode            Verify the host recorded and runs the ISOLATION_MODE node stack.
+    validate-isolation-exec-logs       Verify unbounded-agent exec and logs reach the node stack.
+    validate-isolation-soft-reboot     Verify NodeReboot restarts only the node stack.
+    migrate-to-<mode>-<strategy>       Run an IsolationMigrate operation and verify the result.
+    validate-migration-rollback-to-container
+                                       Fail an in-place migration and verify rollback.
     validate-node-repave-upgrade       Verify OnDelete repave applies a new MCV Kubernetes version.
                                        Also verifies private bpffs isolation across repave.
     validate-node-configs              Discover and validate node config scenarios in parallel.
@@ -127,6 +133,20 @@ E2E_SITE_NAME = os.environ.get("E2E_SITE_NAME", "e2e")
 
 # Fixed nspawn machine names used by unbounded-agent (decoupled from the kube node name).
 NSPAWN_MACHINE_NAMES = ["kube1", "kube2"]
+
+# Isolation mode under test, from ISOLATION_MODE: nspawn, none or container.
+# Empty is today's behavior: no --isolation flag is passed, the host runs the
+# default nspawn mode, and every existing step behaves exactly as before.
+ISOLATION_MODES = ("nspawn", "none", "container")
+ISOLATION_MODE = os.environ.get("ISOLATION_MODE", "")
+if ISOLATION_MODE and ISOLATION_MODE not in ISOLATION_MODES:
+    sys.exit(f"ISOLATION_MODE must be one of {', '.join(ISOLATION_MODES)}, got {ISOLATION_MODE!r}")
+# Agent-owned units and install base of the none mode (pkg/agent/isolation/none).
+NONE_NODE_BASE = "/opt/unbounded/node"
+NONE_UNITS = ("unbounded-containerd.service", "unbounded-kubelet.service")
+# Node-stack root of the container mode. Provisional: from the design, not yet
+# verified against the container backend.
+CONTAINER_ROOT_BASE = "/var/lib/unbounded/containers"
 
 BRIDGE_NAME = "virbr-e2e"
 TAP_NAME = os.environ.get("TAP_NAME", "tap-e2e")
@@ -731,6 +751,143 @@ def validate_host_nspawn_distro() -> None:
         f"nspawn={nspawn_distro}, machine={machine}")
 
 
+def isolation_mode() -> str:
+    """Return the isolation mode under test. Empty ISOLATION_MODE is nspawn."""
+    return ISOLATION_MODE or "nspawn"
+
+
+def parse_applied_isolation(applied_config: str) -> str:
+    """Return the isolation mode recorded in an applied-config JSON document.
+    A missing or empty value is nspawn, as for a host written by an older agent."""
+    value = json.loads(applied_config).get("Isolation", "")
+    return value or "nspawn"
+
+
+def applied_config_files() -> list[str]:
+    """Return the applied-config files on the VM, one per node-stack slot."""
+    out = ssh_capture_quiet("sudo sh -c 'ls /etc/unbounded/agent/*-applied-config.json 2>/dev/null'")
+    return out.stdout.split()
+
+
+def applied_isolation() -> str:
+    """Return the isolation mode the host recorded, failing if none is applied
+    or the applied configs disagree."""
+    files = applied_config_files()
+    if not files:
+        die("no applied config found on the host")
+    modes = {parse_applied_isolation(ssh_capture(f"sudo cat {path}")) for path in files}
+    if len(modes) != 1:
+        die(f"applied configs record different isolation modes: {sorted(modes)}")
+    return modes.pop()
+
+
+def node_exec(command: str) -> str:
+    """Run a shell command in the node stack. nspawn keeps its existing
+    machinectl path; other modes use the agent's exec subcommand."""
+    if isolation_mode() == "nspawn":
+        return machine_shell(active_nspawn_machine(), command)
+    return ssh_capture(f"sudo {DAEMON_BINARY} exec -- /bin/sh -c {shlex.quote(command)}")
+
+
+def none_current_version() -> str:
+    """Return the version the none mode's current link selects, or empty."""
+    out = ssh_capture_quiet(f"sudo readlink {NONE_NODE_BASE}/current")
+    return os.path.basename(out.stdout.strip())
+
+
+def isolation_node_marker() -> str:
+    """Return a value that changes when a repave or upgrade replaces the node
+    stack: the current version for none, the slot name otherwise."""
+    if isolation_mode() == "none":
+        return none_current_version()
+    files = applied_config_files()
+    return ",".join(sorted(os.path.basename(f).removesuffix("-applied-config.json") for f in files))
+
+
+def validate_isolation_mode() -> None:
+    """Assert the host recorded the requested mode and runs its node stack the
+    way that mode defines."""
+    mode = isolation_mode()
+    recorded = applied_isolation()
+    if recorded != mode:
+        die(f"applied config records isolation {recorded!r}, expected {mode!r}")
+    if mode == "nspawn":
+        log(f"Applied isolation {recorded}, active machine {active_nspawn_machine()}")
+        return
+    machines = ssh_capture_quiet("sudo sh -c 'machinectl list --no-legend 2>/dev/null | wc -l'")
+    if machines.stdout.strip() not in ("", "0"):
+        die(f"{mode} mode must not run an nspawn machine, machinectl lists: {machines.stdout.strip()}")
+    if mode == "none":
+        for unit in NONE_UNITS:
+            ssh_cmd(f"sudo systemctl is-active {unit}")
+        if not none_current_version():
+            die(f"{NONE_NODE_BASE}/current is not a link to an installed version")
+    else:
+        # Provisional: only the backend-neutral contract is asserted until the
+        # container backend's node facts are verified.
+        ssh_cmd(f"sudo {DAEMON_BINARY} exec -- /bin/true")
+    log(f"Isolation mode {mode} verified on the host")
+
+
+def validate_isolation_exec_logs() -> None:
+    """Assert the backend-neutral exec and logs subcommands work in every mode."""
+    marker = f"e2e-exec-{int(time.time())}"
+    out = ssh_capture(f"sudo {DAEMON_BINARY} exec -- /bin/echo {marker}")
+    if marker not in out:
+        die(f"unbounded-agent exec did not run in the node stack: {out!r}")
+    logs = ssh_capture(f"sudo {DAEMON_BINARY} logs --unit kubelet --lines 20")
+    if not logs.strip():
+        die("unbounded-agent logs --unit kubelet returned no output")
+    log("unbounded-agent exec and logs work")
+
+
+def validate_isolation_soft_reboot() -> None:
+    """Assert NodeReboot restarts the node stack only: the Node returns Ready
+    and the mode is unchanged. In none mode the host boot ID must not change."""
+    mode = isolation_mode()
+    host_boot_before = ssh_capture("cat /proc/sys/kernel/random/boot_id").strip()
+    name = f"e2e-isolation-reboot-{int(time.time())}"
+    run_quiet([KUBECTL, "delete", _machine_operation_resource(), name, "--ignore-not-found"], check=False)
+    create_machine_operation(name, AGENT_MACHINE_NAME, "NodeReboot")
+    wait_for_machine_operation_complete(name)
+    wait_for_node_ready(AGENT_MACHINE_NAME)
+    if mode == "none":
+        for unit in NONE_UNITS:
+            ssh_cmd(f"sudo systemctl is-active {unit}")
+        if ssh_capture("cat /proc/sys/kernel/random/boot_id").strip() != host_boot_before:
+            die("NodeReboot rebooted the host; it must restart only the node stack")
+    if applied_isolation() != mode:
+        die(f"NodeReboot changed the isolation mode away from {mode}")
+    log(f"Soft reboot passed in {mode} mode")
+
+
+def validate_node_stack_removed() -> None:
+    """Assert reset removed the node stack of the mode under test."""
+    mode = isolation_mode()
+    if mode == "nspawn":
+        log("Verifying nspawn machines are stopped on VM...")
+        for nspawn_name in NSPAWN_MACHINE_NAMES:
+            result = subprocess.run(
+                ["ssh", *SSH_OPTS, SSH_TARGET,
+                 f"sudo machinectl show {nspawn_name}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                die(f"nspawn machine '{nspawn_name}' is still running after reset")
+            log(f"nspawn machine '{nspawn_name}' is not running")
+        return
+    if mode == "none":
+        leftovers = present_on_host([
+            NONE_NODE_BASE,
+            *[f"/etc/systemd/system/{unit}" for unit in NONE_UNITS],
+        ])
+    else:
+        leftovers = present_on_host([CONTAINER_ROOT_BASE])
+    if leftovers:
+        die(f"reset left {mode} node stack artifacts on the host: {leftovers}")
+    log(f"{mode} node stack is gone after reset")
+
+
 def create_bpffs_sentinel(machine: str) -> None:
     log(f"Creating bpffs sentinel in nspawn machine '{machine}'...")
     machine_shell(machine, textwrap.dedent(f"""\
@@ -923,6 +1080,8 @@ def node_config_bootstrap_args(node_config: NodeConfig) -> list[str]:
         args.extend(["--register-with-taint", taint])
     if node_config.rootfs_oci_image:
         args.extend(["--oci-image", node_config.rootfs_oci_image])
+    if ISOLATION_MODE:
+        args.extend(["--isolation", ISOLATION_MODE])
     for mount in node_config.additional_host_mounts:
         spec = mount["source"]
         if mount.get("target"):
@@ -3978,11 +4137,13 @@ def validate_local_dns_config(node_config: NodeConfig) -> None:
     if not node_config.local_dns:
         return
 
-    log("Validating nspawn LocalDNS...")
-    machine = active_nspawn_machine()
-    machine_shell(machine, """
-systemctl is-active --quiet localdns.service
+    log(f"Validating {isolation_mode()} LocalDNS...")
+    # The in-node unit name and resolv.conf are nspawn facts. Other modes are
+    # held to the same-path contract (kubelet config, listeners) only.
+    nspawn_only = """systemctl is-active --quiet localdns.service
 grep -qx 'nameserver 169.254.10.10' /etc/resolv.conf
+""" if isolation_mode() == "nspawn" else ""
+    node_exec(nspawn_only + """
 grep -qx 'clusterDNS:' /var/lib/kubelet/config.yaml
 grep -qx -- '- 169.254.10.11' /var/lib/kubelet/config.yaml
 grep -qx 'resolvConf: /etc/unbounded/localdns/resolv.conf' /var/lib/kubelet/config.yaml
@@ -4030,7 +4191,7 @@ for chain in output prerouting; do
 done
 """)
     ssh_cmd(f"curl --silent --fail --noproxy '*' http://{expected_node_ip(node_config)}:9253/metrics | grep -q '^coredns_build_info'")
-    log("nspawn LocalDNS validation passed")
+    log(f"{isolation_mode()} LocalDNS validation passed")
 
 
 def validate_offline_bootstrap_config(node_config: NodeConfig) -> None:
@@ -5018,17 +5179,8 @@ def reset_agent() -> None:
     else:
         die(f"Timed out waiting for node '{AGENT_MACHINE_NAME}' to be removed after {node_timeout}s")
 
-    # Verify the nspawn machines are no longer running on the VM
-    log("Verifying nspawn machines are stopped on VM...")
-    for nspawn_name in NSPAWN_MACHINE_NAMES:
-        result = subprocess.run(
-            ["ssh", *SSH_OPTS, SSH_TARGET,
-             f"sudo machinectl show {nspawn_name}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if result.returncode == 0:
-            die(f"nspawn machine '{nspawn_name}' is still running after reset")
-        log(f"nspawn machine '{nspawn_name}' is not running")
+    # Verify the node stack of the mode under test is gone from the VM.
+    validate_node_stack_removed()
 
     validate_reset_cleanup()
 
@@ -6074,8 +6226,11 @@ def validate_node_repave_upgrade(node_config: NodeConfig) -> None:
     if target_version_number == 0 or not target_mcv:
         die("Resolved target MachineConfigurationVersion was empty")
 
-    old_nspawn = active_nspawn_machine()
-    create_bpffs_sentinel(old_nspawn)
+    if isolation_mode() == "nspawn":
+        old_nspawn = active_nspawn_machine()
+        create_bpffs_sentinel(old_nspawn)
+    else:
+        old_marker = isolation_node_marker()
 
     log(f"Assigning Machine '{AGENT_MACHINE_NAME}' to {target_mcv}...")
     run([KUBECTL_UNBOUNDED, "machine", "config", "assign", AGENT_MACHINE_NAME,
@@ -6085,10 +6240,19 @@ def validate_node_repave_upgrade(node_config: NodeConfig) -> None:
     kubectl(["delete", "node", AGENT_MACHINE_NAME])
     wait_for_node_absent(AGENT_MACHINE_NAME)
     wait_for_node()
-    new_nspawn = active_nspawn_machine()
-    if new_nspawn == old_nspawn:
-        die(f"repave did not switch nspawn machines: still using {new_nspawn}")
-    assert_bpffs_sentinel_absent(new_nspawn)
+    if isolation_mode() == "nspawn":
+        new_nspawn = active_nspawn_machine()
+        if new_nspawn == old_nspawn:
+            die(f"repave did not switch nspawn machines: still using {new_nspawn}")
+        assert_bpffs_sentinel_absent(new_nspawn)
+    else:
+        # none flips its current link to the new version; container switches
+        # slots like nspawn. Either way the marker must change.
+        new_marker = isolation_node_marker()
+        if new_marker == old_marker:
+            die(f"repave did not replace the {isolation_mode()} node stack: still {new_marker!r}")
+        if applied_isolation() != isolation_mode():
+            die("repave changed the isolation mode")
     wait_for_node_kubelet_version(AGENT_MACHINE_NAME, target_kubelet_version)
     node = json.loads(kubectl_capture(["get", "node", AGENT_MACHINE_NAME, "-o", "json"]))
     _assert_expected_node_config(node, node_config)
@@ -6111,6 +6275,117 @@ def validate_node_repave_upgrade(node_config: NodeConfig) -> None:
     log("============================================")
     kubectl(["get", "machine", AGENT_MACHINE_NAME, "-o", "wide"])
     kubectl(["get", "node", AGENT_MACHINE_NAME, "-o", "wide"])
+
+# ---------------------------------------------------------------------------
+# isolation migration
+# ---------------------------------------------------------------------------
+MIGRATION_TIMEOUT_SECS = int(os.environ.get("MIGRATION_TIMEOUT", "900"))
+
+
+def set_effective_isolation(mode: str) -> None:
+    """Make the helpers that branch on the isolation mode follow a migration."""
+    global ISOLATION_MODE  # noqa: PLW0603
+    ISOLATION_MODE = mode
+
+
+def migration_message(target: str, strategy: str) -> str:
+    """Return the completion message the daemon records for IsolationMigrate
+    (cmd/agent/internal/daemon/controller_machineoperation.go)."""
+    return f"IsolationMigrate to {target} completed ({strategy})"
+
+
+def alternate_nspawn_slot() -> str:
+    """Return the slot an in-place migration prepares its target in."""
+    active = active_nspawn_machine()
+    return next(name for name in NSPAWN_MACHINE_NAMES if name != active)
+
+
+def inject_migration_target_fault() -> str:
+    """Make the target of an in-place migration fail after the source has been
+    stopped, so the rollback path runs. A directory where the alternate slot's
+    applied config belongs makes persisting the target fail. Returns the path
+    to remove afterwards. The fault is harness-only; override it with
+    MIGRATION_FAULT_CMD and MIGRATION_FAULT_CLEANUP_CMD."""
+    custom = os.environ.get("MIGRATION_FAULT_CMD", "")
+    if custom:
+        ssh_cmd(custom)
+        return ""
+    path = f"/etc/unbounded/agent/{alternate_nspawn_slot()}-applied-config.json"
+    ssh_cmd(f"sudo mkdir -p {shlex.quote(path)}")
+    return path
+
+
+def clear_migration_target_fault(path: str) -> None:
+    custom = os.environ.get("MIGRATION_FAULT_CLEANUP_CMD", "")
+    if custom:
+        ssh_cmd(custom)
+    elif path:
+        ssh_cmd(f"sudo rmdir {shlex.quote(path)}")
+
+
+def migrate_isolation(node_config: NodeConfig, target: str, strategy: str) -> None:
+    """Run an IsolationMigrate operation and assert the node moved with its
+    identity intact: same Node name, labels and taints, new mode recorded, a
+    workload still runs."""
+    source = applied_isolation()
+    name = f"e2e-isolation-migrate-{target}-{strategy.lower()}-{int(time.time())}"
+    run_quiet([KUBECTL, "delete", _machine_operation_resource(), name, "--ignore-not-found"], check=False)
+    create_machine_operation(name, AGENT_MACHINE_NAME, "IsolationMigrate",
+                             {"targetMode": target, "strategy": strategy})
+    operation = wait_for_machine_operation_complete(name, timeout_secs=MIGRATION_TIMEOUT_SECS)
+    message = operation.get("status", {}).get("message", "")
+    if message != migration_message(target, strategy):
+        die(f"unexpected IsolationMigrate message: {message!r}")
+    set_effective_isolation(target)
+    wait_for_node()
+    validate_isolation_mode()
+    node = json.loads(kubectl_capture(["get", "node", AGENT_MACHINE_NAME, "-o", "json"]))
+    _assert_expected_node_config(node, node_config)
+    validate_workload()
+    log(f"Isolation migration {source} -> {target} ({strategy}) PASSED")
+
+
+def validate_migration_rollback(node_config: NodeConfig, target: str) -> None:
+    """Fail an in-place migration after the source stopped and assert the
+    source is running again, the recorded mode is the source's, and the
+    operation reports the failure."""
+    source = applied_isolation()
+    name = f"e2e-isolation-rollback-{int(time.time())}"
+    fault = inject_migration_target_fault()
+    try:
+        run_quiet([KUBECTL, "delete", _machine_operation_resource(), name, "--ignore-not-found"], check=False)
+        create_machine_operation(name, AGENT_MACHINE_NAME, "IsolationMigrate",
+                                 {"targetMode": target, "strategy": "inPlace"})
+        operation = wait_for_machine_operation_failed(name, timeout_secs=MIGRATION_TIMEOUT_SECS)
+    finally:
+        clear_migration_target_fault(fault)
+    status = operation.get("status", {})
+    if not status.get("message"):
+        die("failed IsolationMigrate carries no message")
+    set_effective_isolation(source)
+    if applied_isolation() != source:
+        die(f"rollback left the applied mode at {applied_isolation()!r}, expected {source!r}")
+    wait_for_node_ready(AGENT_MACHINE_NAME)
+    validate_isolation_mode()
+    node = json.loads(kubectl_capture(["get", "node", AGENT_MACHINE_NAME, "-o", "json"]))
+    _assert_expected_node_config(node, node_config)
+    validate_workload()
+    log(f"Isolation migration rollback to {source} PASSED")
+
+
+def validate_migration_rejected(target: str, strategy: str) -> None:
+    """Assert an unsupported pair is rejected without touching the node. In-place
+    to or from none is not supported (pkg/agent/isolation/migrate.Plan)."""
+    name = f"e2e-isolation-reject-{int(time.time())}"
+    before = isolation_node_marker()
+    create_machine_operation(name, AGENT_MACHINE_NAME, "IsolationMigrate",
+                             {"targetMode": target, "strategy": strategy})
+    wait_for_machine_operation_failed(name)
+    if isolation_node_marker() != before:
+        die("a rejected IsolationMigrate changed the node stack")
+    wait_for_node_ready(AGENT_MACHINE_NAME)
+    log(f"Unsupported migration to {target} ({strategy}) was rejected and left the node alone")
+
 
 # ---------------------------------------------------------------------------
 # collect-logs
@@ -6509,6 +6784,23 @@ SUITES: dict[str, list[str]] = {
                   "validate-host-reboot", "validate-host-root", "reset-agent", "validate-host-staged-files"],
     "bootstrap-recovery": ["run-agent-recovery", "wait-for-node", "validate-workload",
                            "validate-node-repave-upgrade", "validate-bootstrap-repair"],
+    # Per-mode lifecycle: bootstrap, exec/logs, soft reboot, repave/upgrade,
+    # host reboot, reset. Run with ISOLATION_MODE=none or container. The
+    # default lifecycle suite is untouched. Not run in CI; see README.
+    "isolation-lifecycle": ["run-agent", "wait-for-node", "validate-isolation-mode", "validate-isolation-exec-logs",
+                            "validate-controllers-healthy", "validate-machine-cr-created", "validate-workload",
+                            "validate-isolation-soft-reboot", "validate-node-repave-upgrade", "validate-workload",
+                            "validate-host-reboot", "validate-isolation-mode", "reset-agent"],
+    # Bootstrap in the default mode, then migrate. Start with ISOLATION_MODE
+    # unset. In place nspawn <-> container, reprovision via none, the rollback
+    # case and an unsupported pair.
+    "isolation-migration": ["run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
+                            "validate-migration-unsupported-pair",
+                            "validate-migration-rollback-to-container",
+                            "migrate-to-container-inplace", "validate-isolation-exec-logs",
+                            "migrate-to-nspawn-inplace",
+                            "migrate-to-none-reprovision", "validate-isolation-soft-reboot",
+                            "migrate-to-nspawn-reprovision", "reset-agent"],
 }
 
 
@@ -6596,6 +6888,15 @@ COMMANDS: dict[str, Command] = {
     "validate-host-staged-files": _without_node_config(validate_host_staged_files),
     "run-legacy-agent": run_legacy_agent,
     "validate-agent-downgrade-to-legacy": _without_node_config(validate_agent_downgrade_to_legacy),
+    "validate-isolation-mode": _without_node_config(validate_isolation_mode),
+    "validate-isolation-exec-logs": _without_node_config(validate_isolation_exec_logs),
+    "validate-isolation-soft-reboot": _without_node_config(validate_isolation_soft_reboot),
+    "migrate-to-container-inplace": lambda nc: migrate_isolation(nc, "container", "inPlace"),
+    "migrate-to-nspawn-inplace": lambda nc: migrate_isolation(nc, "nspawn", "inPlace"),
+    "migrate-to-none-reprovision": lambda nc: migrate_isolation(nc, "none", "reprovision"),
+    "migrate-to-nspawn-reprovision": lambda nc: migrate_isolation(nc, "nspawn", "reprovision"),
+    "validate-migration-rollback-to-container": lambda nc: validate_migration_rollback(nc, "container"),
+    "validate-migration-unsupported-pair": lambda _nc: validate_migration_rejected("none", "inPlace"),
     "cleanup": _without_node_config(cleanup),
 }
 
