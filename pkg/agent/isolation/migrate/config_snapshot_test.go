@@ -12,13 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withConfigHooks adds the snapshot hooks to h. restoreSaw captures what the
-// backends had done when the restore ran.
+// configProbe captures what the backends had done when the restore ran.
 type configProbe struct {
 	restoreSawTargetDestroyed bool
 	restoreSawSourceStarted   bool
 }
 
+// withConfigHooks adds the snapshot hooks to h and returns the probe they fill.
 func withConfigHooks(h *harness) *configProbe {
 	probe := &configProbe{}
 

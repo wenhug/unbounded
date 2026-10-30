@@ -4,13 +4,13 @@
 // Package container is the isolation backend that runs the node stack in a
 // privileged OCI container with systemd as PID 1. The agent unpacks the rootfs
 // image, generates an OCI runtime bundle (config.json), and an agent-owned
-// systemd unit supervises it with runc or crun. The host's docker and
-// containerd are not used.
+// systemd unit supervises it with runc. The host's docker and containerd are
+// not used.
 //
 // PROVISIONAL: the Azure Container Linux node facts in the design (section 13)
-// have not been collected. Everything here is implemented against the design
-// and a stub runtime. Comments marked PROVISIONAL name assumptions that have
-// not been verified on a real node.
+// have not been collected. The backend is exercised only against fake runtimes
+// and stubbed hosts, never on a real node. Comments marked PROVISIONAL name
+// assumptions that have not been verified there.
 //
 // The backend registers itself with the isolation registry. Its operations on
 // a live host (unpack, start, repave, reset) are composed by
@@ -109,8 +109,8 @@ func init() {
 // Mode implements isolation.Backend.
 func (*Backend) Mode() isolation.Mode { return isolation.ModeContainer }
 
-// Requirements implements isolation.Backend. PROVISIONAL: the runtime artifact
-// is expected under /opt/unbounded; cgroup v2 and the SELinux label are checked
+// Requirements implements isolation.Backend. The runtime artifact is installed
+// under /opt/unbounded by the agent; cgroup v2 and the SELinux label are checked
 // by Preflight rather than expressed here.
 func (b *Backend) Requirements() isolation.Requirements {
 	return isolation.Requirements{

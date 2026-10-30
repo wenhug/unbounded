@@ -11,13 +11,14 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 )
 
-// Defaults for the host layout. PROVISIONAL: the runtime path assumes the
-// agent downloads runc or crun into an agent-owned directory under
-// /opt/unbounded; the download wiring does not exist yet.
+// Defaults for the host layout. The agent downloads runc into an agent-owned
+// directory under /opt/unbounded (rootfs.InstallHostRuntime, run by the
+// containerops composition). PROVISIONAL: that the node image allows executing
+// from there is unverified on Azure Container Linux.
 const (
 	// DefaultBase holds one directory per slot (the unpacked rootfs).
 	DefaultBase = "/var/lib/unbounded/containers"
-	// DefaultRuntimePath is the OCI runtime executable (runc or crun).
+	// DefaultRuntimePath is the OCI runtime executable (runc; crun is not supported).
 	DefaultRuntimePath = "/opt/unbounded/runtime/runc"
 	// SystemdDir is where the agent writes the supervising unit.
 	SystemdDir = "/etc/systemd/system"

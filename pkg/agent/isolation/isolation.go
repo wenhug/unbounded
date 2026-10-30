@@ -65,7 +65,9 @@ type Requirements struct {
 type NodeSpec struct {
 	// Slot is the blue/green slot, for example kube1 or kube2.
 	Slot string
-	// Version is the Kubernetes version the node runs.
+	// Version is the Kubernetes version the node runs. It is informational:
+	// no backend selects behavior from it (the container backend records it in
+	// the bundle's node spec file).
 	Version string
 	// Grants are device, mount and library requests the node stack needs.
 	Grants []Grant
@@ -171,9 +173,10 @@ type NodeRoot interface {
 	Path(inNode string) string
 }
 
-// DirRoot is a NodeRoot whose filesystem is a directory on the host. nspawn and
-// container backends use it with the unpacked rootfs directory; an empty Dir is
-// the identity mapping, which is what ModeNone uses.
+// DirRoot is a NodeRoot whose filesystem is a directory on the host. The nspawn
+// backend uses it with the unpacked rootfs directory; an empty Dir is the
+// identity mapping. Callers that only need to name a slot (the container
+// backend resolves paths with its own container.Root) use it as a slot carrier.
 type DirRoot struct {
 	SlotName string
 	Dir      string

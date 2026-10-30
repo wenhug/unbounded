@@ -135,12 +135,12 @@ type mount struct {
 }
 
 type linux struct {
-	Namespaces        []namespace       `json:"namespaces"`
-	Devices           []device          `json:"devices,omitempty"`
-	Resources         resources         `json:"resources"`
-	RootfsPropagation string            `json:"rootfsPropagation"`
-	MaskedPaths       []string          `json:"maskedPaths"`
-	ReadonlyPaths     []string          `json:"readonlyPaths"`
+	Namespaces        []namespace `json:"namespaces"`
+	Devices           []device    `json:"devices,omitempty"`
+	Resources         resources   `json:"resources"`
+	RootfsPropagation string      `json:"rootfsPropagation"`
+	MaskedPaths       []string    `json:"maskedPaths"`
+	ReadonlyPaths     []string    `json:"readonlyPaths"`
 }
 
 type namespace struct {

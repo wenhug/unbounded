@@ -17,13 +17,10 @@ import (
 	unboundedv1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
 )
 
-func isolationMachine(mode unboundedv1alpha3.IsolationMode, pin string) *unboundedv1alpha3.Machine {
+func isolationMachine(mode unboundedv1alpha3.IsolationMode) *unboundedv1alpha3.Machine {
 	m := &unboundedv1alpha3.Machine{
 		ObjectMeta: metav1.ObjectMeta{Name: "iso"},
 		Spec:       unboundedv1alpha3.MachineSpec{Isolation: mode},
-	}
-	if pin != "" {
-		m.Spec.Agent = &unboundedv1alpha3.AgentSpec{Version: pin}
 	}
 
 	return m
@@ -36,7 +33,7 @@ func cond(m *unboundedv1alpha3.Machine, t string) *metav1.Condition {
 func TestSyncIsolationConditions_NoFieldNoConditions(t *testing.T) {
 	t.Parallel()
 
-	m := isolationMachine("", "")
+	m := isolationMachine("")
 	require.False(t, syncIsolationConditions(m))
 	require.Empty(t, m.Status.Conditions)
 
@@ -48,7 +45,7 @@ func TestSyncIsolationConditions_NoFieldNoConditions(t *testing.T) {
 func TestSyncIsolationConditions_Drift(t *testing.T) {
 	t.Parallel()
 
-	m := isolationMachine(unboundedv1alpha3.IsolationContainer, "")
+	m := isolationMachine(unboundedv1alpha3.IsolationContainer)
 
 	// Applied not reported: no drift condition.
 	syncIsolationConditions(m)
@@ -92,7 +89,7 @@ func TestMachineReconciler_IsolationConditionsPersisted(t *testing.T) {
 	s := newTestScheme(t)
 
 	// No SSH config: still gets conditions, and the spec is never changed.
-	machine := isolationMachine(unboundedv1alpha3.IsolationNone, "")
+	machine := isolationMachine(unboundedv1alpha3.IsolationNone)
 	machine.Status.ObservedIsolation = unboundedv1alpha3.IsolationNSpawn
 
 	fakeClient := fake.NewClientBuilder().WithScheme(s).WithObjects(machine).WithStatusSubresource(machine).Build()

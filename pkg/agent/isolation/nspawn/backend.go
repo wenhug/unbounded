@@ -13,8 +13,8 @@ import (
 )
 
 // ErrNotWired is returned by lifecycle operations whose implementation has not
-// been injected into the Backend.
-var ErrNotWired = errors.New("nspawn backend operation not wired")
+// been injected into the Backend (see Ops).
+var ErrNotWired = errors.New("nspawn backend operation not configured")
 
 // Ops are the lifecycle operations the backend delegates to. They live in the
 // phase packages, which depend on this package, so they are injected by the

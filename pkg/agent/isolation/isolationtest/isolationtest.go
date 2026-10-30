@@ -19,9 +19,7 @@
 // the contract in pkg/agent/isolation; backend specifics belong in the
 // backend's own tests.
 //
-// This API is stable: new cases may be added, but existing Options fields keep
-// their meaning, and a field left at its zero value skips only the cases that
-// need it.
+// A field of Options left at its zero value skips only the cases that need it.
 package isolationtest
 
 import (

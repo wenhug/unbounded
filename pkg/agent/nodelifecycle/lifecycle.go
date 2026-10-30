@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package nodelifecycle provides the backend-neutral pre-start, post-start and
-// reconcile phases that a node supervising unit runs around the node stack. It
-// is used by the hidden node-lifecycle command for the container isolation
-// mode.
+// Package nodelifecycle provides the pre-start, post-start and reconcile phases
+// that a node supervising unit runs around the node stack. The Controller
+// interface is keyed by slot, but the only implementation is the container
+// isolation mode's, used by the hidden node-lifecycle command.
 //
 // It is intentionally separate from pkg/agent/nspawnlifecycle, which is tied to
 // nspawn config regeneration and NVIDIA rewiring and must stay unchanged for

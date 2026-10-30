@@ -232,7 +232,7 @@ func (r *MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	// Maintain the isolation version-skew and drift conditions for every
+	// Maintain the isolation drift condition for every
 	// Machine, including agent-registered ones without SSH config.
 	if syncIsolationConditions(&machine) {
 		if err := r.Status().Update(ctx, &machine); err != nil {
