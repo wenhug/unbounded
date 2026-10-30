@@ -404,24 +404,27 @@ New `MachineOperation` type `IsolationMigrate` (alongside `NodeReboot`) in
 | `container` | in-place or reprovision | n/a | reprovision |
 | `none` | reprovision | reprovision | n/a |
 
-Reprovision is always available: drain, reset, bootstrap in the new mode.
+Reprovision is always available: reset, bootstrap in the new mode. Cordoning
+and draining the node is the operator's job and is not part of the migration.
 
 ### 10.3 In-place steps (`nspawn` <-> `container`)
 
 1. Preflight the target backend. Fail before mutating anything.
 2. Download artifacts for the target.
 3. Prepare the target backend in the alternate slot.
-4. Drain the node.
-5. Stop the source node stack.
-6. Clean up host networking as repave does today.
-7. Start the target. Issue fresh kubelet credentials through the normal
+4. Stop the source node stack.
+5. Clean up host networking as repave does today.
+6. Start the target. Issue fresh kubelet credentials through the normal
    bootstrap and attestation flow. No credentials are copied. The Node name,
    labels and taints are kept.
-8. Persist new applied-config (mode, slot, owning backend).
-9. Wait for kubelet Ready within a bounded timeout.
-10. On success, destroy the source slot and remove its applied-config.
-11. On failure, stop the target, restart the source slot and report the failure
-    in the operation status. The source slot is retained until step 9 passes.
+7. Persist new applied-config (mode, slot, owning backend).
+8. Wait for the target to come up on the host within a bounded timeout.
+9. On success, destroy the source slot and remove its applied-config.
+10. On failure, stop the target, restart the source slot and report the failure
+    in the operation status. The source slot is retained until step 8 passes.
+
+The operator cordons and drains the node before creating the operation and
+uncordons it afterward. The agent does not touch Node objects for a migration.
 
 Existing repave is not changed to adopt rollback in this plan.
 
@@ -433,25 +436,19 @@ is untouched.
 **Implementation status (WP3 step 6, migration wired to host operations).**
 `IsolationMigrate` is carried out by `cmd/agent/internal/daemon/migration*.go`;
 the handler is `reconcileIsolationMigrate`, and the nodeOperator method
-`MigrateIsolation` now takes a `migrationEnv` (operation name, Node name and a
-`nodeScheduler`, implemented by `internal/kube/nodedrain` on the daemon's own
-credentials).
+`MigrateIsolation` now takes a `migrationEnv` (just the operation name; the daemon
+builds no Kubernetes client for it).
 
 - *In place (nspawn <-> container).* `migrate.RunInPlace` with real hooks:
   preflight is the target mode's host checker (`CheckNSpawnRuntime`,
   `CheckContainerBackend`); download is the repave's override resolution and
   archive staging; prepare runs in the alternate slot (the container adapter
   uses `Node.Prepare`, whose `Node.Activate` is the tail of `Node.Upgrade`
-  factored out, so repave and migration share it); drain is cordon plus drain
-  through `nodedrain` (DaemonSet, mirror and finished pods skipped, unmanaged
-  pods refused, Eviction API, ten minute bound); the network cleanup is
+  factored out, so repave and migration share it); there is no drain step; the network cleanup is
   `reset.CleanupNetwork`; the target persists the applied config under the
   alternate slot with `Isolation` set; rollback removes the target's record and
-  rewrites the source's; readiness is the repave's local kubelet check followed
-  by the Node's Ready condition through the API, whose heartbeat must postdate
-  the target start (the previous kubelet's last `Ready=True` otherwise passes),
-  within five minutes; success uncordons (only if the migration cordoned),
-  removes the source and its record and patches `status.observedIsolation`.
+  rewrites the source's; readiness is the repave's local kubelet check
+  within five minutes; success removes the source and its record and patches `status.observedIsolation`.
   Kubelet credentials are fresh because the target boots a new kubelet from the
   applied config's bootstrap token, exactly as a repave does; nothing is copied.
 - *Crash safety.* `migrate.Journal` is a write-ahead step file at
@@ -460,24 +457,24 @@ credentials).
   so `recoverIsolationMigration` runs at daemon start, before the controller,
   resolves the journal with `migrate.ResumeInPlace` (before the source stops:
   drop the target; once it may have stopped: roll back; `awaiting-ready`: wait
-  again; `ready`: finish cleanup), reports the outcome on the operation and then
+  again for the target; `ready`: finish cleanup), reports the outcome on the operation and then
   removes the journal. While both slots have an applied config, the journal
   decides which one `FindActiveMachine` returns.
 - *Reprovision (any pair, required for `none`).* The reset removes the daemon
   and the agent, so the daemon stages `/var/lib/unbounded-agent-reprovision`
   (binary copy, target config, journal), validates it with the staged binary,
-  drains, and starts `unbounded-agent-reprovision.service`, whose hidden
+  and starts `unbounded-agent-reprovision.service`, whose hidden
   `isolation-reprovision` command runs the existing reset (order unchanged),
   then the target mode's bootstrap stage plan, and is retried by systemd and run
   again at boot until it finishes. The daemon bootstrap installs reports the
-  operation once the applied config is in the target mode and the Node is Ready.
+  operation once the applied config is in the target mode.
 - *Gaps.* A reprovision whose bootstrap never succeeds leaves the operation
   `InProgress` (no daemon is left to fail it). A metalman-attested host
   reprovisions with the applied config's bootstrap token, not a new attestation.
   The `none` target's full preflight runs only after the reset. Container to
-  nspawn in place needs `systemd-container` already installed. The drain needs
-  `create` on `pods/eviction` for the daemon group, which the shipped ClusterRole
-  does not grant (RBAC was deliberately not widened). Everything is verified
+  nspawn in place needs `systemd-container` already installed. Journals
+  written by an earlier agent at a `draining` step are rolled back like
+  `preparing`. Everything is verified
   against fakes and stubbed hosts only.
 
 ## 11. Work packages

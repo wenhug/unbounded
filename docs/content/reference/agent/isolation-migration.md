@@ -14,8 +14,8 @@ runs.
 rejects unsupported moves before touching the node. Both strategies are wired to
 host operations and are tested against fake backends and stubbed hosts. They
 have not been run against real hosts, and any move that involves `container` is
-provisional because that mode is. Draining needs a permission the shipped
-daemon role does not grant yet; see [Cluster permissions](#cluster-permissions).
+provisional because that mode is. The agent does not cordon or drain the node;
+see [Before you start](#before-you-start).
 {{< /callout >}}
 
 ## Create an operation
@@ -54,31 +54,22 @@ Requesting a move to the mode the node is already in also fails. A rejected
 request marks the operation `Failed` (reasons `UnsupportedMigration` or
 `InvalidParameters`) before anything is changed.
 
-## Cluster permissions
+## Before you start
 
-The migration cordons and drains the node with the daemon's own credentials (the
-`system:node:<name>` identity plus the `unbounded-agent-daemons` group). With the
-Node authorizer enabled, which is the default on kubeadm and most managed
-clusters, that identity can already read pods and patch its own Node. Eviction
-is not part of it. Grant the daemon group `create` on `pods/eviction`, for
-example by adding this rule to the `unbounded-daemon-controller-machine`
-ClusterRole in `deploy/machina/07-bootstrapper-rbac.yaml.tmpl`:
+The agent does not touch Kubernetes Node objects during a migration. You are
+responsible for cordoning and draining the node before you create the
+operation, and for uncordoning it afterward. For example:
 
-```yaml
-- apiGroups: [""]
-  resources: ["pods/eviction"]
-  verbs: ["create"]
+```shell
+kubectl cordon worker-01
+kubectl drain worker-01 --ignore-daemonsets --delete-emptydir-data
+kubectl unbounded machine operation create migrate-worker-01 \
+  --kind IsolationMigrate --machine worker-01 --param targetMode=container --wait
+kubectl uncordon worker-01
 ```
 
-Where the Node authorizer is not in use, also grant `get` and `list` on `pods`
-and `get` and `patch` on `nodes`. Without the permission the drain fails with a
-message that names it, and the migration is rolled back or never starts.
-
-The drain follows `kubectl drain`: DaemonSet pods, mirror pods, and finished pods
-are left alone, and everything else is evicted through the Eviction API, so
-PodDisruptionBudgets are honored. A pod that no controller would recreate makes
-the drain fail before anything is evicted; delete it or move it first. The drain
-times out after ten minutes.
+Because the daemon does not call the Kubernetes API for a drain, no cluster
+permission beyond what it already has is needed.
 
 ## In-place steps
 
@@ -91,33 +82,26 @@ alternate slot (`kube1` and `kube2`), from the applied config with only
 2. Download the target's artifacts. Failure here changes nothing.
 3. Prepare the target in the alternate slot. Leftovers of an earlier attempt in
    that slot are removed first.
-4. Cordon and drain the node. A node that was already cordoned stays cordoned
-   afterward.
-5. Stop the source node stack.
-6. Clean up host networking, as a repave does.
-7. Start the target. Kubelet gets fresh credentials through the normal
+4. Stop the source node stack.
+5. Clean up host networking, as a repave does.
+6. Start the target. Kubelet gets fresh credentials through the normal
    bootstrap flow: the bootstrap token in the applied config (the one a repave
    uses) is exchanged for a new kubelet client certificate. No kubelet
    credentials are copied, and a metalman-attested host is not attested again.
    The Node name, labels, and taints are kept.
-8. Record the new mode and slot in the applied config.
-9. Wait for kubelet Ready, for up to five minutes: first the check a repave
-   makes (kubelet active on the host, with its credentials), then the Node's
-   `Ready` condition through the API, which must have been reported after the
-   target started so that the previous kubelet's last report is not mistaken for
-   the new one.
-10. On success, uncordon the node, destroy the source slot, and remove its
-    applied config. `status.observedIsolation` is updated from the new applied
+7. Record the new mode and slot in the applied config.
+8. Wait for the target to come up, for up to five minutes, with the check a
+   repave makes (kubelet active on the host, with its credentials).
+9. On success, destroy the source slot and remove its applied config. `status.observedIsolation` is updated from the new applied
     config.
 
 ### Rollback
 
 If anything fails after the target exists, the agent stops the target, removes
 its applied config and restores the source's, destroys the target, restarts the
-source, and uncordons the node if the migration cordoned it. The operation then
-reports the failure. If the source could not be restored the error says so, the
-node stays cordoned, and it needs attention. The source slot and its applied
-config are kept until step 9 passes.
+source. The operation then reports the failure. If the source could not be
+restored the error says so and the node needs attention. The source slot and its
+applied config are kept until step 8 passes.
 
 ### Interruption
 
@@ -129,9 +113,9 @@ before it takes any work, and then finishes the operation:
 
 | Last step recorded | At the next daemon start |
 |---|---|
-| `preparing`, `draining` | The source never stopped. The partial target is removed and the node is uncordoned. The operation fails with "interrupted". |
+| `preparing` (or `draining`, written by an earlier agent) | The source never stopped. The partial target is removed. The operation fails with "interrupted". |
 | `stopping-source`, `starting-target`, `persisting` | Roll back as above: stop and remove the target, restore the source's applied config, restart the source. The operation fails with "interrupted". |
-| `awaiting-ready` | Wait for Ready again. On success finish the migration; on timeout roll back. |
+| `awaiting-ready` | Wait for the target again. On success finish the migration; on timeout roll back. |
 | `ready` | Finish the cleanup of the source. The operation succeeds. |
 | `complete`, `rolled-back`, `failed` | Report the recorded outcome and remove the journal. |
 
@@ -141,7 +125,7 @@ journal decides which one describes the running node.
 
 ## Reprovision
 
-`reprovision` drains the node, resets the host, and bootstraps again in the new
+`reprovision` resets the host, and bootstraps again in the new
 mode with the applied config as the configuration and `Isolation` set to the
 target. It is the only strategy for any move involving `none`, and the Node name,
 labels, and taints are kept. The reset is the existing agent reset, in its
@@ -158,8 +142,7 @@ the job. Instead:
    binary, the target configuration, and a journal, and asks the copy to
    validate the configuration and the bootstrap plan for the target mode. A mode
    with no plan fails here, before anything changes.
-3. It cordons and drains the node, records the journal step `reprovisioning`, and
-   starts the unit `unbounded-agent-reprovision.service`, then returns. The
+3. It records the journal step `reprovisioning` and starts the unit `unbounded-agent-reprovision.service`, then returns. The
    operation stays `InProgress`.
 4. The unit runs the hidden `isolation-reprovision` command from the copy. It
    waits for the daemon to release installation ownership, runs the agent reset,
@@ -167,11 +150,10 @@ the job. Instead:
    30 seconds, up to ten times an hour, and is enabled so a reboot continues it.
    A reset that finished is not repeated.
 5. The daemon that bootstrap installs finds the journal when it starts. Once the
-   applied config records the target mode and the Node is Ready (reported after
-   the reprovision started), it uncordons the node, marks the operation
+   applied config records the target mode, it marks the operation
    `Complete`, and removes the unit and the staging directory.
 
-A failure before step 3 undoes the staging and uncordons the node. If the
+A failure before step 3 undoes the staging. If the
 bootstrap keeps failing, the host is left reset, the unit is failed, and the
 operation stays `InProgress`, because no daemon is left to report it. The
 Machine conditions set by the bootstrap and the unit's journal

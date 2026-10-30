@@ -98,7 +98,7 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
   previous configuration.
 - **Pods outlive the units.** containerd runs with `KillMode=process`, so a plain
   unit stop leaves pods running. Reset ends the shims; an upgrade does not need
-  to because the Node is drained first.
+  to because the operator drains the Node first.
 - **No NVIDIA setup.** The nspawn lifecycle hooks that wire NVIDIA libraries do
   not run. The host driver and container toolkit must be installed on the host.
 - **Migration.** Any move to or from `none` is a reprovision. In-place migration
