@@ -555,13 +555,39 @@ func mountsBelow(mountinfo, dir string) ([]string, error) {
 			continue
 		}
 
-		mp := strings.ReplaceAll(fields[4], `\040`, " ")
+		mp := unescapeMountinfo(fields[4])
 		if mp == dir || strings.HasPrefix(mp, prefix) {
 			out = append(out, mp)
 		}
 	}
 
 	return out, nil
+}
+
+// unescapeMountinfo decodes the octal escapes (\040 for a space, \011, \012,
+// \134) the kernel writes in mountinfo paths.
+func unescapeMountinfo(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+
+	var b strings.Builder
+
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+4 <= len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+
+				i += 3
+
+				continue
+			}
+		}
+
+		b.WriteByte(s[i])
+	}
+
+	return b.String()
 }
 
 // runtimeState is the subset of `runtime state` output used by Status.

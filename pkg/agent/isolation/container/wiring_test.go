@@ -351,3 +351,41 @@ func TestRegenerateWithoutARefreshIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after))
 }
+
+func TestUnescapeMountinfoDecodesEveryOctalEscape(t *testing.T) {
+	t.Parallel()
+
+	for in, want := range map[string]string{
+		`/plain/path`:        "/plain/path",
+		`/with\040space`:     "/with space",
+		`/tab\011here`:       "/tab\there",
+		`/new\012line`:       "/new\nline",
+		`/back\134slash`:     `/back\slash`,
+		`/trailing\`:         `/trailing\`,
+		`/short\04`:          `/short\04`,
+		`/not\octal`:         `/not\octal`,
+		`/two\040\040spaces`: "/two  spaces",
+	} {
+		require.Equal(t, want, unescapeMountinfo(in), in)
+	}
+}
+
+func TestMountsBelowFindsMountsWithEscapedPaths(t *testing.T) {
+	t.Parallel()
+
+	info := filepath.Join(t.TempDir(), "mountinfo")
+	lines := strings.Join([]string{
+		`36 35 98:0 / /var/lib/unbounded/containers/kube1/rootfs/a\040b rw - tmpfs tmpfs rw`,
+		`37 35 98:0 / /var/lib/unbounded/containers/kube1/rootfs/c\134d rw - tmpfs tmpfs rw`,
+		`38 35 98:0 / /var/lib/unbounded/containers/kube10/rootfs rw - tmpfs tmpfs rw`,
+		`39 35 98:0 / /elsewhere rw - tmpfs tmpfs rw`,
+	}, "\n")
+	require.NoError(t, os.WriteFile(info, []byte(lines), 0o600))
+
+	got, err := mountsBelow(info, "/var/lib/unbounded/containers/kube1")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"/var/lib/unbounded/containers/kube1/rootfs/a b",
+		`/var/lib/unbounded/containers/kube1/rootfs/c\d`,
+	}, got, "a sibling slot with a shared name prefix is not below the directory")
+}
