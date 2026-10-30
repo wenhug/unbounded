@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
@@ -27,7 +27,7 @@ func ReconcileNVIDIA(log *slog.Logger, goalState *goalstates.NodeStart) phases.T
 	return &reconcileNVIDIA{
 		log:       log,
 		goalState: goalState,
-		run:       executil.MachineRun,
+		run:       nspawn.Exec,
 		execute:   phases.ExecuteTask,
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
@@ -78,7 +79,7 @@ type startNSpawnMachine struct {
 
 // StartNSpawnMachine returns a task that starts the systemd-nspawn machine using machinectl and
 // waits until D-Bus is responsive inside the machine so that subsequent phases
-// can safely use executil.MachineRun().
+// can safely use nspawn.Exec().
 //
 // The agent reaches this work through StartNode, which builds the task directly
 // so it can tell whether the configuration it wrote differed. This entry point
@@ -205,7 +206,7 @@ func isAlreadyExistsErr(err error) bool {
 
 // WaitForMachine polls the machine until it is responsive to systemd-run
 // commands. machinectl start returns before D-Bus is ready, so phases that use
-// executil.MachineRun() would fail without this gate.
+// nspawn.Exec() would fail without this gate.
 func WaitForMachine(ctx context.Context, log *slog.Logger, machine string) error {
 	const (
 		pollInterval = 500 * time.Millisecond
@@ -216,7 +217,7 @@ func WaitForMachine(ctx context.Context, log *slog.Logger, machine string) error
 	defer cancel()
 
 	for {
-		if _, err := executil.MachineRun(ctx, log, machine, "/bin/true"); err == nil {
+		if _, err := nspawn.Exec(ctx, log, machine, "/bin/true"); err == nil {
 			return nil
 		}
 
