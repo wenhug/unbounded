@@ -4,6 +4,7 @@
 package container
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -262,4 +263,91 @@ func TestDestroyOfASlotWithoutAUnitSkipsSystemd(t *testing.T) {
 	}
 
 	require.Contains(t, st.calls, rt+" delete --force unbounded-kube2", "stale runtime state is still cleared")
+}
+
+func TestRegenerateRefreshesGrantsAndRecordsThem(t *testing.T) {
+	b, _, _ := newBackend(t)
+	ctx := context.Background()
+
+	_, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1", Grants: testGrants})
+	require.NoError(t, err)
+
+	config := func() string {
+		d, err := os.ReadFile(b.Layout.ConfigPath("kube1"))
+		require.NoError(t, err)
+
+		return string(d)
+	}
+
+	require.Contains(t, config(), "/dev/nvidia0")
+
+	// The refresh drops the device and keeps the rest.
+	var seen []isolation.Grant
+
+	b.RefreshGrants = func(_ context.Context, recorded []isolation.Grant) ([]isolation.Grant, error) {
+		seen = recorded
+
+		var out []isolation.Grant
+
+		for _, g := range recorded {
+			if g.Source != "/dev/nvidia0" {
+				out = append(out, g)
+			}
+		}
+
+		return out, nil
+	}
+
+	require.NoError(t, b.Regenerate(ctx, "kube1"))
+	require.Equal(t, testGrants, seen, "the refresh sees what Prepare recorded")
+	require.NotContains(t, config(), "/dev/nvidia0")
+	require.Contains(t, config(), "/models", "the other grants stay")
+
+	// The next start begins from the refreshed grants.
+	b.RefreshGrants = func(_ context.Context, recorded []isolation.Grant) ([]isolation.Grant, error) {
+		require.Len(t, recorded, len(testGrants)-1)
+
+		return recorded, nil
+	}
+
+	require.NoError(t, b.Regenerate(ctx, "kube1"))
+	require.NotContains(t, config(), "/dev/nvidia0")
+}
+
+func TestRegenerateKeepsTheBundleWhenTheRefreshFails(t *testing.T) {
+	b, _, _ := newBackend(t)
+	ctx := context.Background()
+
+	_, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1", Grants: testGrants})
+	require.NoError(t, err)
+
+	before, err := os.ReadFile(b.Layout.ConfigPath("kube1"))
+	require.NoError(t, err)
+
+	b.RefreshGrants = func(context.Context, []isolation.Grant) ([]isolation.Grant, error) {
+		return nil, errors.New("driver state incomplete")
+	}
+
+	require.ErrorContains(t, b.Regenerate(ctx, "kube1"), "driver state incomplete")
+
+	after, err := os.ReadFile(b.Layout.ConfigPath("kube1"))
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+}
+
+func TestRegenerateWithoutARefreshIsUnchanged(t *testing.T) {
+	b, _, _ := newBackend(t)
+	ctx := context.Background()
+
+	_, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1", Grants: testGrants})
+	require.NoError(t, err)
+
+	before, err := os.ReadFile(b.Layout.ConfigPath("kube1"))
+	require.NoError(t, err)
+
+	require.NoError(t, b.Regenerate(ctx, "kube1"))
+
+	after, err := os.ReadFile(b.Layout.ConfigPath("kube1"))
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
 }

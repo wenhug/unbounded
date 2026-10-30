@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -79,6 +80,11 @@ type Backend struct {
 	// later in bootstrap, so a missing runtime file is expected on a clean host.
 	// The runtime is still required to be executable when it is present.
 	RuntimeProvisioned bool
+	// RefreshGrants, when set, replaces the recorded grants at Regenerate. The
+	// pre-start hook uses it to follow devices and driver libraries that a host
+	// reboot or driver change moved since Prepare. It receives the grants
+	// recorded by Prepare and returns the ones to render and record from now on.
+	RefreshGrants func(ctx context.Context, recorded []isolation.Grant) ([]isolation.Grant, error)
 	// UnitRequires lists host units the supervising unit requires and orders
 	// after, such as the LocalDNS network unit.
 	UnitRequires []string
@@ -268,8 +274,10 @@ func (b *Backend) extraBinds() []ExtraBind {
 
 // Regenerate re-renders config.json from the NodeSpec recorded by Prepare. The
 // node-lifecycle pre-start hook calls it so SELinux or device changes since the
-// last start are picked up.
-func (b *Backend) Regenerate(_ context.Context, slot string) error {
+// last start are picked up. When RefreshGrants is set the grants it returns
+// replace the recorded ones, and are recorded, so the next start begins from
+// them.
+func (b *Backend) Regenerate(ctx context.Context, slot string) error {
 	if err := ValidSlot(slot); err != nil {
 		return err
 	}
@@ -282,6 +290,26 @@ func (b *Backend) Regenerate(_ context.Context, slot string) error {
 	var n isolation.NodeSpec
 	if err := json.Unmarshal(data, &n); err != nil {
 		return fmt.Errorf("decode recorded node spec: %w", err)
+	}
+
+	if b.RefreshGrants != nil {
+		grants, err := b.RefreshGrants(ctx, n.Grants)
+		if err != nil {
+			return fmt.Errorf("refresh grants: %w", err)
+		}
+
+		if !reflect.DeepEqual(grants, n.Grants) {
+			n.Grants = grants
+
+			specData, err := json.Marshal(n)
+			if err != nil {
+				return err
+			}
+
+			if err := writeAtomic(b.Layout.SpecPath(slot), specData, 0o644); err != nil {
+				return err
+			}
+		}
 	}
 
 	return b.RenderBundle(slot, n.Grants)
