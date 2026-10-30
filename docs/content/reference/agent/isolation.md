@@ -11,7 +11,7 @@ node stack runs: containerd, kubelet, CNI plugins, and CoreDNS.
 | Mode | Node stack runs | Status |
 |---|---|---|
 | [`nspawn`]({{< relref "reference/agent/isolation-nspawn" >}}) | In a systemd-nspawn machine | Default. Existing behavior. |
-| [`none`]({{< relref "reference/agent/isolation-none" >}}) | Directly on the host as agent-owned systemd units | New. Not yet selectable end to end; see the mode page. |
+| [`none`]({{< relref "reference/agent/isolation-none" >}}) | Directly on the host as agent-owned systemd units | New and experimental. Wired end to end; not yet exercised on a real host. See the mode page. |
 | [`container`]({{< relref "reference/agent/isolation-container" >}}) | In a privileged OCI container, for Azure Container Linux | New and provisional. Experimental. |
 
 {{< callout type="important" >}}

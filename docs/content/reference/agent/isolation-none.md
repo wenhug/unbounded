@@ -11,13 +11,12 @@ its daemon run on the host, as in every mode. See
 [Isolation Modes]({{< relref "reference/agent/isolation" >}}) to compare.
 
 {{< callout type="important" >}}
-**Availability.** The `none` backend core exists: versioned install layout,
-units, preflight checks, start, stop, restart, upgrade with rollback, and logs.
-It is not yet registered with the agent. The daemon's node operations are still
-being made mode aware, so an agent build without that wiring rejects
-`Isolation: none` with an error that the mode has no registered backend, and an
-`IsolationMigrate` to or from `none` is not available. Treat this page as the
-definition of the mode and check your build's release notes before selecting it.
+**Availability.** The `none` backend is registered with the agent and wired into
+bootstrap, soft reboot, upgrade, reset, `exec` and `logs`. It has been exercised
+with unit tests and the shared backend conformance suite against stubbed systemd
+and containerd, not yet against a real host, so treat it as experimental until
+your release notes say otherwise. Moving a host to or from `none` is a
+reprovision; `IsolationMigrate` between modes is not wired to host operations.
 {{< /callout >}}
 
 ## Requirements
@@ -47,6 +46,17 @@ config, or pass `--isolation none` to `kubectl unbounded machine manual-bootstra
 | `/opt/unbounded/node/current` | Relative symlink to the active version. Units run binaries through `current/bin`, so flipping the link changes what they run. |
 | `/etc/systemd/system/unbounded-containerd.service` | containerd, agent-owned. |
 | `/etc/systemd/system/unbounded-kubelet.service` | kubelet, agent-owned. Wants and starts after the containerd unit. |
+| `/etc/systemd/system/unbounded-localdns.service` | CoreDNS, agent-owned, when LocalDNS is enabled. Starts before containerd and kubelet. |
+| `/etc/systemd/system/<unit>.d/` | Drop-ins for the agent-owned units: `PATH` with the active version first, kubelet environment, LocalDNS ordering. |
+| `/opt/unbounded/node/<version>/libexec/` | The LocalDNS supervisor script for that version. |
+
+The applied config is recorded under the slot name `kube1` and has no blue/green
+slot; the version directory plays that role. The version directory is named for
+the Kubernetes version plus a short digest of the other artifact versions, so an
+unchanged configuration reuses its directory.
+
+The agent never writes or edits the distro's `kubelet.service` or
+`containerd.service`.
 
 The same-path contract holds: `/run/containerd`, `/etc/containerd/certs.d`,
 `/var/lib/kubelet`, `/opt/cni`, and bpffs resolve for the node stack exactly as in
@@ -56,16 +66,16 @@ the other modes, so unbounded-net-node and gantry are unchanged.
 
 | Operation | Behavior |
 |---|---|
-| Bootstrap | Host preparation, preflight, install the version directory and units, reload systemd, point `current` at the version, start the units. |
-| Start | Enable and start containerd, then kubelet. |
-| Stop | Stop kubelet, then containerd. Every unit is attempted even if one fails. |
-| Soft reboot (`NodeReboot`) | Restart containerd, then kubelet. The host does not reboot. |
-| Repave and upgrade | Stop the units, flip `current` to the new version, start the units, and wait for kubelet Ready. If any step after the flip fails, the link is flipped back and the previous version is started. The node is briefly down. |
-| Reset and delete | Stop and disable the units, remove the unit files and the whole `/opt/unbounded/node` tree, reload systemd, then the host-global cleanup. |
+| Bootstrap | Host preparation (the same nftables, sysctl, swap and docker phases as `nspawn`, plus loading `overlay` and `br_netfilter`), preflight, install the version directory and units, reload systemd, point `current` at the version, write the configuration at the shared host paths, start the units, wait for kubelet to bootstrap. |
+| Start | Enable and start LocalDNS (and wait for it), then containerd (and import preloaded images), then kubelet. |
+| Stop | Stop kubelet, then containerd, then LocalDNS. Every unit is attempted even if one fails. |
+| Soft reboot (`NodeReboot`) | Restart LocalDNS, containerd, then kubelet, wait for LocalDNS and for kubelet to be active. The host does not reboot. |
+| Repave and upgrade | The new version is installed beside the running one. Then the units stop, host networking is cleaned as for an `nspawn` repave, kubelet's old credentials are removed so it bootstraps again, `current` flips, the units start, and the agent waits for LocalDNS and kubelet. If any step after the flip fails, the link is flipped back and the previous version is started. The node is briefly down. The caller drains and deletes the Node first, as for `nspawn`. |
+| Reset and delete | Same order as `nspawn`: stop the units, remove WireGuard keys, remove the configuration the agent wrote at shared paths, end leftover container shims, remove the units, drop-ins and `/opt/unbounded/node`, unmount and remove `/var/lib/kubelet`, `/var/lib/containerd`, `/etc/cni/net.d` and `/opt/cni/bin`, then the host-global cleanup. |
 | Health | Both units are active, kubelet is healthy, and LocalDNS answers when enabled. |
 | Exec and logs | `unbounded-agent exec` runs on the host. `unbounded-agent logs` reads the journal of the agent-owned units; `--unit kubelet` and `--unit containerd` select them. |
 | GPU and devices | Native. Nothing is bind-mounted because the stack sees the host directly. See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
-| LocalDNS | CoreDNS runs as a host unit and the LocalDNS network unit is unchanged. The CoreDNS host unit is part of the design and is not in the backend core. |
+| LocalDNS | CoreDNS runs as the `unbounded-localdns.service` host unit and the LocalDNS network unit is unchanged. The host's own `/etc/resolv.conf` is not rewritten; kubelet uses its dedicated resolver file. |
 | Uninstall | The uninstall script reads the mode from the applied config and runs the `none` cleanup. |
 
 ```bash
@@ -82,7 +92,14 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
   such as Cilium that expect a machine-scoped bpffs see the host's. This is a
   documented difference from `nspawn`.
 - **Upgrades are not blue/green.** The node is briefly down during the flip.
-  Automatic rollback restores the previous version.
+  Automatic rollback restores the previous binaries. Configuration files live at
+  the shared host paths and are not versioned, so a rollback does not restore the
+  previous configuration.
+- **Pods outlive the units.** containerd runs with `KillMode=process`, so a plain
+  unit stop leaves pods running. Reset ends the shims; an upgrade does not need
+  to because the Node is drained first.
+- **No NVIDIA setup.** The nspawn lifecycle hooks that wire NVIDIA libraries do
+  not run. The host driver and container toolkit must be installed on the host.
 - **Migration.** Any move to or from `none` is a reprovision. In-place migration
   is not supported. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 

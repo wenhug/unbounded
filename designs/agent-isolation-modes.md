@@ -273,6 +273,23 @@ Everything runs directly on the host.
 - Upgrade: drain, stop units, flip `current`, start units, wait for kubelet
   Ready, flip back automatically on failure. The node is briefly down.
 
+**Implementation status (WP1, none end to end).** Implemented and registered:
+`pkg/agent/isolation/none` (backend, layout, units, LocalDNS unit, drop-ins,
+preflight), `cmd/agent/internal/noneops` (composition root: install, configure,
+start, restart, upgrade, teardown), the `none` bootstrap stage plan
+(`cmd/agent/internal/cmd/stageplan*.go`; a new mode adds one file and one
+`registerStagePlan` call), the none node operator
+(`cmd/agent/internal/daemon/nodeoperator_none.go`) and a mode-aware
+`resetResources`. Decisions: the applied config is recorded under the fixed slot
+`kube1` (no blue/green slot; the version directory is the unit of upgrade, named
+`<kubernetes version>-<digest of other artifact versions>`); same-path files are
+written by the existing nodestart phases through a goal-state `RootOverride`, and
+binaries land in `<base>/<version>/bin` through the same rootfs installers.
+Unverified: everything against a real systemd and containerd (only stubbed
+hosts were available), kubelet Ready beyond "unit active and credentials
+present", NVIDIA host setup, pods surviving a plain unit stop, and
+`IsolationMigrate` to or from `none`.
+
 ### 8.3 `container` (Azure Container Linux)
 
 Provisional until the node facts in section 13 are collected.
