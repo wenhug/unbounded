@@ -105,6 +105,57 @@ type InPlaceSpec struct {
 	WaitReady func(ctx context.Context) error
 	// RemoveSourceConfig removes the source's applied config after success.
 	RemoveSourceConfig func(ctx context.Context) error
+
+	// Record, when set, is called before each step that changes the host, with
+	// the step about to run (and with StepReady and StepComplete after the
+	// matching work). It is a write-ahead log: when Record returns an error the
+	// step does not run and the migration is rolled back like any failure.
+	// Recording is what lets ResumeInPlace decide what to do after a crash.
+	Record func(ctx context.Context, step Step) error
+	// TargetRoot is the node root of the target slot. Required by ResumeInPlace,
+	// which has no Prepare result to take it from; ignored by RunInPlace.
+	TargetRoot isolation.NodeRoot
+}
+
+// Step is how far an in-place migration got. Each value is written before the
+// step it names starts, so after a crash it says what may have happened, not
+// what finished.
+type Step string
+
+const (
+	// StepPreparing precedes Prepare: a target slot may be partially built.
+	StepPreparing Step = "preparing"
+	// StepDraining precedes Drain: the node may be cordoned or partly drained.
+	StepDraining Step = "draining"
+	// StepStoppingSource precedes the source stop: the source may be stopped.
+	StepStoppingSource Step = "stopping-source"
+	// StepStartingTarget precedes the target start: the target may be running.
+	StepStartingTarget Step = "starting-target"
+	// StepPersisting precedes PersistTarget: the target's applied config may
+	// exist.
+	StepPersisting Step = "persisting"
+	// StepAwaitingReady follows PersistTarget: the target runs and is recorded.
+	StepAwaitingReady Step = "awaiting-ready"
+	// StepReady follows a successful WaitReady: only source cleanup is left.
+	StepReady Step = "ready"
+	// StepComplete follows source cleanup.
+	StepComplete Step = "complete"
+)
+
+// ErrInterrupted is returned, joined with the outcome of the rollback, by
+// ResumeInPlace when it undid a migration that a restart interrupted.
+var ErrInterrupted = errors.New("isolation migration was interrupted")
+
+func (s InPlaceSpec) record(ctx context.Context, step Step) error {
+	if s.Record == nil {
+		return nil
+	}
+
+	if err := s.Record(ctx, step); err != nil {
+		return fmt.Errorf("record migration step %s: %w", step, err)
+	}
+
+	return nil
 }
 
 // Result reports how a migration ended.
@@ -143,8 +194,19 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 	}
 
 	// 3: prepare beside the source.
+	if err := s.record(ctx, StepPreparing); err != nil {
+		return Result{}, err
+	}
+
 	targetRoot, err := s.Target.Prepare(ctx, s.TargetSpec)
 	if err != nil {
+		// Prepare may have left a partial slot. The source was not touched.
+		st := &state{spec: s, targetRoot: s.TargetRoot}
+		if s.TargetRoot != nil {
+			_, rbErr := st.rollback(ctx)
+			err = errors.Join(err, rbErr)
+		}
+
 		return Result{}, fmt.Errorf("prepare %s: %w", s.Target.Mode(), err)
 	}
 
@@ -159,7 +221,80 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 		return Result{RolledBack: rolledBack}, err
 	}
 
-	// 10: the target is Ready. Failures from here do not undo the migration.
+	return st.finish(ctx)
+}
+
+// ResumeInPlace decides what to do with an in-place migration a restart
+// interrupted, from the last step Record saw. Before the source was stopped it
+// only removes the partial target. Once the source may be stopped it rolls back
+// to the source and returns ErrInterrupted, since repeating a step that crashed
+// the process could loop. When the target was already running and recorded it
+// waits for Ready as the original run would, then finishes or rolls back.
+func ResumeInPlace(ctx context.Context, s InPlaceSpec, at Step) (Result, error) {
+	if s.Source == nil || s.Target == nil || s.SourceRoot == nil || s.TargetRoot == nil ||
+		s.RestoreSource == nil || s.WaitReady == nil || s.RemoveSourceConfig == nil {
+		return Result{}, errors.New("migrate: incomplete resume spec")
+	}
+
+	st := &state{spec: s, targetRoot: s.TargetRoot}
+
+	switch at {
+	case StepComplete:
+		return Result{Target: s.TargetRoot}, nil
+	case StepReady:
+		return st.finish(ctx)
+	case StepAwaitingReady:
+		st.sourceStopped, st.targetStarted, st.persisted = true, true, true
+
+		if err := s.WaitReady(ctx); err != nil {
+			return st.rollbackInterrupted(ctx, fmt.Errorf("wait for kubelet Ready: %w", err))
+		}
+
+		if err := s.record(ctx, StepReady); err != nil {
+			return st.rollbackInterrupted(ctx, err)
+		}
+
+		return st.finish(ctx)
+	case StepPreparing, StepDraining:
+		return st.rollbackInterrupted(ctx, nil)
+	case StepStoppingSource, StepStartingTarget:
+		st.sourceStopped, st.targetStarted = true, at == StepStartingTarget
+
+		return st.rollbackInterrupted(ctx, nil)
+	case StepPersisting:
+		st.sourceStopped, st.targetStarted, st.persisted = true, true, true
+
+		return st.rollbackInterrupted(ctx, nil)
+	default:
+		return Result{}, fmt.Errorf("migrate: unknown step %q", at)
+	}
+}
+
+func (st *state) rollbackInterrupted(ctx context.Context, cause error) (Result, error) {
+	// A step that crashed or timed out may have started the target without
+	// recording it, so stop it whenever the source may have been stopped.
+	st.targetStarted = st.targetStarted || st.sourceStopped
+
+	rolledBack, rbErr := st.rollback(ctx)
+
+	err := ErrInterrupted
+	if cause != nil {
+		err = fmt.Errorf("%w: %w", ErrInterrupted, cause)
+	}
+
+	if rbErr != nil {
+		return Result{RolledBack: rolledBack}, errors.Join(err, fmt.Errorf("%w: %w", ErrRollbackFailed, rbErr))
+	}
+
+	return Result{RolledBack: rolledBack}, err
+}
+
+// finish is step 10: the target is Ready. Failures from here do not undo the
+// migration.
+func (st *state) finish(ctx context.Context) (Result, error) {
+	s := st.spec
+	targetRoot := st.targetRoot
+
 	var cleanup error
 	if err := s.Source.Destroy(ctx, s.SourceRoot); err != nil {
 		cleanup = errors.Join(cleanup, fmt.Errorf("destroy source: %w", err))
@@ -167,6 +302,12 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 
 	if err := s.RemoveSourceConfig(ctx); err != nil {
 		cleanup = errors.Join(cleanup, fmt.Errorf("remove source applied config: %w", err))
+	}
+
+	if cleanup == nil {
+		if err := s.record(ctx, StepComplete); err != nil {
+			cleanup = err
+		}
 	}
 
 	return Result{Target: targetRoot}, cleanup
@@ -184,11 +325,20 @@ func (st *state) run(ctx context.Context) error {
 	s := st.spec
 
 	// 4.
+	if err := s.record(ctx, StepDraining); err != nil {
+		return err
+	}
+
 	if err := s.Drain(ctx); err != nil {
 		return fmt.Errorf("drain node: %w", err)
 	}
 
-	// 5. Mark first: a failed stop may still have stopped part of the source.
+	// 5. Record, then mark, then stop: a failed stop may still have stopped
+	// part of the source, but a failed record has stopped nothing.
+	if err := s.record(ctx, StepStoppingSource); err != nil {
+		return err
+	}
+
 	st.sourceStopped = true
 
 	if err := s.Source.Stop(ctx, s.SourceRoot); err != nil {
@@ -202,6 +352,10 @@ func (st *state) run(ctx context.Context) error {
 
 	// 7. Fresh kubelet credentials come from the normal bootstrap flow inside
 	// Start; none are copied from the source.
+	if err := s.record(ctx, StepStartingTarget); err != nil {
+		return err
+	}
+
 	st.targetStarted = true
 
 	if err := s.Target.Start(ctx, st.targetRoot); err != nil {
@@ -209,10 +363,18 @@ func (st *state) run(ctx context.Context) error {
 	}
 
 	// 8.
+	if err := s.record(ctx, StepPersisting); err != nil {
+		return err
+	}
+
 	st.persisted = true
 
 	if err := s.PersistTarget(ctx, st.targetRoot); err != nil {
 		return fmt.Errorf("persist applied config: %w", err)
+	}
+
+	if err := s.record(ctx, StepAwaitingReady); err != nil {
+		return err
 	}
 
 	// 9.
@@ -220,7 +382,7 @@ func (st *state) run(ctx context.Context) error {
 		return fmt.Errorf("wait for kubelet Ready: %w", err)
 	}
 
-	return nil
+	return s.record(ctx, StepReady)
 }
 
 // rollback undoes whatever run did. It uses a context that outlives
