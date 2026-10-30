@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
@@ -151,7 +152,7 @@ func (t *Teardown) RemoveConfig() phases.Task {
 		// Directories the agent created and nothing else is expected in. Remove
 		// only when empty so anything an operator or a workload put there stays.
 		for _, d := range []string{goalstates.ContainerdConfDropInDir, goalstates.CDISpecDir, goalstates.ContainerdDefaultHostsDir, goalstates.KubeletStaticPodManifestsDir, goalstates.KubeletPKIDir} {
-			if err := os.Remove(t.path(d)); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmpty(err) {
+			if err := os.Remove(t.path(d)); err != nil && !errors.Is(err, os.ErrNotExist) && !IsNotEmpty(err) {
 				errs = append(errs, err)
 			}
 		}
@@ -279,8 +280,10 @@ func unescapeMount(s string) string {
 	return strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`).Replace(s)
 }
 
-func isNotEmpty(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "directory not empty")
+// IsNotEmpty reports whether err says a directory could not be removed because
+// it still has entries.
+func IsNotEmpty(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY)
 }
 
 func unitDir(d string) string {

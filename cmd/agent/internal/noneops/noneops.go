@@ -584,7 +584,7 @@ func (n *Node) PruneVersions() error {
 	var errs []error
 
 	for _, v := range versions {
-		if err := n.p.Layout.Remove(v); err != nil && !strings.Contains(err.Error(), "is active") {
+		if err := n.p.Layout.Remove(v); err != nil && !errors.Is(err, none.ErrVersionActive) {
 			errs = append(errs, err)
 		}
 	}

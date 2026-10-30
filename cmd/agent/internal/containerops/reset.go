@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
@@ -198,7 +197,7 @@ func (t *Teardown) removeLayout() []error {
 		errs = append(errs, err)
 	}
 
-	if err := os.Remove(t.runtimeDir()); err != nil && !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "directory not empty") {
+	if err := os.Remove(t.runtimeDir()); err != nil && !errors.Is(err, os.ErrNotExist) && !noneops.IsNotEmpty(err) {
 		errs = append(errs, err)
 	}
 

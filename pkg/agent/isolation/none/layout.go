@@ -154,6 +154,9 @@ func (l Layout) Versions() ([]string, error) {
 	return out, nil
 }
 
+// ErrVersionActive is returned by Remove for the active version.
+var ErrVersionActive = errors.New("version is active")
+
 // Remove deletes one installed version. The active version cannot be removed.
 func (l Layout) Remove(version string) error {
 	if err := validVersion(version); err != nil {
@@ -166,7 +169,7 @@ func (l Layout) Remove(version string) error {
 	}
 
 	if cur == version {
-		return fmt.Errorf("version %q is active", version)
+		return fmt.Errorf("version %q: %w", version, ErrVersionActive)
 	}
 
 	return os.RemoveAll(l.VersionDir(version))
