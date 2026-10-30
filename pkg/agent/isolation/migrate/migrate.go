@@ -26,9 +26,9 @@ const (
 	Reprovision Strategy = "reprovision"
 )
 
-// ParseStrategy validates s. Empty is returned as empty so the caller can ask
+// parseStrategy validates s. Empty is returned as empty so the caller can ask
 // Plan for the default.
-func ParseStrategy(s string) (Strategy, error) {
+func parseStrategy(s string) (Strategy, error) {
 	switch st := Strategy(s); st {
 	case "", InPlace, Reprovision:
 		return st, nil
@@ -491,7 +491,7 @@ func ParseParams(params map[string]string) (Request, error) {
 		return Request{}, fmt.Errorf("parameter %s: %w", ParamTargetMode, err)
 	}
 
-	strategy, err := ParseStrategy(params[ParamStrategy])
+	strategy, err := parseStrategy(params[ParamStrategy])
 	if err != nil {
 		return Request{}, fmt.Errorf("parameter %s: %w", ParamStrategy, err)
 	}

@@ -59,12 +59,12 @@ func TestParseStrategy(t *testing.T) {
 	t.Parallel()
 
 	for _, s := range []string{"", "inPlace", "reprovision"} {
-		got, err := ParseStrategy(s)
+		got, err := parseStrategy(s)
 		require.NoError(t, err)
 		require.Equal(t, Strategy(s), got)
 	}
 
-	_, err := ParseStrategy("InPlace")
+	_, err := parseStrategy("InPlace")
 	require.Error(t, err)
 }
 
