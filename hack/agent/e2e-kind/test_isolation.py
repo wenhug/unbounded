@@ -100,6 +100,23 @@ class PlanStepTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         e2e.assert_bootstrap_preflight_mode_check("none")
 
+    def test_daemon_unit_check_has_no_machine_override_outside_nspawn(self):
+        seen = []
+
+        def fake_ssh(command):
+            seen.append(command)
+            return ("ExecStart=/opt/b/unbounded-agent-current daemon\n"
+                    "ExecStart=/opt/b/unbounded-agent-daemon-recovery.sh\n")
+
+        with patch.object(e2e, "ISOLATION_MODE", "none"), patch.object(e2e, "ssh_capture", fake_ssh):
+            e2e._daemon_unit_runs("/opt/b")
+        self.assertNotIn("override.conf", seen[0])
+
+        with patch.object(e2e, "ISOLATION_MODE", ""), patch.object(e2e, "ssh_capture", fake_ssh):
+            with self.assertRaises(SystemExit):
+                e2e._daemon_unit_runs("/opt/b")
+        self.assertIn("override.conf", seen[1])
+
     def test_every_mode_has_a_preflight_check(self):
         self.assertEqual(set(e2e.PREFLIGHT_MODE_CHECKS), set(e2e.ISOLATION_MODES))
 

@@ -5771,13 +5771,18 @@ def _daemon_unit_runs(binary_dir: str) -> None:
     its current link, the recovery unit its script, and each machine's service
     override its lifecycle helper."""
 
+    # The machine service override exists only for nspawn; the other modes run
+    # the node as host units and have no machine to override.
+    nspawn = isolation_mode() == "nspawn"
+    override = " /etc/systemd/system/systemd-nspawn@*.service.d/override.conf" if nspawn else ""
     units = ssh_capture(
         "sudo sh -c 'cat /etc/systemd/system/unbounded-agent-daemon.service "
-        "/etc/systemd/system/unbounded-agent-daemon-recovery.service "
-        "/etc/systemd/system/systemd-nspawn@*.service.d/override.conf'")
-    for want in (f"ExecStart={binary_dir}/unbounded-agent-current daemon",
-                 f"ExecStart={binary_dir}/unbounded-agent-daemon-recovery.sh",
-                 f"={binary_dir}/unbounded-agent-nspawn-lifecycle nspawn-lifecycle post-start"):
+        f"/etc/systemd/system/unbounded-agent-daemon-recovery.service{override}'")
+    wants = [f"ExecStart={binary_dir}/unbounded-agent-current daemon",
+             f"ExecStart={binary_dir}/unbounded-agent-daemon-recovery.sh"]
+    if nspawn:
+        wants.append(f"={binary_dir}/unbounded-agent-nspawn-lifecycle nspawn-lifecycle post-start")
+    for want in wants:
         if want not in units:
             die(f"the agent's units do not run {want!r}:\n{units}")
 
@@ -6518,9 +6523,13 @@ def validate_isolation_preflight() -> None:
     bootstrap saved, when that bootstrap ran in the mode under test. A report
     that does carry checks is validated in full."""
     mode = isolation_mode()
+    # The installed host keeps its configuration as the applied config of the
+    # running slot, not in a config file.
+    configs = applied_config_files()
+    if not configs:
+        die("no applied config found on the host to run preflight against")
     result = ssh_capture_quiet(
-        f"sudo env UNBOUNDED_AGENT_CONFIG_FILE=/etc/unbounded/agent/config.json "
-        f"{DAEMON_BINARY} preflight --isolation {mode} --output json"
+        f"sudo {DAEMON_BINARY} preflight --config {configs[0]} --isolation {mode} --output json"
     )
     if result.returncode != 0 and not result.stdout.strip():
         die(f"preflight --isolation {mode} exited {result.returncode} with no report: "
