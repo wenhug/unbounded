@@ -147,7 +147,10 @@ and new files.
 
 ### 6.4 Version skew
 
-- The agent rejects any unrecognized `isolation` value with a clear error.
+- The agent rejects any unrecognized `isolation` value with a clear error. An
+  agent that predates the key does not reject it: the config is decoded with
+  `encoding/json` (`cmd/agent/internal/cmd/config.go`), which ignores unknown
+  keys, so that agent runs the node as `nspawn`.
 - Machina passes `spec.isolation` through to generated agent config without
   checking the agent version. No release number is compiled into the code; the
   operator pins an agent version that supports the requested mode.
@@ -159,17 +162,13 @@ drift. Nothing moves until an `IsolationMigrate` MachineOperation (section 9).
 
 ### 6.6 Implementation status
 
-- 6.4 (control plane): implemented without a version gate.
-  `provision.BuildAgentConfig` passes `spec.isolation` through to the agent
-  config and no release number is compiled into the code. An agent that does
-  not know the key rejects it through config validation. Pin a supporting
-  agent version before setting a non-default mode.
-- 6.5 (control plane): implemented. The controller sets `IsolationDrift` by
-  comparing `spec.isolation` (empty means `nspawn`) with the new
-  `status.observedIsolation`. It never moves the node. The agent daemon must
-  still write `status.observedIsolation` (as it does for
-  `observedProvisioningFormat`); it does at startup and after a migration (see
-  the status note in section 10.4).
+- 6.4: implemented without a version gate. `provision.BuildAgentConfig` passes
+  `spec.isolation` through and no release number is compiled into the code.
+  Because an older agent ignores the key (above), pin a supporting agent
+  version before setting a non-default mode.
+- 6.5: implemented. The controller sets `IsolationDrift` from `spec.isolation`
+  (empty means `nspawn`) and `status.observedIsolation`, which the agent daemon
+  writes at startup and after a migration. It never moves the node.
 
 ## 7. Backend interface
 
@@ -272,38 +271,29 @@ Everything runs directly on the host.
 - Upgrade: stop units, flip `current`, start units, wait for kubelet
   Ready, flip back automatically on failure. The node is briefly down.
 
-**Implementation status (WP1, none end to end).** Implemented and registered:
-`pkg/agent/isolation/none` (backend, layout, units, LocalDNS unit, drop-ins,
-preflight), `cmd/agent/internal/noneops` (composition root: install, configure,
-start, restart, upgrade, teardown), the `none` bootstrap stage plan
-(`cmd/agent/internal/cmd/stageplan*.go`; a new mode adds one file and one
-`registerStagePlan` call), the none node operator
-(`cmd/agent/internal/daemon/nodeoperator_none.go`) and a mode-aware
-`resetResources`. Decisions: the applied config is recorded under the fixed slot
-`kube1` (no blue/green slot; the version directory is the unit of upgrade, named
-`<kubernetes version>-<digest of other artifact versions>`); same-path files are
-written by the existing nodestart phases through a goal-state `RootOverride`, and
-binaries land in `<base>/<version>/bin` through the same rootfs installers.
-Unverified: everything against a real systemd and containerd (only stubbed
-hosts were available), kubelet Ready beyond "unit active and credentials
-present", pods surviving a plain unit stop, and `IsolationMigrate` to or from
-`none`.
+**Status (WP1).** Implemented end to end: bootstrap, start, soft reboot,
+upgrade with rollback, reset, `exec`, `logs`, preflight and uninstall.
+Decisions: the applied config is recorded under the fixed slot `kube1` (the
+version directory, named `<kubernetes version>-<digest of other artifact
+versions>`, is the unit of upgrade); same-path files are written by the existing
+nodestart phases through a goal-state `RootOverride`, and binaries land in
+`<base>/<version>/bin` through the same rootfs installers.
 
-**GPU support (none).** Every grant is honored or refused by `Prepare`, never
-ignored: device nodes and identity mounts are checked for existence, NVIDIA
-library and helper directories are satisfied by the host view, and a mount at
-another path or a library-path grant is an error. On a host with NVIDIA devices
-`Prepare` also requires `/usr/bin/nvidia-ctk` and
-`/usr/bin/nvidia-container-runtime`, or the paths in the agent config
-`NvidiaToolkit` (`CTKPath`, `ContainerRuntimePath`; absolute and clean, valid
-only for `none`, dropped when a reprovision leaves `none`); the agent does not
-install the toolkit in this mode. `container` runs the toolkit from its rootfs
-image, so the setting does not apply there and is rejected. Before the units start on `Start`, `Restart` and `Upgrade` (and its
-rollback), `nodestart.SetupNVIDIAOnHost` selects CDI mode and regenerates
-`/etc/cdi/nvidia.yaml` from the host driver with the same hook selection as
-nspawn; the containerd nvidia runtime drop-in is the existing one. Reset removes
-the spec. Unverified: all of it on a real GPU host, including that the
-toolkit's CDI generation with `--driver-root /` is right on the distros in use.
+GPU: every grant is honored or refused by `Prepare`, never ignored. Device
+nodes and identity mounts are checked for existence, NVIDIA library and helper
+directories are satisfied by the host view, and a mount at another path or a
+library-path grant is an error. On a host with NVIDIA devices `Prepare`
+requires the NVIDIA Container Toolkit on the host, at `/usr/bin` or at the
+paths in the agent config `NvidiaToolkit` (valid only for `none`). Before the
+units start on `Start`, `Restart` and `Upgrade` (and its rollback) the agent
+selects CDI mode and regenerates `/etc/cdi/nvidia.yaml` as nspawn does. Reset
+removes the spec and leaves the toolkit's `config.toml` in CDI mode, which is
+accepted.
+
+Unverified: everything against a real systemd and containerd, kubelet Ready
+beyond "unit active and credentials present", pods surviving a plain unit stop,
+the GPU path on a real GPU host (including `nvidia-ctk cdi generate
+--driver-root /` on the distros in use), and a read-only `/usr`.
 
 ### 8.3 `container` (Azure Container Linux)
 
@@ -335,60 +325,34 @@ Provisional until the node facts in section 13 are collected.
 - Exec: via `runc exec` (or equivalent) behind `Backend.Exec`. Logs: container
   journal via `journalctl -M` equivalent or `runc exec journalctl`.
 
-**Implementation status (WP2, all provisional).** Implemented against this
-section and a stub runtime, not against a live Azure Container Linux node:
-`pkg/agent/isolation/container` (Backend, OCI `config.json` generation, the
-supervising unit, preflight, exec and logs through `<runtime> exec`),
-`pkg/agent/nodelifecycle` and the hidden `node-lifecycle` command. The backend
-is not registered with the isolation registry until the daemon is mode aware.
-Unverified assumptions: `spc_t` is accepted by the node policy; `rshared` on
-`/var/lib/kubelet` propagates through the host root mount; the runtime lives at
-`/opt/unbounded/runtime/runc`; `SIGRTMIN+3` through runc stops systemd as PID 1;
-the cgroup, namespace, mount and capability set in `config.json` is sufficient
-for kubelet and containerd. Not done: runtime artifact download wiring and the
-daemon integration. `images/agent-*` already install systemd and the bundle sets
-`process.args`, so no image entrypoint was added. The open items below are
-unchanged.
-
-**Implementation status (WP2 completion, container end to end, still
-provisional).** The backend now registers itself with the isolation registry and
-is wired like `none`: `cmd/agent/internal/containerops` (composition root:
-runtime and helper install, OCI unpack through `phases/rootfs/oci`, bundle and
-unit, in-rootfs provisioning and configuration through the `RootOverride` and
-`ExecOverride` goal-state hooks, start, stop, restart, blue/green upgrade with
-rollback, teardown), the `container` bootstrap stage plan
-(`cmd/agent/internal/cmd/stageplan_container.go`), the container node operator
-(`cmd/agent/internal/daemon/nodeoperator_container.go`), a mode-aware
-`resetResources`, host preflight (`container-backend` check, container
-artifacts in the clean-host check, no `systemd-container`, no machined guards)
-and registry-built `exec` and `logs`. The runtime is `runc`, downloaded by
-`rootfs.InstallHostRuntime` to `/opt/unbounded/runtime/runc` from the same
-version and source resolution as the in-node `runc`, in this mode only.
-Decisions: `container.Root` maps paths under the same-path bind mounts to the
-host directory, since a file written below a bind mount in the rootfs is hidden
-by it; both slots share those directories, so repave resets the shared kubelet
-state (pod mounts, previous kubelet credentials) and a rollback restarts the old
-slot against the new shared files; the applied config moves to the new slot only
-after it is healthy; the node-lifecycle post-start hook asks the runtime, not
-`systemctl is-active`, because the unit is still activating while
+**Status (WP2, provisional).** Implemented end to end: the OCI bundle and
+supervising unit, bootstrap, start, soft reboot, blue/green upgrade with
+rollback, reset, `exec`, `logs`, preflight, GPU wiring through the
+`node-lifecycle` hooks, and uninstall. The runtime is `runc`, downloaded to
+`/opt/unbounded/runtime/runc` in this mode only. `crun` is not implemented.
+Decisions: paths under the bind-mounted same-path directories are written on the
+host side, since a bind mount hides anything written below it in the rootfs;
+both slots share those directories, so a repave resets the shared kubelet state
+and a rollback restarts the old slot against the new shared files (saved and
+restored byte for byte, see section 10.4); the applied config moves to the new
+slot only after it is healthy; the node-lifecycle post-start hook asks the
+runtime, not `systemctl is-active`, because the unit is still activating while
 `ExecStartPost` runs (an inference from systemd semantics, not observed).
-GPU support: the grants already became OCI mounts, devices and cgroup rules;
-the node-lifecycle hooks now also do the nspawn lifecycle hook's NVIDIA work.
-Pre-start rediscovers NVIDIA devices and libraries and re-renders the bundle
-(`Backend.RefreshGrants`; a node recorded without NVIDIA grants is left alone),
-and post-start (`nodelifecycle.Lifecycle.AfterStart`) waits for systemd in the
-container, stops containerd and kubelet, runs the shared `nodestart` NVIDIA
-tasks through the container exec (library links, driver root, CDI spec, CDI
-mode) and starts them again. The shared tasks now call the goal state's `Exec`
-instead of `nspawn.Exec`, which is unchanged for nspawn. Unverified on a GPU
-host and on Azure Container Linux. Not
-done: `crun`, nspawn
-lifecycle hook commands supplied through config. `IsolationMigrate` to and from
-`container` is wired; see the status note in section 10.4. Unverified, in addition to the assumptions above: everything
-against a real `runc`, systemd and Azure Container Linux; that
-`/proc/<pid>/root` of a containerized process resolves to the bundle rootfs
-(used by the bind-address ownership preflight); the `/lib/modules` bind on
-that image; and that pod mounts propagate to the host through `rshared`.
+
+Unverified assumptions, all still open until the node facts in section 13 are
+collected:
+- `spc_t` is accepted by the node policy.
+- `rshared` on `/var/lib/kubelet` propagates through the host root mount, and
+  pod mounts propagate to the host.
+- `SIGRTMIN+3` through `runc` stops systemd as PID 1.
+- The capability, device and mount set in `config.json` is enough for kubelet,
+  containerd and the CNI.
+- `/proc/<pid>/root` of a containerized process resolves to the bundle rootfs
+  (used by the bind-address ownership preflight).
+- The runtime path and the `/lib/modules` read-only bind are right for the
+  image.
+- The privileged container, the `/run/host-nvidia*` binds and the CDI hooks
+  work on Azure Container Linux.
 
 ## 9. Operation matrix
 
@@ -459,60 +423,46 @@ Existing repave is not changed to adopt rollback in this plan.
 Pod data and the image store are re-pulled. Host-global state (invariant 2)
 is untouched.
 
-**Implementation status (WP3 step 6, migration wired to host operations).**
-`IsolationMigrate` is carried out by `cmd/agent/internal/daemon/migration*.go`;
-the handler is `reconcileIsolationMigrate`, and the nodeOperator method
-`MigrateIsolation` now takes a `migrationEnv` (just the operation name; the daemon
-builds no Kubernetes client for it).
+**Status (WP3).** `IsolationMigrate` is implemented for both strategies. The
+operator cordons and drains the node before creating the operation; the agent
+does not touch Node objects.
 
 - *In place (nspawn <-> container).* `migrate.RunInPlace` with real hooks:
-  preflight is the target mode's host checker (`CheckNSpawnRuntime`,
-  `CheckContainerBackend`); download is the repave's override resolution and
-  archive staging; prepare runs in the alternate slot (the container adapter
-  uses `Node.Prepare`, whose `Node.Activate` is the tail of `Node.Upgrade`
-  factored out, so repave and migration share it); the network cleanup is
-  `reset.CleanupNetwork`; the target persists the applied config under the
-  alternate slot with `Isolation` set; rollback removes the target's record and
-  rewrites the source's; readiness is the repave's local kubelet check
-  within five minutes; success removes the source and its record and patches `status.observedIsolation`.
-  Kubelet credentials are fresh because the target boots a new kubelet from the
-  applied config's bootstrap token, exactly as a repave does; nothing is copied.
+  the target mode's host preflight, the repave's download resolution and archive
+  staging, prepare in the alternate slot, the repave's network cleanup, persist
+  the target's applied config, and the repave's local kubelet check within five
+  minutes. Rollback removes the target's record and restores the source's.
+  Success removes the source and patches `status.observedIsolation`. Kubelet
+  credentials are fresh because the target boots a new kubelet from the applied
+  config's bootstrap token, as a repave does; nothing is copied.
 - *Crash safety.* `migrate.Journal` is a write-ahead step file at
-  `/etc/unbounded/agent/isolation-migration.json` (atomic write; the step is
-  saved before the step runs). An `InProgress` operation is not enqueued again,
-  so `recoverIsolationMigration` runs at daemon start, before the controller,
-  resolves the journal with `migrate.ResumeInPlace` (before the source stops:
-  drop the target; once it may have stopped: roll back; `awaiting-ready`: wait
-  again for the target; `ready`: finish cleanup), reports the outcome on the operation and then
-  removes the journal. While both slots have an applied config, the journal
-  decides which one `FindActiveMachine` returns.
-- *Reprovision (any pair, required for `none`).* The reset removes the daemon
-  and the agent, so the daemon stages `/var/lib/unbounded-agent-reprovision`
-  (binary copy, target config, journal), validates it with the staged binary,
-  and starts `unbounded-agent-reprovision.service`, whose hidden
-  `isolation-reprovision` command runs the existing reset (order unchanged),
-  then the target mode's bootstrap stage plan, and is retried by systemd and run
-  again at boot until it finishes. The daemon bootstrap installs reports the
-  operation once the applied config is in the target mode.
+  `/etc/unbounded/agent/isolation-migration.json`. An `InProgress` operation is
+  not enqueued again, so the daemon resolves a leftover journal at start
+  (before the source stopped: drop the target; once it may have stopped: roll
+  back; `awaiting-ready`: wait again; `ready`: finish cleanup) and reports the
+  outcome on the operation. While both slots have an applied config, the
+  journal decides which one is active.
+- *Reprovision (any pair, required for `none`).* The reset removes the daemon,
+  so the daemon stages `/var/lib/unbounded-agent-reprovision` (binary copy,
+  target config, journal) and starts `unbounded-agent-reprovision.service`,
+  whose hidden `isolation-reprovision` command runs the existing reset, then the
+  target mode's bootstrap, retried by systemd up to
+  `daemon.ReprovisionMaxAttempts` runs. The daemon that bootstrap installs
+  reports the operation once the applied config is in the target mode.
 - *Shared configuration.* `confsnap` saves, byte for byte, the host files both
-  stacks write at the same paths (`confsnap.SharedPaths`: containerd, kubelet,
-  CNI, LocalDNS configuration and the kubelet credentials) before an in-place
-  migration, a `none` upgrade and a container upgrade changes anything, and
-  restores them after the target is gone and before the source starts, also on a
-  restart mid-migration. The snapshot of a migration is next to the journal.
-- *Reprovision limits.* The handoff gives up after
-  `daemon.ReprovisionMaxAttempts` runs: it journals `failed`, removes its unit
-  and staged credentials, and stops. With the host reset and no daemon, the
-  operation is reported `Failed` by the first agent that starts on the host
-  afterward. An attested host records its attestation URL at bootstrap and
-  attests again; any other host is checked for a still-valid bootstrap token
-  before the reset. A token that is no longer valid cannot be renewed from the
-  agent: the operator must renew it or bootstrap with attestation. The `none`
-  target's static preflight runs before the reset and the ownership half after.
-- *Gaps.* The operation of a failed reprovision is not reported until an agent
-  runs on the host again. Container to nspawn in place needs
-  `systemd-container` already installed. Everything is verified against fakes
-  and stubbed hosts only.
+  stacks write at the same paths before an in-place migration, a `none` upgrade
+  and a container upgrade, and restores them before the source starts again on
+  any failure, also after a restart mid-migration.
+- *Preflight and tokens.* The `none` target's static preflight runs before the
+  reset and the ownership half after. An attested host records its attestation
+  URL at bootstrap and attests again on reprovision; any other host is checked
+  for a still-valid bootstrap token before the reset. An invalid token cannot
+  be renewed from the agent: the operator must renew it or bootstrap with
+  attestation.
+- *Gaps.* After a reprovision that never bootstraps, the operation is reported
+  `Failed` only once an agent next runs on the host. Container to nspawn in
+  place needs `systemd-container` already installed. Everything is verified
+  against fakes and stubbed hosts only.
 
 ## 11. Work packages
 
@@ -711,8 +661,11 @@ operation in section 9, GPU, LocalDNS, limits and troubleshooting; links valid;
 
 ## 13. Open items and prerequisites
 
-Status: WP2 was implemented without these facts; see the implementation status
-note in section 8.3. Every item below is still open.
+Status: WP2 was implemented without these facts; see the status note in
+section 8.3. Every item below is still open. Remaining gaps beyond these facts:
+`crun` is unsupported, there is no agent-side `--isolation` flag (the agent
+reads `Isolation` from its config), and nothing has run on a real host or in
+the QEMU e2e.
 
 1. **Azure Container Linux node facts (blocks WP2).** Run on a live node and
    record the output: `uname -r`, `containerd --version`, `runc --version`,
