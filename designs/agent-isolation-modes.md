@@ -157,6 +157,21 @@ and new files.
 If `spec.isolation` differs from the applied mode, Machine status reports
 drift. Nothing moves until an `IsolationMigrate` MachineOperation (section 9).
 
+### 6.6 Implementation status
+
+- 6.4 (control plane): implemented. `provision.BuildAgentConfig` withholds a
+  non-default `isolation` unless `spec.agent.version` is empty or at least
+  `provision.MinIsolationAgentVersion` (a placeholder until a maintainer
+  confirms the first supporting release). The machina controller sets
+  `IsolationSupported` (reasons `AgentVersionSupported`, `AgentVersionTooOld`,
+  `AgentVersionInvalid`) and removes it when the field is unset or `nspawn`.
+  The agent-side rejection of unknown values is covered by config validation.
+- 6.5 (control plane): implemented. The controller sets `IsolationDrift` by
+  comparing `spec.isolation` (empty means `nspawn`) with the new
+  `status.observedIsolation`. It never moves the node. The agent daemon must
+  still write `status.observedIsolation` (as it does for
+  `observedProvisioningFormat`); until it does, no drift is reported.
+
 ## 7. Backend interface
 
 New package `pkg/agent/isolation`. Names below are a starting shape. WP0 may
@@ -248,8 +263,8 @@ Everything runs directly on the host.
 - Units: agent-owned systemd units for containerd, kubelet and CoreDNS.
 - Safety: preflight refuses to start if it finds a kubelet or containerd it does
   not own (unit, binary or running process).
-- Requirements: writable `/etc`, `/opt`, `/var`. `/usr` need not be writable.
-  Not supported on a read-only `/usr`; use `container`.
+- Requirements: writable `/etc`, `/opt`, `/var`. `/usr` is never modified, so
+  a read-only `/usr` is fine.
 - Network and paths: host native. Pods share the host netns trivially.
 - bpffs: no per-machine bpffs. The host `/sys/fs/bpf` is used directly. This is
   a documented difference for eBPF CNIs such as Cilium.
