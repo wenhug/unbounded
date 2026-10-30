@@ -227,9 +227,10 @@ def isolation_debug_commands() -> list[tuple[str, str]]:
             )),
         ]
     if SMOKE_ISOLATION == "container":
-        # Provisional: the container backend's unit names are not fixed, so go
-        # through the agent's own exec and logs subcommands.
+        # The supervising units are unbounded-node-<slot>.service
+        # (container.UnitName); exec and logs go through the node stack itself.
         return [
+            ("node stack unit status (container)", "systemctl --no-pager status 'unbounded-node-*.service'"),
             ("node stack logs (container)", "unbounded-agent logs --lines 200"),
             ("node stack units (container)", "unbounded-agent exec -- systemctl --no-pager list-units"),
         ]
@@ -1019,8 +1020,8 @@ def run_operation_smoke_suite() -> None:
     if SMOKE_ISOLATION in ("none", "container"):
         # Soft reboot restarts the node stack only. In none mode the node
         # shares the host kernel boot ID, so it must not change. The container
-        # backend is provisional and its boot ID behavior is unverified, so
-        # only readiness is asserted for it.
+        # mode's boot ID behavior has not been checked on a real node, so only
+        # readiness is asserted for it.
         boot_id = get_node_boot_id(NODE_NAME)
         node_reboot = create_machine_operation("smoke-node-reboot", "NodeReboot")
         wait_machine_operation_complete(node_reboot, timeout=600)

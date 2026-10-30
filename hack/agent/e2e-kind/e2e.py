@@ -144,9 +144,10 @@ if ISOLATION_MODE and ISOLATION_MODE not in ISOLATION_MODES:
 # Agent-owned units and install base of the none mode (pkg/agent/isolation/none).
 NONE_NODE_BASE = "/opt/unbounded/node"
 NONE_UNITS = ("unbounded-containerd.service", "unbounded-kubelet.service")
-# Node-stack root of the container mode. Provisional: from the design, not yet
-# verified against the container backend.
+# Node-stack root and supervising unit of the container mode
+# (container.DefaultBase and container.UnitName in pkg/agent/isolation/container).
 CONTAINER_ROOT_BASE = "/var/lib/unbounded/containers"
+CONTAINER_UNIT_GLOB = "unbounded-node-*.service"
 
 BRIDGE_NAME = "virbr-e2e"
 TAP_NAME = os.environ.get("TAP_NAME", "tap-e2e")
@@ -789,6 +790,17 @@ def node_exec(command: str) -> str:
     return ssh_capture(f"sudo {DAEMON_BINARY} exec -- /bin/sh -c {shlex.quote(command)}")
 
 
+def container_slots_from_units(units_output: str) -> list[str]:
+    """Return the slots whose unbounded-node-<slot>.service appears in
+    `systemctl list-units --no-legend` output."""
+    slots = []
+    for line in units_output.splitlines():
+        fields = line.split()
+        if fields and fields[0].startswith("unbounded-node-") and fields[0].endswith(".service"):
+            slots.append(fields[0][len("unbounded-node-"):-len(".service")])
+    return slots
+
+
 def none_current_version() -> str:
     """Return the version the none mode's current link selects, or empty."""
     out = ssh_capture_quiet(f"sudo readlink {NONE_NODE_BASE}/current")
@@ -823,8 +835,13 @@ def validate_isolation_mode() -> None:
         if not none_current_version():
             die(f"{NONE_NODE_BASE}/current is not a link to an installed version")
     else:
-        # Provisional: only the backend-neutral contract is asserted until the
-        # container backend's node facts are verified.
+        units = ssh_capture_quiet(
+            f"sudo systemctl list-units --no-legend --state=active '{CONTAINER_UNIT_GLOB}'"
+        )
+        slots = container_slots_from_units(units.stdout)
+        if len(slots) != 1:
+            die(f"container mode must run exactly one {CONTAINER_UNIT_GLOB} unit, found {slots}")
+        ssh_cmd(f"sudo test -d {CONTAINER_ROOT_BASE}/{slots[0]}/rootfs")
         ssh_cmd(f"sudo {DAEMON_BINARY} exec -- /bin/true")
     log(f"Isolation mode {mode} verified on the host")
 

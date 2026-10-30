@@ -30,6 +30,19 @@ class IsolationModeTests(unittest.TestCase):
                          "IsolationMigrate to container completed (inPlace)")
 
 
+class ContainerUnitTests(unittest.TestCase):
+    def test_slots_come_from_the_unit_names(self):
+        out = (
+            "unbounded-node-kube1.service loaded active running Unbounded node kube1\n"
+            "unbounded-node-kube2.service loaded active running Unbounded node kube2\n"
+        )
+        self.assertEqual(e2e.container_slots_from_units(out), ["kube1", "kube2"])
+
+    def test_other_units_and_blank_output_are_ignored(self):
+        self.assertEqual(e2e.container_slots_from_units(""), [])
+        self.assertEqual(e2e.container_slots_from_units("unbounded-containerd.service loaded active running x\n"), [])
+
+
 class SuiteTests(unittest.TestCase):
     def test_all_suite_steps_exist(self):
         e2e.validate_suites()
