@@ -6303,7 +6303,8 @@ def alternate_nspawn_slot() -> str:
 def inject_migration_target_fault() -> str:
     """Make the target of an in-place migration fail after the source has been
     stopped, so the rollback path runs. A directory where the alternate slot's
-    applied config belongs makes persisting the target fail. Returns the path
+    applied config belongs makes persisting the target fail (the daemon treats
+    an unreadable record as not in use, so the migration starts). Returns the path
     to remove afterwards. The fault is harness-only; override it with
     MIGRATION_FAULT_CMD and MIGRATION_FAULT_CLEANUP_CMD."""
     custom = os.environ.get("MIGRATION_FAULT_CMD", "")
@@ -6320,7 +6321,40 @@ def clear_migration_target_fault(path: str) -> None:
     if custom:
         ssh_cmd(custom)
     elif path:
-        ssh_cmd(f"sudo rmdir {shlex.quote(path)}")
+        # The rollback removes the applied config of the failed target slot,
+        # which removes the empty directory standing in for it.
+        ssh_cmd(f"sudo rmdir {shlex.quote(path)} 2>/dev/null || true")
+
+
+def ensure_migration_drain_rbac() -> None:
+    """Grant the daemon group what the migration drain needs and the product
+    ClusterRole (deploy/machina/07-bootstrapper-rbac.yaml.tmpl) does not yet
+    grant: create on pods/eviction. Pod reads and Node patches come from the
+    Node authorizer. Harness-only; remove when the product role carries it."""
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "List",
+        "items": [
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "ClusterRole",
+                "metadata": {"name": "e2e-daemon-migration-drain"},
+                "rules": [
+                    {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]},
+                    {"apiGroups": [""], "resources": ["pods/eviction"], "verbs": ["create"]},
+                    {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get", "patch"]},
+                ],
+            },
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "ClusterRoleBinding",
+                "metadata": {"name": "e2e-daemon-migration-drain"},
+                "subjects": [{"kind": "Group", "name": "unbounded-agent-daemons", "apiGroup": "rbac.authorization.k8s.io"}],
+                "roleRef": {"kind": "ClusterRole", "name": "e2e-daemon-migration-drain", "apiGroup": "rbac.authorization.k8s.io"},
+            },
+        ],
+    }
+    kubectl(["apply", "-f", "-"], input=json.dumps(manifest).encode())
 
 
 def migrate_isolation(node_config: NodeConfig, target: str, strategy: str) -> None:
@@ -6328,6 +6362,7 @@ def migrate_isolation(node_config: NodeConfig, target: str, strategy: str) -> No
     identity intact: same Node name, labels and taints, new mode recorded, a
     workload still runs."""
     source = applied_isolation()
+    ensure_migration_drain_rbac()
     name = f"e2e-isolation-migrate-{target}-{strategy.lower()}-{int(time.time())}"
     run_quiet([KUBECTL, "delete", _machine_operation_resource(), name, "--ignore-not-found"], check=False)
     create_machine_operation(name, AGENT_MACHINE_NAME, "IsolationMigrate",
@@ -6350,6 +6385,7 @@ def validate_migration_rollback(node_config: NodeConfig, target: str) -> None:
     source is running again, the recorded mode is the source's, and the
     operation reports the failure."""
     source = applied_isolation()
+    ensure_migration_drain_rbac()
     name = f"e2e-isolation-rollback-{int(time.time())}"
     fault = inject_migration_target_fault()
     try:

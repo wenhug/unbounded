@@ -347,8 +347,10 @@ func migrateInPlace(ctx context.Context, log *slog.Logger, active *ActiveMachine
 	targetSlot := goalstates.AlternateMachine(sourceSlot)
 
 	// The alternate slot is dead only when nothing records it as in use.
-	if _, err := readMigrationConfig(log, targetSlot); !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("slot %s is still recorded as in use (%v); refusing to build the migration target over it", targetSlot, err)
+	// An unreadable record is not a node: persisting over it fails later and
+	// rolls back.
+	if _, err := readMigrationConfig(log, targetSlot); err == nil {
+		return fmt.Errorf("slot %s is still recorded as in use; refusing to build the migration target over it", targetSlot)
 	}
 
 	downloads, archives, err := resolveMigrationDownloads(ctx, &provision.UnboundedAgentConfig{AgentConfig: *active.Config})

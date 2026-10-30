@@ -147,6 +147,10 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 		return h.failAt["preflight"]
 	})
 	h.replace(&readMigrationConfig, func(_ *slog.Logger, slot string) (*ActiveMachine, error) {
+		if err := h.failAt["read "+slot]; err != nil {
+			return nil, err
+		}
+
 		cfg, ok := h.applied[slot]
 		if !ok {
 			return nil, os.ErrNotExist
@@ -362,6 +366,15 @@ func TestMigrateInPlace_RefusesWhenAlternateSlotIsRecordedInUse(t *testing.T) {
 
 	require.ErrorContains(t, h.run(isolation.ModeContainer, migrate.InPlace), "still recorded as in use")
 	assert.Empty(t, h.events)
+}
+
+func TestMigrateInPlace_AnUnreadableAlternateRecordIsOverwrittenAndRollsBack(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.failAt["read kube2"] = errors.New("is a directory")
+	h.failAt["persist kube2"] = errors.New("is a directory")
+
+	require.ErrorContains(t, h.run(isolation.ModeContainer, migrate.InPlace), "rolled back to nspawn")
+	assert.Equal(t, []string{"stop kube1", "start kube1"}, h.source.Calls())
 }
 
 func TestMigrateInPlace_PrepareFailureLeavesTheSourceRunning(t *testing.T) {
