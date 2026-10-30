@@ -59,8 +59,10 @@ func (c containerController) Regenerate(ctx context.Context, slot string) error 
 	return c.b.Regenerate(ctx, slot)
 }
 
+// Running asks the runtime, not the unit: the post-start hook runs while the
+// unit is still activating, when the unit-level Status can never be running.
 func (c containerController) Running(ctx context.Context, slot string) (bool, string, error) {
-	st, err := c.b.Status(ctx, isolation.DirRoot{SlotName: slot})
+	st, err := c.b.RuntimeStatus(ctx, isolation.DirRoot{SlotName: slot})
 	return st.Running, st.Detail, err
 }
 

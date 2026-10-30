@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -208,12 +209,21 @@ func (b *Backend) RenderBundle(slot string, grants []isolation.Grant) error {
 	in := BundleInput{
 		RootfsDir: b.Layout.RootfsDir(slot),
 		SELinux:   b.host().SELinuxMode(),
-		Grants:    grants,
+		Grants:    slices.Clone(grants),
 		Devices:   map[string]DeviceInfo{},
 	}
 
-	for _, g := range grants {
-		if g.Kind != isolation.GrantDevice {
+	for i, g := range grants {
+		if g.Kind != isolation.GrantDevice || g.Source == "" {
+			continue
+		}
+
+		// A device grant can name a directory of device nodes (for example an
+		// NVIDIA device directory); there is no node to describe, so it is
+		// exposed as a bind mount.
+		if fi, err := os.Stat(filepath.Join(b.SourceRoot, g.Source)); err == nil && fi.IsDir() {
+			in.Grants[i].Kind = isolation.GrantMount
+
 			continue
 		}
 
@@ -513,6 +523,20 @@ func (b *Backend) Status(ctx context.Context, r isolation.NodeRoot) (isolation.S
 
 	if _, err := b.run(ctx, "systemctl", "is-active", "--quiet", UnitName(r.Slot())); err != nil {
 		return isolation.Status{Detail: UnitName(r.Slot()) + " is not active"}, nil //nolint:nilerr // an inactive unit is a status, not a failure
+	}
+
+	return b.RuntimeStatus(ctx, r)
+}
+
+// RuntimeStatus reports whether the OCI runtime considers the container
+// running, without requiring the supervising unit to be active. The
+// node-lifecycle post-start hook needs this form: it runs as ExecStartPost, when
+// the unit is still activating and `systemctl is-active` fails, so Status would
+// never report running from inside the hook. PROVISIONAL: the activating state
+// during ExecStartPost is systemd's documented behavior, not observed here.
+func (b *Backend) RuntimeStatus(ctx context.Context, r isolation.NodeRoot) (isolation.Status, error) {
+	if err := ValidSlot(r.Slot()); err != nil {
+		return isolation.Status{}, err
 	}
 
 	out, err := b.run(ctx, b.runtimePath(), "state", ContainerID(r.Slot()))

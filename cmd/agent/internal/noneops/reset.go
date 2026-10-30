@@ -289,3 +289,15 @@ func unitDir(d string) string {
 
 	return d
 }
+
+// UnmountBelow lazily unmounts every mount at or below the given prefixes,
+// deepest first. The container teardown shares it: pod volumes propagate from
+// the container to the host under /var/lib/kubelet and outlive the container.
+func (t *Teardown) UnmountBelow(ctx context.Context, prefixes ...string) error {
+	return t.unmountBelow(ctx, prefixes...)
+}
+
+// ModulesLoadPath is the host file that lists the node's kernel modules for
+// boot. A teardown for any mode that wrote it through LoadKernelModules removes
+// it.
+func ModulesLoadPath() string { return modulesLoadPath }

@@ -4,6 +4,7 @@
 package container
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,4 +191,57 @@ func TestPreflightToleratesAMissingRuntimeOnlyWhenProvisioned(t *testing.T) {
 	b.RuntimePath = rt
 	require.NoError(t, os.Remove(b.Host.CgroupControllers))
 	require.ErrorContains(t, b.Preflight(), "cgroup v2")
+}
+
+func TestDeviceClassGrantNeedsNoRule(t *testing.T) {
+	got, err := RenderConfig(BundleInput{
+		RootfsDir: "/r",
+		Grants:    []isolation.Grant{{Kind: isolation.GrantDevice, Purpose: isolation.PurposeHostDevice, DeviceClass: "char-input"}},
+	})
+	require.NoError(t, err)
+	require.NotContains(t, string(got), "char-input")
+
+	// A device grant with neither a node nor a class is still an error.
+	_, err = RenderConfig(BundleInput{RootfsDir: "/r", Grants: []isolation.Grant{{Kind: isolation.GrantDevice}}})
+	require.ErrorContains(t, err, "absolute path")
+}
+
+func TestDeviceGrantOfADirectoryBecomesAMount(t *testing.T) {
+	b, _, dir := newBackend(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "host", "dev/dri"), 0o755))
+
+	grants := []isolation.Grant{{Kind: isolation.GrantDevice, Purpose: isolation.PurposeNvidiaDevice, Source: "/dev/dri"}}
+	require.NoError(t, b.RenderBundle("kube1", grants))
+	require.Equal(t, isolation.GrantDevice, grants[0].Kind, "the caller's grants are not modified")
+
+	cfg, err := os.ReadFile(b.Layout.ConfigPath("kube1"))
+	require.NoError(t, err)
+	require.Contains(t, string(cfg), `"destination": "/dev/dri"`)
+	require.Contains(t, string(cfg), `"type": "bind"`)
+}
+
+func TestRuntimeStatusIgnoresTheUnitState(t *testing.T) {
+	b, st, _ := newBackend(t)
+	r := isolation.DirRoot{SlotName: "kube1"}
+
+	// While ExecStartPost runs the unit is activating, so is-active fails; the
+	// runtime still reports running, which is what the hook must wait for.
+	st.fail["systemctl is-active"] = errors.New("activating")
+	st.out[rt+" state"] = `{"status":"running"}`
+
+	s, err := b.Status(t.Context(), r)
+	require.NoError(t, err)
+	require.False(t, s.Running)
+
+	s, err = b.RuntimeStatus(t.Context(), r)
+	require.NoError(t, err)
+	require.True(t, s.Running)
+
+	st.out[rt+" state"] = `{"status":"created"}`
+	s, _ = b.RuntimeStatus(t.Context(), r)
+	require.False(t, s.Running)
+	require.Contains(t, s.Detail, "created")
+
+	_, err = b.RuntimeStatus(t.Context(), isolation.DirRoot{SlotName: "x"})
+	require.Error(t, err)
 }

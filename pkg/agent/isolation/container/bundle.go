@@ -260,6 +260,13 @@ func RenderConfig(in BundleInput) ([]byte, error) {
 	rules := []deviceRule{allowAll}
 
 	for _, g := range in.Grants {
+		if g.Kind == isolation.GrantDevice && g.Source == "" && g.DeviceClass != "" {
+			// A device class selector names no node to expose. The container
+			// already runs with every device allowed (allowAll above), so the
+			// class needs no rule of its own.
+			continue
+		}
+
 		if g.Source == "" || !filepath.IsAbs(g.Source) {
 			return nil, fmt.Errorf("grant %q source %q must be an absolute path", g.Kind, g.Source)
 		}
