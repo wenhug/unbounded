@@ -19,6 +19,7 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/agentbinary"
 	daemon "github.com/Azure/unbounded/pkg/agent/daemon"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
 
 const agentUpgradeLockRetryDelay = 2 * time.Second
@@ -48,6 +49,8 @@ func (t *machineOperationTarget) handlers() daemon.MachineOperationHandlers {
 		v1alpha3.OperationAgentUpgrade:   t.unlessStopping(t.reconcileAgentUpgrade),
 		v1alpha3.OperationAgentReset:     t.unlessStopping(t.reconcileAgentReset),
 		v1alpha3.OperationHostSoftReboot: t.unlessStopping(t.reconcileHostSoftReboot),
+
+		v1alpha3.OperationIsolationMigrate: t.unlessStopping(t.reconcileIsolationMigrate),
 	}
 }
 
@@ -231,6 +234,55 @@ func (t *machineOperationTarget) reconcileAgentReset(ctx context.Context, store 
 
 	// Stop the daemon last because systemctl stop terminates this running process.
 	return ctrl.Result{}, t.nodeOperator.StopDaemon(ctx, t.log)
+}
+
+func (t *machineOperationTarget) reconcileIsolationMigrate(ctx context.Context, store daemon.MachineOperationStore[int64], op daemon.MachineOperation) (ctrl.Result, error) {
+	lock, err := t.installation.AcquireMutationLock()
+	if errors.Is(err, installstate.ErrLockHeld) {
+		return ctrl.Result{RequeueAfter: agentUpgradeLockRetryDelay}, nil
+	}
+
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	defer releaseInstallationLock(t.log, lock)
+
+	if err := store.MarkInProgress(ctx, op, "planning isolation migration"); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	machine, err := getLocalMachine(ctx, t.Client, t.machineName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Everything that can be rejected is rejected before the node is touched.
+	req, err := migrate.ParseParams(op.Parameters)
+	if err != nil {
+		return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{Phase: v1alpha3.OperationPhaseFailed, Reason: "InvalidParameters", Message: err.Error()})
+	}
+
+	active, err := t.nodeOperator.FindActiveMachine(t.log)
+	if err != nil {
+		return finishFailedMachineOperation(ctx, store, op, err)
+	}
+
+	strategy, err := migrate.Plan(active.Mode, req.Target, req.Strategy)
+	if err != nil {
+		return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{Phase: v1alpha3.OperationPhaseFailed, Reason: "UnsupportedMigration", Message: err.Error()})
+	}
+
+	if err := t.nodeOperator.MigrateIsolation(ctx, t.log, active, req, strategy); err != nil {
+		return finishFailedMachineOperation(ctx, store, op, err)
+	}
+
+	return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{
+		Phase:                     v1alpha3.OperationPhaseComplete,
+		Reason:                    "Succeeded",
+		Message:                   fmt.Sprintf("IsolationMigrate to %s completed (%s)", req.Target, strategy),
+		ObservedMachineGeneration: machine.Generation,
+	})
 }
 
 func finishFailedMachineOperation(ctx context.Context, store daemon.MachineOperationStore[int64], op daemon.MachineOperation, executionErr error) (ctrl.Result, error) {

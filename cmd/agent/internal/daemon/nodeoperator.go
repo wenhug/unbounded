@@ -19,6 +19,7 @@ import (
 	daemon "github.com/Azure/unbounded/pkg/agent/daemon"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestart"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestop"
@@ -85,6 +86,10 @@ type nodeOperator interface {
 	// been cordoned, drained, and deleted. Repave reacts to Node deletion; it does
 	// not perform Kubernetes eviction or CNI-specific dataplane cleanup itself.
 	RepaveNode(context.Context, *slog.Logger, *ActiveMachine, *provision.UnboundedAgentConfig) error
+	// MigrateIsolation moves the active node to another isolation mode using
+	// the already planned strategy. The caller has validated the request with
+	// migrate.Plan and holds installation ownership.
+	MigrateIsolation(context.Context, *slog.Logger, *ActiveMachine, migrate.Request, migrate.Strategy) error
 	// StageAgentUpgrade stages a new host-side agent binary.
 	StageAgentUpgrade(context.Context, *slog.Logger, agentUpgradeRequest) error
 	// ReconcileHostRoot moves the agent's files to the host root on a host an
@@ -332,6 +337,25 @@ func (nspawnNodeOperator) RepaveNode(
 	)
 
 	return nil
+}
+
+func (nspawnNodeOperator) MigrateIsolation(
+	_ context.Context,
+	log *slog.Logger,
+	active *ActiveMachine,
+	req migrate.Request,
+	strategy migrate.Strategy,
+) error {
+	// The target backend must exist in this agent. Until a backend other than
+	// the source's is registered there is nothing to migrate to, and failing
+	// here leaves the node untouched.
+	if _, err := isolation.New(req.Target, nil); err != nil {
+		return fmt.Errorf("cannot migrate %s to %s: %w", active.Mode, req.Target, err)
+	}
+
+	log.Info("isolation migration requested", "from", active.Mode, "to", req.Target, "strategy", strategy)
+
+	return fmt.Errorf("isolation migration from %s to %s (%s) is not yet wired to host operations", active.Mode, req.Target, strategy)
 }
 
 func (nspawnNodeOperator) StageAgentUpgrade(ctx context.Context, log *slog.Logger, request agentUpgradeRequest) error {
