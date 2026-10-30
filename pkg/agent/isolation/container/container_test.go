@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"log/slog"
 	"os"
@@ -19,22 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/isolationtest"
 )
-
-var update = flag.Bool("update", false, "rewrite golden files")
-
-func golden(t *testing.T, name string, got []byte) {
-	t.Helper()
-
-	path := filepath.Join("testdata", name)
-	if *update {
-		require.NoError(t, os.WriteFile(path, got, 0o644))
-	}
-
-	want, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.Equal(t, string(want), string(got))
-}
 
 var testGrants = []isolation.Grant{
 	{Kind: isolation.GrantMount, Source: "/data/models", Target: "/models", ReadOnly: true},
@@ -56,7 +41,7 @@ func TestConfigGolden(t *testing.T) {
 	} {
 		got, err := RenderConfig(in)
 		require.NoError(t, err)
-		golden(t, name, got)
+		isolationtest.Golden(t, name, got)
 		require.True(t, json.Valid(got))
 	}
 }
@@ -67,10 +52,10 @@ func TestUnitGolden(t *testing.T) {
 		BundleDir:  "/var/lib/unbounded/containers/bundles/kube1",
 		HelperPath: "/usr/local/bin/unbounded-agent", After: []string{"network-online.target"},
 	}
-	golden(t, "unbounded-node-kube1.service", RenderUnit(spec))
+	isolationtest.Golden(t, "unbounded-node-kube1.service", RenderUnit(spec))
 
 	spec.HelperPath = ""
-	golden(t, "unbounded-node-kube1-nohooks.service", RenderUnit(spec))
+	isolationtest.Golden(t, "unbounded-node-kube1-nohooks.service", RenderUnit(spec))
 }
 
 func TestConfigSELinuxLabel(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/isolationtest"
 )
 
 func nodeSpec(slot string) isolation.NodeSpec {
@@ -105,7 +106,7 @@ func TestConfigExtraBindsGoldenAndValidation(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	golden(t, "config-extra-binds.json", got)
+	isolationtest.Golden(t, "config-extra-binds.json", got)
 
 	_, err = RenderConfig(BundleInput{RootfsDir: "/r", ExtraBinds: []ExtraBind{{Source: "rel", Target: "/x"}}})
 	require.ErrorContains(t, err, "absolute")
@@ -126,7 +127,7 @@ func TestUnitRequiresGolden(t *testing.T) {
 		Requires:   []string{"unbounded-localdns-network.service"},
 	}
 	got := RenderUnit(spec)
-	golden(t, "unbounded-node-kube2-localdns.service", got)
+	isolationtest.Golden(t, "unbounded-node-kube2-localdns.service", got)
 
 	require.Contains(t, string(got), "Requires=unbounded-localdns-network.service\n")
 

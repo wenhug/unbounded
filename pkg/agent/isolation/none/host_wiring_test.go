@@ -40,9 +40,9 @@ func TestRootMapsInstallDirsIntoVersionAndKeepsEverythingElse(t *testing.T) {
 }
 
 func TestRenderedDropInsAndLocalDNSGolden(t *testing.T) {
-	golden(t, "path.conf", RenderPathDropIn("/opt/unbounded/node/current/bin"))
-	golden(t, "localdns-deps.conf", RenderLocalDNSDropIn())
-	golden(t, UnitLocalDNS, RenderLocalDNS("/opt/unbounded/node/current/libexec/unbounded-localdns-supervisor"))
+	isolationtest.Golden(t, "path.conf", RenderPathDropIn("/opt/unbounded/node/current/bin"))
+	isolationtest.Golden(t, "localdns-deps.conf", RenderLocalDNSDropIn())
+	isolationtest.Golden(t, UnitLocalDNS, RenderLocalDNS("/opt/unbounded/node/current/libexec/unbounded-localdns-supervisor"))
 }
 
 func TestLocalDNSUnitIsAgentOwnedAndOrdersBeforeNodeUnits(t *testing.T) {

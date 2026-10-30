@@ -6,7 +6,6 @@ package none
 import (
 	"context"
 	"errors"
-	"flag"
 	"io"
 	"log/slog"
 	"os"
@@ -18,27 +17,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/isolationtest"
 )
-
-var update = flag.Bool("update", false, "rewrite golden files")
-
-func golden(t *testing.T, name string, got []byte) {
-	t.Helper()
-
-	path := filepath.Join("testdata", name)
-	if *update {
-		require.NoError(t, os.WriteFile(path, got, 0o644))
-	}
-
-	want, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.Equal(t, string(want), string(got))
-}
 
 func TestRenderedUnitsGolden(t *testing.T) {
 	spec := UnitSpec{BinDir: "/opt/unbounded/node/current/bin", KubeletConfigPath: "/var/lib/kubelet/config.yaml"}
-	golden(t, UnitContainerd, RenderContainerd(spec))
-	golden(t, UnitKubelet, RenderKubelet(spec))
+	isolationtest.Golden(t, UnitContainerd, RenderContainerd(spec))
+	isolationtest.Golden(t, UnitKubelet, RenderKubelet(spec))
 }
 
 func TestUnitsAreAgentOwned(t *testing.T) {

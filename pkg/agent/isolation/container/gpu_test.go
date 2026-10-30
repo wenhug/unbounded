@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/isolationtest"
 )
 
 // nvidiaGrants is what the machine's NVIDIA host state asks for, with the same
@@ -40,7 +41,7 @@ func TestConfigNvidiaGolden(t *testing.T) {
 		Grants: nvidiaGrants, Devices: nvidiaDevices,
 	})
 	require.NoError(t, err)
-	golden(t, "config-nvidia.json", got)
+	isolationtest.Golden(t, "config-nvidia.json", got)
 }
 
 func TestConfigNvidiaGrantsBecomeDevicesRulesAndReadOnlyMounts(t *testing.T) {
