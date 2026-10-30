@@ -71,7 +71,7 @@ func (p *containerPlan) PrepareHost(ctx context.Context, s *agentStages) error {
 		host.InstallPackagesFor(s.log, isolation.ModeContainer),
 		noneops.LoadKernelModules(s.log, nil),
 		phases.Parallel(s.log,
-			host.ConfigureOS(s.log), host.ConfigureNFTables(s.log),
+			host.ConfigureOS(s.log), host.ConfigureNFTablesFor(s.log, isolation.ModeContainer),
 			phases.Serial(s.log, host.DisableDocker(s.log), host.ConfigureDocker(s.log)),
 			host.DisableContainerd(s.log), host.DisableKubelet(s.log),
 			host.DisableSwap(s.log), host.HardenAPTFor(s.log, isolation.ModeContainer)),

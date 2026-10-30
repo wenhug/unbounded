@@ -64,7 +64,7 @@ func (p *nonePlan) PrepareHost(ctx context.Context, s *agentStages) error {
 		host.InstallPackagesFor(s.log, isolation.ModeNone),
 		noneops.LoadKernelModules(s.log, nil),
 		phases.Parallel(s.log,
-			host.ConfigureOS(s.log), host.ConfigureNFTables(s.log),
+			host.ConfigureOS(s.log), host.ConfigureNFTablesFor(s.log, isolation.ModeNone),
 			phases.Serial(s.log, host.DisableDocker(s.log), host.ConfigureDocker(s.log)),
 			host.DisableSwap(s.log), host.HardenAPTFor(s.log, isolation.ModeNone)),
 	)
