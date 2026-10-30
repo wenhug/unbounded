@@ -92,7 +92,10 @@ func (s *agentStages) prepareCredentials(ctx context.Context) error {
 	syncAttestedKubeletConfig(&s.cfg.AgentConfig, s.gs.NodeStart)
 
 	// Recorded so a reprovision can attest again instead of reusing a token
-	// that has expired by then.
+	// that has expired by then. It is recorded in every mode, because a
+	// reprovision can start from any of them, but only for a host that
+	// attests: with no attestation URL nothing is written, so a host that does
+	// not attest, nspawn included, is bootstrapped exactly as before.
 	if err := daemon.PersistAttestConfig(s.log, s.cfg.Attest).Do(ctx); err != nil {
 		return err
 	}
