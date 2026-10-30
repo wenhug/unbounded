@@ -64,6 +64,12 @@ type AgentConfig struct {
 	// field existed means.
 	Isolation string `json:"Isolation,omitempty"`
 
+	// NvidiaToolkit overrides where the NVIDIA Container Toolkit tools are on
+	// the host. It applies to Isolation none only, the one mode that runs them
+	// from the host; nspawn and container use the copies in the rootfs image.
+	// Nil means the default paths.
+	NvidiaToolkit *NvidiaToolkitConfig `json:"NvidiaToolkit,omitempty"`
+
 	// AdditionalHostDevices lists extra host device nodes under /dev or systemd
 	// device group specifiers that should be exposed to the nspawn machine in
 	// addition to automatically discovered devices.
@@ -278,6 +284,11 @@ func (a *AgentConfig) DeepCopy() *AgentConfig {
 
 	out.OfflineArtifacts = a.OfflineArtifacts.DeepCopy()
 
+	if a.NvidiaToolkit != nil {
+		toolkit := *a.NvidiaToolkit
+		out.NvidiaToolkit = &toolkit
+	}
+
 	return &out
 }
 
@@ -319,6 +330,10 @@ func (a *AgentConfig) Validate() error {
 
 	if _, err := isolation.ParseMode(a.Isolation); err != nil {
 		errs = append(errs, fmt.Errorf("invalid Isolation: %w", err))
+	}
+
+	if err := a.validateNvidiaToolkit(); err != nil {
+		errs = append(errs, err)
 	}
 
 	if err := a.Kubelet.Validate(); err != nil {
