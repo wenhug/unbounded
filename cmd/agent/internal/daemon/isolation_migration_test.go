@@ -107,10 +107,10 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 
 		return hookedBackend{Backend: h.target, h: h}, root, nil
 	})
-	h.replace(&resolveMigrationDownloads, func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
+	h.replace(&resolveNodeDownloads, func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
 		return nil, nil, h.failAt["downloads"]
 	})
-	h.replace(&stageMigrationArchives, func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
+	h.replace(&stageNodeArchives, func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
 		h.events = append(h.events, "download")
 		return h.failAt["download"]
 	})
@@ -118,7 +118,7 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 		h.events = append(h.events, "cleanup-network")
 		return h.failAt["cleanup-network"]
 	})
-	h.replace(&persistMigrationConfig, func(_ context.Context, _ *slog.Logger, slot string, cfg *provision.AgentConfig) error {
+	h.replace(&persistNodeConfig, func(_ context.Context, _ *slog.Logger, slot string, cfg *provision.AgentConfig) error {
 		h.events = append(h.events, "persist "+slot)
 		if err := h.failAt["persist "+slot]; err != nil {
 			return err
@@ -128,7 +128,7 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 
 		return nil
 	})
-	h.replace(&removeMigrationConfig, func(_ context.Context, _ *slog.Logger, slot string) error {
+	h.replace(&removeNodeConfig, func(_ context.Context, _ *slog.Logger, slot string) error {
 		h.events = append(h.events, "remove-config "+slot)
 		delete(h.applied, slot)
 

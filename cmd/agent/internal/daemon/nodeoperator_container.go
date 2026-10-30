@@ -12,7 +12,6 @@ import (
 	"github.com/Azure/unbounded/internal/provision"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
-	"github.com/Azure/unbounded/pkg/agent/phases/rootfs"
 )
 
 func init() {
@@ -41,23 +40,7 @@ func (n realContainerNode) Upgrade(ctx context.Context, old containerNode) error
 	return n.Node.Upgrade(ctx, o.Node)
 }
 
-var (
-	newContainerNode = func(p containerops.Params) containerNode { return realContainerNode{containerops.New(p)} }
-
-	resolveContainerDownloads = provision.ResolveDownloadOverridesWithOfflineArtifacts
-
-	stageContainerArchives = func(ctx context.Context, log *slog.Logger, staging *goalstates.ContainerImageArchiveStaging) error {
-		return rootfs.DownloadContainerImageArchives(log, staging).Do(ctx)
-	}
-
-	persistContainerAppliedConfig = func(ctx context.Context, log *slog.Logger, slot string, cfg *provision.AgentConfig) error {
-		return PersistAppliedConfig(log, slot, cfg).Do(ctx)
-	}
-
-	removeContainerAppliedConfig = func(ctx context.Context, log *slog.Logger, slot string) error {
-		return RemoveAppliedConfig(log, slot).Do(ctx)
-	}
-)
+var newContainerNode = func(p containerops.Params) containerNode { return realContainerNode{containerops.New(p)} }
 
 // containerNodeOperator performs node operations for a node that runs in an OCI
 // container. It embeds the nspawn operator for the operations that are about
@@ -96,16 +79,9 @@ func (containerNodeOperator) EnsureLifecycleMigration(ctx context.Context, log *
 // lifecycle hooks, and waits for systemd, LocalDNS and kubelet. It never
 // restarts the host.
 func (containerNodeOperator) RestartNode(ctx context.Context, log *slog.Logger, active *ActiveMachine) error {
-	log.Info("restarting active node", "slot", active.Name, "isolation", active.Mode)
-
 	cfg := *active.Config
-	if err := newContainerNode(containerops.Params{Log: log, Config: &cfg, Slot: active.Name}).Restart(ctx); err != nil {
-		return fmt.Errorf("restart node: %w", err)
-	}
 
-	log.Info("node restarted", "slot", active.Name)
-
-	return nil
+	return restartActiveNode(ctx, log, active, newContainerNode(containerops.Params{Log: log, Config: &cfg, Slot: active.Name}).Restart)
 }
 
 // RepaveNode moves a container node to the alternate slot, as for nspawn. The
@@ -132,7 +108,7 @@ func (containerNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, a
 		"new_version", newCfg.Cluster.Version,
 	)
 
-	downloads, archives, err := resolveContainerDownloads(ctx, newCfg)
+	downloads, archives, err := resolveNodeDownloads(ctx, newCfg)
 	if err != nil {
 		return fmt.Errorf("resolve download overrides: %w", err)
 	}
@@ -140,7 +116,7 @@ func (containerNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, a
 	applied := *newCfg
 	applied.Isolation = string(isolation.ModeContainer)
 
-	if err := stageContainerArchives(ctx, log, archives); err != nil {
+	if err := stageNodeArchives(ctx, log, archives); err != nil {
 		return err
 	}
 
@@ -152,14 +128,14 @@ func (containerNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, a
 		return err
 	}
 
-	if err := persistContainerAppliedConfig(ctx, log, newSlot, &applied.AgentConfig); err != nil {
+	if err := persistNodeConfig(ctx, log, newSlot, &applied.AgentConfig); err != nil {
 		return err
 	}
 
 	// The record goes before the files: if removing the files fails the node
 	// is still correctly described, and the leftover slot is rebuilt from
 	// scratch by the next repave.
-	if err := removeContainerAppliedConfig(ctx, log, oldSlot); err != nil {
+	if err := removeNodeConfig(ctx, log, oldSlot); err != nil {
 		return err
 	}
 

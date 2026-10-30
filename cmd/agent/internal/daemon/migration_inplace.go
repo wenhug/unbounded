@@ -21,7 +21,6 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestart"
 	"github.com/Azure/unbounded/pkg/agent/phases/reset"
-	"github.com/Azure/unbounded/pkg/agent/phases/rootfs"
 )
 
 // migrationEndpoint is one end of an in-place migration.
@@ -123,22 +122,8 @@ var (
 		}
 	}
 
-	resolveMigrationDownloads = provision.ResolveDownloadOverridesWithOfflineArtifacts
-
-	stageMigrationArchives = func(ctx context.Context, log *slog.Logger, staging *goalstates.ContainerImageArchiveStaging) error {
-		return rootfs.DownloadContainerImageArchives(log, staging).Do(ctx)
-	}
-
 	cleanupMigrationNetwork = func(ctx context.Context, log *slog.Logger) error {
 		return reset.CleanupNetwork(log).Do(ctx)
-	}
-
-	persistMigrationConfig = func(ctx context.Context, log *slog.Logger, slot string, cfg *provision.AgentConfig) error {
-		return PersistAppliedConfig(log, slot, cfg).Do(ctx)
-	}
-
-	removeMigrationConfig = func(ctx context.Context, log *slog.Logger, slot string) error {
-		return RemoveAppliedConfig(log, slot).Do(ctx)
 	}
 
 	// waitKubeletOnHost is the readiness check a repave uses: the kubelet is
@@ -216,7 +201,7 @@ func newInPlaceMigration(
 			return preflightMigrationTarget(ctx, log, j.To)
 		},
 		// The target's artifacts for the same configuration a repave would use.
-		Download: func(ctx context.Context) error { return stageMigrationArchives(ctx, log, archives) },
+		Download: func(ctx context.Context) error { return stageNodeArchives(ctx, log, archives) },
 		// The files both stacks write at the same host paths, such as the kubelet
 		// identity. A rollback restarts the source, which needs them as they were.
 		SnapshotConfig: func(context.Context) error {
@@ -237,13 +222,13 @@ func newInPlaceMigration(
 		// As a repave does, after the source is stopped.
 		CleanupNetwork: func(ctx context.Context) error { return cleanupMigrationNetwork(ctx, log) },
 		PersistTarget: func(ctx context.Context, _ isolation.NodeRoot) error {
-			return persistMigrationConfig(ctx, log, j.TargetSlot, targetCfg)
+			return persistNodeConfig(ctx, log, j.TargetSlot, targetCfg)
 		},
 		// The source's applied config is only removed after success, so
 		// restoring it is removing the target's record and rewriting the
 		// source's from what was read.
 		RestoreSource: func(ctx context.Context) error {
-			if err := removeMigrationConfig(ctx, log, j.TargetSlot); err != nil {
+			if err := removeNodeConfig(ctx, log, j.TargetSlot); err != nil {
 				return err
 			}
 
@@ -251,10 +236,10 @@ func newInPlaceMigration(
 				return nil
 			}
 
-			return persistMigrationConfig(ctx, log, j.SourceSlot, sourceCfg)
+			return persistNodeConfig(ctx, log, j.SourceSlot, sourceCfg)
 		},
 		WaitReady:          m.waitReady,
-		RemoveSourceConfig: func(ctx context.Context) error { return removeMigrationConfig(ctx, log, j.SourceSlot) },
+		RemoveSourceConfig: func(ctx context.Context) error { return removeNodeConfig(ctx, log, j.SourceSlot) },
 		Record:             m.record,
 	}
 
@@ -326,7 +311,7 @@ func migrateInPlace(ctx context.Context, log *slog.Logger, active *ActiveMachine
 		return fmt.Errorf("slot %s is still recorded as in use; refusing to build the migration target over it", targetSlot)
 	}
 
-	downloads, archives, err := resolveMigrationDownloads(ctx, &provision.UnboundedAgentConfig{AgentConfig: *active.Config})
+	downloads, archives, err := resolveNodeDownloads(ctx, &provision.UnboundedAgentConfig{AgentConfig: *active.Config})
 	if err != nil {
 		return fmt.Errorf("resolve download overrides: %w", err)
 	}

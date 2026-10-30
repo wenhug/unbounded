@@ -62,10 +62,10 @@ func stubContainer(t *testing.T) *containerStub {
 
 	s := &containerStub{events: &[]string{}, nodes: map[string]*fakeContainerNode{}}
 
-	oldNew, oldResolve, oldStage, oldPersist, oldRemove := newContainerNode, resolveContainerDownloads, stageContainerArchives, persistContainerAppliedConfig, removeContainerAppliedConfig
+	oldNew, oldResolve, oldStage, oldPersist, oldRemove := newContainerNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig, removeNodeConfig
 
 	t.Cleanup(func() {
-		newContainerNode, resolveContainerDownloads, stageContainerArchives, persistContainerAppliedConfig, removeContainerAppliedConfig = oldNew, oldResolve, oldStage, oldPersist, oldRemove
+		newContainerNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig, removeNodeConfig = oldNew, oldResolve, oldStage, oldPersist, oldRemove
 	})
 
 	newContainerNode = func(p containerops.Params) containerNode {
@@ -78,19 +78,19 @@ func stubContainer(t *testing.T) *containerStub {
 
 		return n
 	}
-	resolveContainerDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
+	resolveNodeDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
 		*s.events = append(*s.events, "resolve")
 		return &goalstates.DownloadOverrides{}, &goalstates.ContainerImageArchiveStaging{HostDir: "/x"}, nil
 	}
-	stageContainerArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
+	stageNodeArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
 		*s.events = append(*s.events, "stage")
 		return nil
 	}
-	persistContainerAppliedConfig = func(_ context.Context, _ *slog.Logger, slot string, cfg *provision.AgentConfig) error {
+	persistNodeConfig = func(_ context.Context, _ *slog.Logger, slot string, cfg *provision.AgentConfig) error {
 		*s.events = append(*s.events, "persist:"+slot+":"+cfg.Isolation+":"+cfg.Cluster.Version)
 		return nil
 	}
-	removeContainerAppliedConfig = func(_ context.Context, _ *slog.Logger, slot string) error {
+	removeNodeConfig = func(_ context.Context, _ *slog.Logger, slot string) error {
 		*s.events = append(*s.events, "remove-applied:"+slot)
 		return nil
 	}
@@ -212,7 +212,7 @@ func TestContainerOperatorRepaveSetupAndRecordFailures(t *testing.T) {
 	}
 
 	s := stubContainer(t)
-	resolveContainerDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
+	resolveNodeDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
 		return nil, nil, errors.New("bad offline bundle")
 	}
 
@@ -221,7 +221,7 @@ func TestContainerOperatorRepaveSetupAndRecordFailures(t *testing.T) {
 	assert.Empty(t, *s.events)
 
 	s = stubContainer(t)
-	stageContainerArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
+	stageNodeArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
 		return errors.New("staging failed")
 	}
 
@@ -230,7 +230,7 @@ func TestContainerOperatorRepaveSetupAndRecordFailures(t *testing.T) {
 	assert.Empty(t, s.nodes, "nothing is built or stopped when staging fails")
 
 	s = stubContainer(t)
-	persistContainerAppliedConfig = func(context.Context, *slog.Logger, string, *provision.AgentConfig) error {
+	persistNodeConfig = func(context.Context, *slog.Logger, string, *provision.AgentConfig) error {
 		return errors.New("read-only /etc")
 	}
 
@@ -239,7 +239,7 @@ func TestContainerOperatorRepaveSetupAndRecordFailures(t *testing.T) {
 	assert.NotContains(t, strings.Join(*s.events, ","), "remove-applied", "the old record stays until the new one is written")
 
 	s = stubContainer(t)
-	removeContainerAppliedConfig = func(context.Context, *slog.Logger, string) error { return errors.New("cannot remove") }
+	removeNodeConfig = func(context.Context, *slog.Logger, string) error { return errors.New("cannot remove") }
 
 	err = containerNodeOperator{}.RepaveNode(t.Context(), discardLogger(), containerActive("kube1"), newCfg())
 	require.ErrorContains(t, err, "cannot remove")

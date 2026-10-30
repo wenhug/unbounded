@@ -10,10 +10,8 @@ import (
 
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/internal/provision"
-	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
-	"github.com/Azure/unbounded/pkg/agent/phases/rootfs"
 )
 
 func init() {
@@ -28,19 +26,7 @@ type noneNode interface {
 	PruneVersions() error
 }
 
-var (
-	newNoneNode = func(p noneops.Params) noneNode { return noneops.New(p) }
-
-	resolveNoneDownloads = provision.ResolveDownloadOverridesWithOfflineArtifacts
-
-	stageNoneArchives = func(ctx context.Context, log *slog.Logger, staging *goalstates.ContainerImageArchiveStaging) error {
-		return rootfs.DownloadContainerImageArchives(log, staging).Do(ctx)
-	}
-
-	persistNoneAppliedConfig = func(ctx context.Context, log *slog.Logger, cfg *provision.AgentConfig) error {
-		return PersistAppliedConfig(log, noneops.Slot, cfg).Do(ctx)
-	}
-)
+var newNoneNode = func(p noneops.Params) noneNode { return noneops.New(p) }
 
 // noneNodeOperator performs node operations for a host-native node. It embeds
 // the nspawn operator for the operations that are about the host and not the
@@ -67,16 +53,9 @@ func (noneNodeOperator) EnsureLifecycleMigration(_ context.Context, log *slog.Lo
 // RestartNode restarts LocalDNS, containerd and kubelet in order (the soft
 // reboot) and waits for LocalDNS and kubelet. It never restarts the host.
 func (noneNodeOperator) RestartNode(ctx context.Context, log *slog.Logger, active *ActiveMachine) error {
-	log.Info("restarting active node", "slot", active.Name, "isolation", active.Mode)
-
 	cfg := *active.Config
-	if err := newNoneNode(noneops.Params{Log: log, Config: &cfg}).Restart(ctx); err != nil {
-		return fmt.Errorf("restart node: %w", err)
-	}
 
-	log.Info("node restarted", "slot", active.Name)
-
-	return nil
+	return restartActiveNode(ctx, log, active, newNoneNode(noneops.Params{Log: log, Config: &cfg}).Restart)
 }
 
 // RepaveNode upgrades a host-native node in place. The caller has cordoned,
@@ -99,7 +78,7 @@ func (noneNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, active
 		"new_version", newCfg.Cluster.Version,
 	)
 
-	downloads, archives, err := resolveNoneDownloads(ctx, newCfg)
+	downloads, archives, err := resolveNodeDownloads(ctx, newCfg)
 	if err != nil {
 		return fmt.Errorf("resolve download overrides: %w", err)
 	}
@@ -107,7 +86,7 @@ func (noneNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, active
 	applied := *newCfg
 	applied.Isolation = string(isolation.ModeNone)
 
-	if err := stageNoneArchives(ctx, log, archives); err != nil {
+	if err := stageNodeArchives(ctx, log, archives); err != nil {
 		return err
 	}
 
@@ -116,7 +95,7 @@ func (noneNodeOperator) RepaveNode(ctx context.Context, log *slog.Logger, active
 		return err
 	}
 
-	if err := persistNoneAppliedConfig(ctx, log, &applied.AgentConfig); err != nil {
+	if err := persistNodeConfig(ctx, log, noneops.Slot, &applied.AgentConfig); err != nil {
 		return err
 	}
 

@@ -46,25 +46,25 @@ func stubNone(t *testing.T) (*fakeNoneNode, *[]string) {
 	node := &fakeNoneNode{}
 	events := &[]string{}
 
-	oldNew, oldResolve, oldStage, oldPersist := newNoneNode, resolveNoneDownloads, stageNoneArchives, persistNoneAppliedConfig
+	oldNew, oldResolve, oldStage, oldPersist := newNoneNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig
 
 	t.Cleanup(func() {
-		newNoneNode, resolveNoneDownloads, stageNoneArchives, persistNoneAppliedConfig = oldNew, oldResolve, oldStage, oldPersist
+		newNoneNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig = oldNew, oldResolve, oldStage, oldPersist
 	})
 
 	newNoneNode = func(p noneops.Params) noneNode {
 		node.params = p
 		return node
 	}
-	resolveNoneDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
+	resolveNodeDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
 		*events = append(*events, "resolve")
 		return &goalstates.DownloadOverrides{}, &goalstates.ContainerImageArchiveStaging{HostDir: "/x"}, nil
 	}
-	stageNoneArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
+	stageNodeArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
 		*events = append(*events, "stage")
 		return nil
 	}
-	persistNoneAppliedConfig = func(_ context.Context, _ *slog.Logger, cfg *provision.AgentConfig) error {
+	persistNodeConfig = func(_ context.Context, _ *slog.Logger, _ string, cfg *provision.AgentConfig) error {
 		*events = append(*events, "persist:"+cfg.Isolation+":"+cfg.Cluster.Version)
 		return nil
 	}
@@ -154,7 +154,7 @@ func TestNoneOperatorRepavePruneFailureIsNotAnUpgradeFailure(t *testing.T) {
 func TestNoneOperatorRepaveSetupFailures(t *testing.T) {
 	_, _ = stubNone(t)
 
-	resolveNoneDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
+	resolveNodeDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
 		return nil, nil, errors.New("bad offline bundle")
 	}
 
@@ -162,7 +162,7 @@ func TestNoneOperatorRepaveSetupFailures(t *testing.T) {
 	require.ErrorContains(t, err, "resolve download overrides")
 
 	node, _ := stubNone(t)
-	stageNoneArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
+	stageNodeArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
 		return errors.New("staging failed")
 	}
 
@@ -171,7 +171,9 @@ func TestNoneOperatorRepaveSetupFailures(t *testing.T) {
 	assert.Empty(t, node.calls, "nothing is stopped when staging fails")
 
 	_, _ = stubNone(t)
-	persistNoneAppliedConfig = func(context.Context, *slog.Logger, *provision.AgentConfig) error { return errors.New("read-only /etc") }
+	persistNodeConfig = func(context.Context, *slog.Logger, string, *provision.AgentConfig) error {
+		return errors.New("read-only /etc")
+	}
 
 	err = noneNodeOperator{}.RepaveNode(t.Context(), discardLogger(), noneActive(), &provision.UnboundedAgentConfig{AgentConfig: *baseConfig()})
 	require.ErrorContains(t, err, "read-only /etc")

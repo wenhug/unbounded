@@ -254,34 +254,19 @@ func resetNodeResources(log *slog.Logger) phases.Task {
 func resetNodeResourcesFor(log *slog.Logger, mode isolation.Mode) phases.Task {
 	switch mode {
 	case isolation.ModeNone:
-		return resetResourcesNone(log, noneTeardown(log))
+		return resetResourcesHostNode(log, noneTeardown(log))
 	case isolation.ModeContainer:
-		return resetResourcesContainer(log, containerTeardown(log))
+		return resetResourcesHostNode(log, containerTeardown(log))
 	default:
 		return resetResourcesNSpawn(log)
 	}
 }
 
-// resetResourcesContainer is the reset for a container node: stop the
-// containers, remove their bundles, rootfs and units, then the same host-global
-// cleanup. There is no per-machine bpffs mount: the container uses the host's.
-func resetResourcesContainer(log *slog.Logger, td *containerops.Teardown) phases.Task {
-	return phases.Serial(log,
-		RemoveDaemonUnit(log),
-		td.Stop(),
-		reset.RemoveWireGuardKeys(log),
-		td.RemoveConfig(),
-		td.Destroy(),
-		reset.CleanupNetwork(log),
-		// Before the artifacts, so a failure stops the reset while the host is
-		// still recognizably installed.
-		RemoveFirstBootBootstrapUnit(log),
-		RemoveAgentArtifacts(log),
-		reset.ReloadSystemd(log),
-	)
-}
-
-func resetResourcesNone(log *slog.Logger, td *noneops.Teardown) phases.Task {
+// resetResourcesHostNode is the reset for a node that does not run in an nspawn
+// machine (none or container): stop it, remove its configuration and the node
+// itself, then the same host-global cleanup. There is no per-machine bpffs
+// mount to clean: the node uses the host's.
+func resetResourcesHostNode(log *slog.Logger, td hostNodeTeardown) phases.Task {
 	return phases.Serial(log,
 		RemoveDaemonUnit(log),
 		td.Stop(),
