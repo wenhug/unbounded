@@ -13,7 +13,9 @@ import (
 )
 
 // Root returns the node root phases use to place files in the node stack's
-// filesystem. Phases call Path on it instead of joining MachineDir themselves.
+// filesystem. Phases call Path on it instead of joining the machine directory
+// themselves. This file is the intentional bridge from the nspawn goal state
+// fields to the isolation seam.
 func (n *NodeStart) Root() isolation.NodeRoot {
 	return nspawn.RootAt(n.MachineName, n.MachineDir)
 }
@@ -24,7 +26,7 @@ func (n *NodeStart) Exec(ctx context.Context, log *slog.Logger, args ...string) 
 }
 
 // Root returns the node root phases use to place files in the node stack's
-// filesystem. The slot is the base name of MachineDir.
+// filesystem. The slot is the base name of the machine directory.
 func (r *RootFS) Root() isolation.NodeRoot {
 	return nspawn.RootAt(filepath.Base(r.MachineDir), r.MachineDir)
 }

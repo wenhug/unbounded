@@ -177,7 +177,7 @@ func (s *agentStages) PrepareRootFS(ctx context.Context) error {
 		return err
 	}
 
-	return fsutil.SyncFilesystems(s.gs.RootFS.MachineDir, hostroot.Resolve(), goalstates.SystemdSystemDir, goalstates.SystemdNSpawnDir)
+	return fsutil.SyncFilesystems(s.gs.RootFS.Root().Path("/"), hostroot.Resolve(), goalstates.SystemdSystemDir, goalstates.SystemdNSpawnDir)
 }
 
 // nodeStartTask composes the work that brings the node up.
@@ -228,7 +228,7 @@ func (s *agentStages) EnsureNodeStarted(ctx context.Context) error {
 
 	// AgentConfigDir holds the applied config written above, so it must reach
 	// disk before this stage reports success.
-	return fsutil.SyncFilesystems(s.gs.RootFS.MachineDir, goalstates.AgentConfigDir, goalstates.SystemdSystemDir)
+	return fsutil.SyncFilesystems(s.gs.RootFS.Root().Path("/"), goalstates.AgentConfigDir, goalstates.SystemdSystemDir)
 }
 
 func (s *agentStages) daemonInstallTask() phases.Task {

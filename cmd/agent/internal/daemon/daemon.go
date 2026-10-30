@@ -84,7 +84,8 @@ type runOptions struct {
 	// NewClient constructs controller-runtime clients. Defaults to client.NewWithWatch.
 	NewClient kubeClientFunc
 
-	// NodeOperator performs host-local nspawn operations. Defaults to nspawnNodeOperator.
+	// NodeOperator performs host-local node operations. Defaults to an operator
+	// that dispatches on the active machine's isolation mode.
 	NodeOperator nodeOperator
 }
 
@@ -98,7 +99,7 @@ func (o *runOptions) validate() error {
 	}
 
 	if o.NodeOperator == nil {
-		o.NodeOperator = nspawnNodeOperator{}
+		o.NodeOperator = newNodeOperator()
 	}
 
 	if o.installation == nil {

@@ -43,8 +43,8 @@ type removeMachine struct {
 	machineName string
 }
 
-// RemoveMachine returns a task that removes the machine rootfs using
-// machinectl and then force-removes the directory.
+// RemoveMachine returns a task that removes the machine rootfs and any
+// directory the machine tooling leaves behind.
 func RemoveMachine(log *slog.Logger, machineName string) phases.Task {
 	return &removeMachine{log: log, machineName: machineName}
 }

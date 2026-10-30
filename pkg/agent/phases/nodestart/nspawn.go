@@ -13,16 +13,15 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/phases"
 )
 
-// machinectlRunner is the machinectl/systemctl driver the nspawn backend
-// uses. Tests inject a fake.
-type machinectlRunner = nspawn.Runner
+// machineRunner is the machine control driver the nspawn backend uses. Tests inject a fake.
+type machineRunner = nspawn.Runner
 
 type startNSpawnMachine struct {
 	log       *slog.Logger
 	goalState *goalstates.NodeStart
 
-	// runner is the machinectl/systemctl driver. Tests inject a fake.
-	runner machinectlRunner
+	// runner is the machine control driver. Tests inject a fake.
+	runner machineRunner
 
 	// wasRunning records whether the machine was already up before this task
 	// touched it. A reapply against a live node has to restart any service
@@ -31,7 +30,7 @@ type startNSpawnMachine struct {
 	wasRunning bool
 }
 
-// StartNSpawnMachine returns a task that starts the systemd-nspawn machine using machinectl and
+// StartNSpawnMachine returns a task that starts the systemd-nspawn machine and
 // waits until D-Bus is responsive inside the machine so that subsequent phases
 // can safely use nspawn.Exec().
 //
@@ -51,8 +50,8 @@ func (s *startNSpawnMachine) Name() string { return "start-nspawn-machine" }
 func (s *startNSpawnMachine) Do(ctx context.Context) error {
 	name := s.goalState.MachineName
 
-	if err := s.runner.Enable(ctx, name); err != nil {
-		return fmt.Errorf("machinectl enable %s: %w", name, err)
+	if err := nspawn.Enable(ctx, s.runner, name); err != nil {
+		return err
 	}
 
 	if err := s.startWithRecovery(ctx, name); err != nil {
@@ -79,8 +78,8 @@ func (s *startNSpawnMachine) startWithRecovery(ctx context.Context, name string)
 	return nil
 }
 
-// isAlreadyExistsErr reports whether err looks like a machinectl "machine
-// already exists" failure.
+// isAlreadyExistsErr reports whether err looks like a "machine already
+// exists" failure.
 func isAlreadyExistsErr(err error) bool { return nspawn.IsAlreadyExists(err) }
 
 // WaitForMachine polls the machine until it is responsive to systemd-run

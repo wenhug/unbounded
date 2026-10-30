@@ -36,7 +36,7 @@ func Preflight(log *slog.Logger, cfg config.AgentConfig, goalState *goalstates.M
 	// a clean host the rootfs is absent so the check behaves as a plain port test.
 	var root string
 	if goalState.RootFS != nil {
-		root = goalState.RootFS.MachineDir
+		root = goalState.RootFS.Root().Path("/")
 	}
 
 	return []preflight.Checker{

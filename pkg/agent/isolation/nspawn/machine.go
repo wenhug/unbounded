@@ -76,6 +76,15 @@ func machinectl() func(context.Context) *exec.Cmd {
 // ServiceName is the systemd unit that runs the machine.
 func ServiceName(machine string) string { return "systemd-nspawn@" + machine + ".service" }
 
+// Enable enables the machine unit so the host starts it at boot.
+func Enable(ctx context.Context, r Runner, name string) error {
+	if err := r.Enable(ctx, name); err != nil {
+		return fmt.Errorf("machinectl enable %s: %w", name, err)
+	}
+
+	return nil
+}
+
 // StartWithRecovery runs `machinectl start` and, if it fails because the
 // machine is already registered (for example systemd-machined was restarted out
 // from under us, leaving an orphaned registration with errno 17 / "File

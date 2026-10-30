@@ -78,7 +78,7 @@ func (e *ensureNSpawnConfig) Do(ctx context.Context) error {
 
 func (e *ensureNSpawnWorkspace) Do(ctx context.Context) error {
 	if err := e.bootstrapWorkspace(ctx); err != nil {
-		return fmt.Errorf("bootstrap machine directory %s: %w", e.goalState.MachineDir, err)
+		return fmt.Errorf("bootstrap machine directory %s: %w", e.goalState.Root().Path("/"), err)
 	}
 
 	if err := phases.ExecuteTask(ctx, e.log, EnsureNSpawnLifecycleHelperFor(e.goalState)); err != nil {
@@ -93,9 +93,9 @@ func (e *ensureNSpawnWorkspace) Do(ctx context.Context) error {
 }
 
 func (e *ensureNSpawnWorkspace) bootstrapWorkspace(ctx context.Context) error {
-	bootstrapTask := oci.DownloadRootFS(e.log, e.goalState.MachineDir, e.goalState.HostArch, e.goalState.OCIImage)
+	bootstrapTask := oci.DownloadRootFS(e.log, e.goalState.Root().Path("/"), e.goalState.HostArch, e.goalState.OCIImage)
 	if e.ownedReplay {
-		bootstrapTask = oci.DownloadOwnedRootFS(e.log, e.goalState.MachineDir, e.goalState.HostArch, e.goalState.OCIImage)
+		bootstrapTask = oci.DownloadOwnedRootFS(e.log, e.goalState.Root().Path("/"), e.goalState.HostArch, e.goalState.OCIImage)
 	}
 
 	return phases.ExecuteTask(ctx, e.log, bootstrapTask)
@@ -104,10 +104,10 @@ func (e *ensureNSpawnWorkspace) bootstrapWorkspace(ctx context.Context) error {
 // writeNSpawnConfigs renders the nspawn-related templates with device and GPU
 // data (when present) and writes them to their configured paths.
 func writeNSpawnConfigs(log *slog.Logger, goalState *goalstates.RootFS) error {
-	// MachineName is the basename of MachineDir (e.g. "kube1" from
+	// MachineName is the slot, the basename of the machine directory (e.g. "kube1" from
 	// "/var/lib/machines/kube1"); nspawn always names the machine after that
 	// directory.
-	machineName := filepath.Base(goalState.MachineDir)
+	machineName := goalState.Root().Slot()
 
 	// The resolvers validate these, but the goal state may come from elsewhere,
 	// and an empty command would clear its hook's command list in the unit.

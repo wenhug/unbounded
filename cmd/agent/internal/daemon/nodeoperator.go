@@ -14,12 +14,14 @@ import (
 	"strings"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
+	"github.com/Azure/unbounded/cmd/agent/internal/nspawnops"
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/internal/provision"
 	daemon "github.com/Azure/unbounded/pkg/agent/daemon"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
+	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 	"github.com/Azure/unbounded/pkg/agent/phases"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestart"
 	"github.com/Azure/unbounded/pkg/agent/phases/nodestop"
@@ -250,20 +252,14 @@ func (nspawnNodeOperator) EnsureLifecycleMigration(ctx context.Context, log *slo
 }
 
 func (nspawnNodeOperator) RestartNode(ctx context.Context, log *slog.Logger, active *ActiveMachine) error {
-	gs, err := goalstates.ResolveMachine(log, active.Config, active.Name, nil)
+	backend, err := nspawnops.New(nspawnops.Params{Log: log, Config: active.Config})
 	if err != nil {
-		return fmt.Errorf("resolve machine goal state: %w", err)
+		return fmt.Errorf("create nspawn backend: %w", err)
 	}
 
 	log.Info("restarting active node", "machine", active.Name)
 
-	err = phases.Serial(
-		log,
-		nodestart.ReconcileNSpawnLifecycle(log, active.Name),
-		nodestart.WaitForLocalDNS(log, gs.NodeStart),
-		nodestart.WaitForKubelet(log, active.Name),
-	).Do(ctx)
-	if err != nil {
+	if err := backend.Restart(ctx, nspawn.Root(active.Name)); err != nil {
 		return err
 	}
 
