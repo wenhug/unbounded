@@ -21,8 +21,6 @@ type FakeBackend struct {
 
 	// ExecFunc, when set, produces the result of Exec.
 	ExecFunc func(ExecSpec) (ExecResult, error)
-	// StatusValue is returned by Status when StatusErr is nil.
-	StatusValue Status
 
 	mu    sync.Mutex
 	calls []string
@@ -107,7 +105,7 @@ func (f *FakeBackend) Status(_ context.Context, r NodeRoot) (Status, error) {
 		return Status{}, f.StatusErr
 	}
 
-	return f.StatusValue, nil
+	return Status{}, nil
 }
 
 // Exec implements Backend.

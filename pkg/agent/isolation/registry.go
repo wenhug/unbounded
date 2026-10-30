@@ -51,14 +51,6 @@ func New(mode Mode, deps any) (Backend, error) {
 	return f(deps)
 }
 
-// unregister removes a backend. It exists for tests.
-func unregister(mode Mode) {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-
-	delete(registry, mode)
-}
-
 // Unregister removes the backend for mode and returns its factory, so a test
 // can exercise the "known mode with no registered backend" path whichever modes
 // this binary ships, and then put the factory back with Register. Production

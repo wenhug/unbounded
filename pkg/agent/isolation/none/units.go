@@ -31,9 +31,6 @@ type UnitSpec struct {
 	// LocalDNS adds the CoreDNS unit and makes containerd and kubelet depend on
 	// it.
 	LocalDNS bool
-	// LocalDNSSupervisor is the CoreDNS supervisor script the LocalDNS unit
-	// runs. Empty means <BinDir>/../libexec/unbounded-localdns-supervisor.
-	LocalDNSSupervisor string
 }
 
 // DefaultKubeletConfigPath is where the node-start phases write the kubelet
@@ -158,10 +155,8 @@ func WriteDropIns(dir string, s UnitSpec) ([]string, error) {
 	}
 
 	if s.LocalDNS {
-		supervisor := s.LocalDNSSupervisor
-		if supervisor == "" {
-			supervisor = filepath.Join(filepath.Dir(s.BinDir), "libexec", "unbounded-localdns-supervisor")
-		}
+		// The supervisor script lives in the version directory beside bin.
+		supervisor := filepath.Join(filepath.Dir(s.BinDir), "libexec", "unbounded-localdns-supervisor")
 
 		files = append(files, file{filepath.Join(dir, UnitLocalDNS), RenderLocalDNS(supervisor)})
 		files = append(files, file{filepath.Join(DropInDir(dir, UnitLocalDNS), "00-path.conf"), RenderPathDropIn(s.BinDir)})

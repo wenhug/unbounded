@@ -48,7 +48,7 @@ func TestParseMode(t *testing.T) {
 func TestRegistry(t *testing.T) {
 	const mode Mode = "none"
 
-	t.Cleanup(func() { unregister(mode) })
+	t.Cleanup(func() { Unregister(mode) })
 
 	if _, err := New(mode, nil); err == nil {
 		t.Fatal("New with no registered backend should fail")
@@ -86,7 +86,7 @@ func TestNewRejectsUnknownMode(t *testing.T) {
 }
 
 func TestNewEmptyModeIsDefault(t *testing.T) {
-	t.Cleanup(func() { unregister(DefaultMode) })
+	t.Cleanup(func() { Unregister(DefaultMode) })
 	Register(DefaultMode, func(any) (Backend, error) { return &FakeBackend{}, nil })
 
 	b, err := New("", nil)
@@ -170,7 +170,7 @@ func TestUnregisterReturnsTheFactoryForRestoring(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, mode, b.Mode())
 
-	unregister(mode)
+	Unregister(mode)
 
 	_, ok = Unregister(mode)
 	require.False(t, ok)

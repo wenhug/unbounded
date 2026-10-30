@@ -29,9 +29,8 @@ const SELinuxLabel = "system_u:system_r:spc_t:s0"
 // SameMount is a host path that must resolve identically in the container
 // (design invariant 3).
 type SameMount struct {
-	Path     string
-	Shared   bool // rshared propagation
-	ReadOnly bool
+	Path   string
+	Shared bool // rshared propagation
 }
 
 // SamePathMounts are the paths shared with the host. PROVISIONAL: whether
@@ -139,11 +138,9 @@ type linux struct {
 	Namespaces        []namespace       `json:"namespaces"`
 	Devices           []device          `json:"devices,omitempty"`
 	Resources         resources         `json:"resources"`
-	CgroupsPath       string            `json:"cgroupsPath,omitempty"`
 	RootfsPropagation string            `json:"rootfsPropagation"`
 	MaskedPaths       []string          `json:"maskedPaths"`
 	ReadonlyPaths     []string          `json:"readonlyPaths"`
-	Sysctl            map[string]string `json:"sysctl,omitempty"`
 }
 
 type namespace struct {
@@ -220,9 +217,6 @@ func RenderConfig(in BundleInput) ([]byte, error) {
 
 	for _, s := range SamePathMounts {
 		opts := []string{"rbind", "rw"}
-		if s.ReadOnly {
-			opts[1] = "ro"
-		}
 
 		if s.Shared {
 			opts = append(opts, "rshared")
