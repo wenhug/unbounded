@@ -6,9 +6,7 @@ package containerops
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,12 +18,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
-	"github.com/Azure/unbounded/pkg/agent/config"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode/hostnodetest"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation/container"
 )
 
-func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+var quiet = hostnodetest.Quiet
 
 const testRuntime = "/opt/unbounded/runtime/runc"
 
@@ -188,25 +186,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) goalState(slot string, dns bool) *goalstates.MachineGoalState {
-	return &goalstates.MachineGoalState{
-		RootFS: &goalstates.RootFS{
-			HostArch: "amd64", KubernetesVersion: "v1.34.1", ContainerdVersion: "2.1.8", RunCVersion: "1.5.0", CNIPluginVersion: "1.5.1",
-			LocalDNS: goalstates.LocalDNS{Enabled: dns, CoreDNSVersion: "1.12.3"},
-		},
-		NodeStart: &goalstates.NodeStart{
-			MachineName: slot, NodeName: "worker-1",
-			Containerd: goalstates.Containerd{SandboxImage: "pause", CNIBinDir: "/opt/cni/bin", CNIConfDir: "/etc/cni/net.d", MetricsAddress: "0.0.0.0:10257"},
-			Gantry:     goalstates.Gantry{Disabled: true},
-			Kubelet: goalstates.Kubelet{
-				APIServer: "https://api", CACertData: []byte("ca"), ClusterDNS: "10.0.0.10",
-				KubeletAuthInfo: config.KubeletAuthInfo{BootstrapToken: "tok"},
-			},
-			LocalDNS: goalstates.LocalDNS{
-				Enabled: dns, NodeListenerIP: netip.MustParseAddr("169.254.20.10"), ClusterListenerIP: netip.MustParseAddr("169.254.20.11"),
-				Corefile: []byte(".:53 {}\n"), CPULimitInMilliCores: 500, MemoryLimitInMB: 64,
-			},
-		},
-	}
+	return hostnodetest.GoalState(slot, dns)
 }
 
 func (f *fixture) mountInfo() string {

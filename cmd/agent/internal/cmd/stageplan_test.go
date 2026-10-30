@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode/hostnodetest"
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/internal/provision"
 	"github.com/Azure/unbounded/pkg/agent/config"
@@ -185,16 +186,7 @@ func newNonePlan(t *testing.T, running bool) (*nonePlan, *agentStages, *fakeHost
 	}
 
 	root := t.TempDir()
-	gs := &goalstates.MachineGoalState{
-		RootFS: &goalstates.RootFS{HostArch: "amd64", KubernetesVersion: "v1.34.1"},
-		NodeStart: &goalstates.NodeStart{
-			MachineName: "kube1", NodeName: "w1",
-			Containerd: goalstates.Containerd{SandboxImage: "pause", CNIBinDir: "/opt/cni/bin", CNIConfDir: "/etc/cni/net.d", MetricsAddress: "0.0.0.0:1"},
-			Gantry:     goalstates.Gantry{Disabled: true},
-			Kubelet:    goalstates.Kubelet{APIServer: "https://api", CACertData: []byte("ca"), ClusterDNS: "10.0.0.10"},
-		},
-	}
-	gs.NodeStart.Kubelet.BootstrapToken = "tok"
+	gs := hostnodetest.MinimalGoalState()
 
 	var persisted []string
 

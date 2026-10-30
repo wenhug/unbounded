@@ -46,23 +46,15 @@ func stubNone(t *testing.T) (*fakeNoneNode, *[]string) {
 	node := &fakeNoneNode{}
 	events := &[]string{}
 
-	oldNew, oldResolve, oldStage, oldPersist := newNoneNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig
+	oldNew := newNoneNode
 
-	t.Cleanup(func() {
-		newNoneNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig = oldNew, oldResolve, oldStage, oldPersist
-	})
+	t.Cleanup(func() { newNoneNode = oldNew })
+
+	stubNodeSeams(t, events)
 
 	newNoneNode = func(p noneops.Params) noneNode {
 		node.params = p
 		return node
-	}
-	resolveNodeDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
-		*events = append(*events, "resolve")
-		return &goalstates.DownloadOverrides{}, &goalstates.ContainerImageArchiveStaging{HostDir: "/x"}, nil
-	}
-	stageNodeArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
-		*events = append(*events, "stage")
-		return nil
 	}
 	persistNodeConfig = func(_ context.Context, _ *slog.Logger, _ string, cfg *provision.AgentConfig) error {
 		*events = append(*events, "persist:"+cfg.Isolation+":"+cfg.Cluster.Version)

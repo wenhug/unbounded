@@ -62,11 +62,11 @@ func stubContainer(t *testing.T) *containerStub {
 
 	s := &containerStub{events: &[]string{}, nodes: map[string]*fakeContainerNode{}}
 
-	oldNew, oldResolve, oldStage, oldPersist, oldRemove := newContainerNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig, removeNodeConfig
+	oldNew := newContainerNode
 
-	t.Cleanup(func() {
-		newContainerNode, resolveNodeDownloads, stageNodeArchives, persistNodeConfig, removeNodeConfig = oldNew, oldResolve, oldStage, oldPersist, oldRemove
-	})
+	t.Cleanup(func() { newContainerNode = oldNew })
+
+	stubNodeSeams(t, s.events)
 
 	newContainerNode = func(p containerops.Params) containerNode {
 		n := &fakeContainerNode{params: p, events: s.events}
@@ -77,14 +77,6 @@ func stubContainer(t *testing.T) *containerStub {
 		s.nodes[p.Slot] = n
 
 		return n
-	}
-	resolveNodeDownloads = func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
-		*s.events = append(*s.events, "resolve")
-		return &goalstates.DownloadOverrides{}, &goalstates.ContainerImageArchiveStaging{HostDir: "/x"}, nil
-	}
-	stageNodeArchives = func(context.Context, *slog.Logger, *goalstates.ContainerImageArchiveStaging) error {
-		*s.events = append(*s.events, "stage")
-		return nil
 	}
 	persistNodeConfig = func(_ context.Context, _ *slog.Logger, slot string, cfg *provision.AgentConfig) error {
 		*s.events = append(*s.events, "persist:"+slot+":"+cfg.Isolation+":"+cfg.Cluster.Version)
