@@ -3,7 +3,8 @@
 The agent daemon controller package provides shared building blocks for
 node-local daemon controllers. It is intended for daemons that reconcile one
 local worker node and mutate local runtime state such as systemd units,
-systemd-nspawn machines, files, and daemon binaries.
+systemd-nspawn machines, files, and daemon binaries. Other node stack
+locations are described in [Agent Isolation Modes](agent-isolation-modes.md).
 
 The current implementation lives in `pkg/agent/daemon` and is used by the
 Unbounded agent daemon in `cmd/agent/internal/daemon`.

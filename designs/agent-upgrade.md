@@ -142,7 +142,7 @@ unbounded-agent agent-upgrade [--preflight]
 The command is a host-driven alternative to the Kubernetes-driven
 `AgentUpgrade` `MachineOperation`. It is useful for upgrading an existing
 deployment that might not support the `AgentUpgrade` `MachineOperation` yet,
-without reimaging the host or repaving the nspawn worker. It is intended for
+without reimaging the host or repaving the worker. It is intended for
 host provisioning and management systems that have already
 delivered a candidate binary, including AKS Flex node-side integration. The
 candidate is invoked directly from its staging path:

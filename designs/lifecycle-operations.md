@@ -9,6 +9,9 @@ operations change the power state of the VM, PXE host, or bare-metal machine.
 Node operations change the `systemd-nspawn` container that runs kubelet,
 containerd, CNI plugins, and pod containers while leaving the host running.
 
+This page describes the default `nspawn` isolation mode. Other modes run the node
+stack elsewhere; see [Agent Isolation Modes](agent-isolation-modes.md).
+
 Operations are requested with `MachineOperation` and target a `Machine` by
 `spec.machineRef` or `spec.machineSelector`. Each operation is handled by the
 component that owns the relevant boundary. Controllers that do not own an

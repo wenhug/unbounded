@@ -37,6 +37,9 @@ the systemd-nspawn environment that runs Kubernetes components and workloads.
 Updates run on the host, outside nspawn. They may still need a node restart
 afterward so the node picks up host changes.
 
+This page describes the default `nspawn` isolation mode. Other modes run the node
+stack elsewhere; see [Agent Isolation Modes](agent-isolation-modes.md).
+
 The proposal is a new `HostUpgrade` MachineOperation. The host agent asks the
 chosen updater to do the work, follows it through any restart or reboot, and
 reports the result in the CR. Unbounded coordinates the update; the updater
