@@ -1,0 +1,529 @@
+// Copyright (c) Microsoft Corporation.
+// SPDX-License-Identifier: Apache-2.0
+
+package noneops
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/Azure/unbounded/pkg/agent/config"
+	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/none"
+)
+
+func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// host records host commands and answers them. active tracks unit state the
+// way systemd would.
+type host struct {
+	mu     sync.Mutex
+	calls  []string
+	active map[string]bool
+	fail   map[string]error
+}
+
+func (h *host) run(_ context.Context, _ *slog.Logger, name string, args ...string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	call := strings.TrimSpace(name + " " + strings.Join(args, " "))
+	h.calls = append(h.calls, call)
+
+	if err, ok := h.fail[call]; ok {
+		return "", err
+	}
+
+	if name == "systemctl" && len(args) > 1 {
+		unit := args[len(args)-1]
+
+		switch args[0] {
+		case "enable", "restart":
+			h.active[unit] = true
+		case "stop":
+			delete(h.active, unit)
+		case "is-active":
+			if !h.active[unit] {
+				return "inactive", errors.New("inactive")
+			}
+
+			return "active", nil
+		}
+	}
+
+	return "", nil
+}
+
+func (h *host) reset() { h.calls = nil }
+
+type fixture struct {
+	t    *testing.T
+	h    *host
+	node *Node
+	root string
+	sys  string
+	gs   *goalstates.MachineGoalState
+	hook struct {
+		setup, cleanup, dns, kubelet, download int
+		kubeletErr                             error
+	}
+}
+
+func newFixture(t *testing.T, dns bool, mutate func(*goalstates.MachineGoalState)) *fixture {
+	t.Helper()
+
+	f := &fixture{t: t, h: &host{active: map[string]bool{}, fail: map[string]error{}}, root: t.TempDir(), sys: t.TempDir()}
+
+	f.gs = &goalstates.MachineGoalState{
+		RootFS: &goalstates.RootFS{
+			HostArch: "amd64", KubernetesVersion: "v1.34.1", ContainerdVersion: "2.1.8", RunCVersion: "1.5.0", CNIPluginVersion: "1.5.1",
+			LocalDNS: goalstates.LocalDNS{Enabled: dns, CoreDNSVersion: "1.12.3"},
+		},
+		NodeStart: &goalstates.NodeStart{
+			MachineName: "kube1", NodeName: "worker-1",
+			Containerd: goalstates.Containerd{SandboxImage: "pause", CNIBinDir: "/opt/cni/bin", CNIConfDir: "/etc/cni/net.d", MetricsAddress: "0.0.0.0:10257"},
+			Gantry:     goalstates.Gantry{Disabled: true},
+			Kubelet: goalstates.Kubelet{
+				APIServer: "https://api", CACertData: []byte("ca"), ClusterDNS: "10.0.0.10",
+				KubeletAuthInfo: config.KubeletAuthInfo{BootstrapToken: "tok"},
+			},
+			LocalDNS: goalstates.LocalDNS{
+				Enabled: dns, NodeListenerIP: netip.MustParseAddr("169.254.20.10"), ClusterListenerIP: netip.MustParseAddr("169.254.20.11"),
+				Corefile: []byte(".:53 {}\n"), CPULimitInMilliCores: 500, MemoryLimitInMB: 64,
+			},
+		},
+	}
+	if mutate != nil {
+		mutate(f.gs)
+	}
+
+	f.node = New(Params{
+		Log:        quiet(),
+		Layout:     none.Layout{Base: filepath.Join(t.TempDir(), "node")},
+		SystemdDir: f.sys,
+		Run:        f.h.run,
+		Proc:       filepath.Join(t.TempDir(), "noproc"),
+		HostRoot:   f.root,
+		GoalState:  f.gs,
+		Download: func(ctx context.Context) error {
+			f.hook.download++
+			return nil
+		},
+		SetupNetwork:   func(context.Context) error { f.hook.setup++; return nil },
+		CleanupNetwork: func(context.Context) error { f.hook.cleanup++; return nil },
+		WaitLocalDNS:   func(context.Context) error { f.hook.dns++; return nil },
+		WaitKubelet:    func(context.Context) error { f.hook.kubelet++; return f.hook.kubeletErr },
+	})
+
+	return f
+}
+
+func (f *fixture) hostPath(p string) string { return filepath.Join(f.root, p) }
+
+func TestVersionForTracksEveryInstalledArtifactInput(t *testing.T) {
+	t.Parallel()
+
+	base := func() *goalstates.RootFS {
+		return &goalstates.RootFS{HostArch: "amd64", KubernetesVersion: "v1.34.1", ContainerdVersion: "2.1.8", RunCVersion: "1.5.0", CNIPluginVersion: "1.5.1"}
+	}
+
+	v := VersionFor(base())
+	require.True(t, strings.HasPrefix(v, "1.34.1-"), v)
+	require.Equal(t, v, VersionFor(base()), "stable for an unchanged configuration")
+
+	for name, mutate := range map[string]func(*goalstates.RootFS){
+		"kubernetes": func(r *goalstates.RootFS) { r.KubernetesVersion = "v1.34.2" },
+		"containerd": func(r *goalstates.RootFS) { r.ContainerdVersion = "2.1.9" },
+		"runc":       func(r *goalstates.RootFS) { r.RunCVersion = "1.5.1" },
+		"cni":        func(r *goalstates.RootFS) { r.CNIPluginVersion = "1.5.2" },
+		"arch":       func(r *goalstates.RootFS) { r.HostArch = "arm64" },
+		"coredns":    func(r *goalstates.RootFS) { r.LocalDNS = goalstates.LocalDNS{Enabled: true, CoreDNSVersion: "1.12.3"} },
+		"download":   func(r *goalstates.RootFS) { r.Downloads = &goalstates.DownloadOverrides{} },
+	} {
+		r := base()
+		mutate(r)
+		require.NotEqual(t, v, VersionFor(r), name)
+	}
+
+	r := base()
+	r.KubernetesVersion = "1.34.1"
+	require.Equal(t, v, VersionFor(r), "a leading v does not matter")
+}
+
+func TestResolveFailures(t *testing.T) {
+	t.Parallel()
+
+	n := New(Params{Log: quiet()})
+	_, err := n.Version()
+	require.ErrorContains(t, err, "no agent configuration")
+
+	boom := errors.New("gpu not ready")
+	n = New(Params{Log: quiet(), Resolve: func(string) (*goalstates.MachineGoalState, error) { return nil, boom }})
+	_, err = n.GoalState()
+	require.ErrorIs(t, err, boom)
+	require.ErrorContains(t, err, "resolve machine goal state")
+
+	_, err = n.Backend()
+	require.ErrorIs(t, err, boom)
+	require.ErrorIs(t, n.Restart(t.Context()), boom)
+	require.ErrorIs(t, n.Upgrade(t.Context()), boom)
+}
+
+func TestResolveUsesTheFixedSlot(t *testing.T) {
+	t.Parallel()
+
+	var slot string
+
+	n := New(Params{Log: quiet(), Resolve: func(s string) (*goalstates.MachineGoalState, error) {
+		slot = s
+		return &goalstates.MachineGoalState{RootFS: &goalstates.RootFS{KubernetesVersion: "1.34.1"}, NodeStart: &goalstates.NodeStart{}}, nil
+	}})
+	_, err := n.GoalState()
+	require.NoError(t, err)
+	require.Equal(t, "kube1", slot, "applied config is recorded under kube1 so discovery needs no change")
+	require.Equal(t, Slot, slot)
+}
+
+func TestGoalStateIsPointedAtTheHost(t *testing.T) {
+	f := newFixture(t, false, nil)
+
+	gs, err := f.node.GoalState()
+	require.NoError(t, err)
+
+	v, err := f.node.Version()
+	require.NoError(t, err)
+
+	bin := f.node.p.Layout.BinDir()
+	require.Equal(t, filepath.Join(bin, "containerd"), gs.NodeStart.Containerd.ContainerdBinPath)
+	require.Equal(t, filepath.Join(bin, "runc"), gs.NodeStart.Containerd.RuncBinaryPath, "containerd reaches runc through the current link so a flip swaps it")
+	require.True(t, gs.NodeStart.HostNative())
+
+	// Installers write into the version; configuration stays at the same path.
+	require.Equal(t, filepath.Join(f.node.p.Layout.VersionDir(v), "bin"), gs.RootFS.Root().Path(goalstates.BinDir))
+	require.Equal(t, f.hostPath("/opt/cni/bin"), gs.RootFS.Root().Path("opt/cni/bin"))
+	require.Equal(t, f.hostPath("/etc/containerd/config.toml"), gs.NodeStart.Root().Path(goalstates.ContainerdConfigPath))
+
+	// Commands run on the host through the backend.
+	f.h.reset()
+
+	_, err = gs.NodeStart.Exec(t.Context(), quiet(), "systemctl", "is-active", "x")
+	require.ErrorContains(t, err, "inactive")
+	require.Equal(t, []string{"systemctl is-active x"}, f.h.calls)
+}
+
+func TestPrepareInstallsVersionWritesUnitsAndDoesNotActivate(t *testing.T) {
+	f := newFixture(t, true, nil)
+
+	r, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	v, _ := f.node.Version()
+	require.Equal(t, v, r.Slot())
+	require.Equal(t, 1, f.hook.download)
+
+	for _, u := range []string{none.UnitContainerd, none.UnitKubelet, none.UnitLocalDNS} {
+		require.FileExists(t, filepath.Join(f.sys, u))
+	}
+
+	cur, err := f.node.p.Layout.Current()
+	require.NoError(t, err)
+	require.Empty(t, cur)
+
+	// The supervisor lives in the version and runs the version's CoreDNS.
+	sup := filepath.Join(f.node.p.Layout.VersionDir(v), "libexec", "unbounded-localdns-supervisor")
+	info, err := os.Stat(sup)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&0o111)
+
+	data, err := os.ReadFile(sup)
+	require.NoError(t, err)
+	require.Contains(t, string(data), filepath.Join(f.node.p.Layout.BinDir(), "coredns")+" -conf")
+
+	unit, err := os.ReadFile(filepath.Join(f.sys, none.UnitLocalDNS))
+	require.NoError(t, err)
+	require.Contains(t, string(unit), "ExecStart="+filepath.Join(f.node.p.Layout.CurrentLink(), "libexec", "unbounded-localdns-supervisor"))
+}
+
+func TestPrepareWithoutLocalDNSWritesNoSupervisor(t *testing.T) {
+	f := newFixture(t, false, nil)
+
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	v, _ := f.node.Version()
+	require.NoDirExists(t, filepath.Join(f.node.p.Layout.VersionDir(v), "libexec"))
+	require.NoFileExists(t, filepath.Join(f.sys, none.UnitLocalDNS))
+}
+
+func TestPrepareDownloadFailureLeavesNoUnits(t *testing.T) {
+	f := newFixture(t, false, nil)
+	f.node.p.Download = func(context.Context) error { return errors.New("mirror down") }
+
+	_, err := f.node.Prepare(t.Context())
+	require.ErrorContains(t, err, "mirror down")
+
+	entries, rerr := os.ReadDir(f.sys)
+	require.NoError(t, rerr)
+	require.Empty(t, entries)
+}
+
+func TestConfigureWritesSharedPathsAndNeverDistroUnits(t *testing.T) {
+	f := newFixture(t, true, nil)
+
+	cd, kl, err := f.node.Configure(t.Context())
+	require.NoError(t, err)
+	require.True(t, cd)
+	require.True(t, kl)
+	require.Equal(t, 1, f.hook.setup)
+
+	for _, p := range []string{
+		"/etc/containerd/config.toml", "/var/lib/kubelet/config.yaml", "/etc/kubernetes/pki/apiserver-client-ca.crt",
+		"/var/lib/kubelet/bootstrap-kubeconfig", "/etc/unbounded/localdns/Corefile", "/etc/systemd/system/localdns.slice",
+		"/etc/systemd/system/unbounded-kubelet.service.d/20-node-config.conf",
+	} {
+		require.FileExists(t, f.hostPath(p), p)
+	}
+
+	for _, p := range []string{"/etc/systemd/system/kubelet.service", "/etc/systemd/system/containerd.service", "/etc/resolv.conf"} {
+		require.NoFileExists(t, f.hostPath(p), p)
+	}
+
+	cd, kl, err = f.node.Configure(t.Context())
+	require.NoError(t, err)
+	require.False(t, cd)
+	require.False(t, kl, "a reapply with nothing changed asks for no restarts")
+}
+
+func TestConfigureFailureStopsBeforeNetwork(t *testing.T) {
+	f := newFixture(t, true, func(gs *goalstates.MachineGoalState) { gs.NodeStart.Kubelet.BootstrapToken = "" })
+
+	_, _, err := f.node.Configure(t.Context())
+	require.ErrorContains(t, err, "no kubelet auth method")
+	require.Zero(t, f.hook.setup)
+}
+
+func TestStartOrdersUnitsAndGates(t *testing.T) {
+	f := newFixture(t, true, nil)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(goalstates.KubeletKubeconfigPath)), 0o755))
+	require.NoError(t, os.WriteFile(f.hostPath(goalstates.KubeletKubeconfigPath), []byte("kc"), 0o600))
+
+	f.h.reset()
+	// Bootstrap completion is observed through the host's test command, which
+	// the recording host answers successfully.
+	require.NoError(t, f.node.Start(t.Context(), false, false, false))
+
+	require.Equal(t, []string{
+		"systemctl enable --now " + none.UnitLocalDNS,
+		"systemctl enable --now " + none.UnitContainerd,
+		"systemctl enable --now " + none.UnitKubelet,
+		"test -s " + goalstates.KubeletKubeconfigPath,
+	}, f.h.calls)
+	require.Equal(t, 1, f.hook.dns, "LocalDNS is waited on before containerd starts")
+}
+
+func TestStartRestartsOnlyChangedServicesOfARunningNode(t *testing.T) {
+	f := newFixture(t, false, nil)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	f.h.reset()
+	require.NoError(t, f.node.Start(t.Context(), true, false, true))
+	require.Contains(t, f.h.calls, "systemctl restart "+none.UnitKubelet)
+	require.NotContains(t, f.h.calls, "systemctl restart "+none.UnitContainerd)
+
+	f.h.reset()
+	require.NoError(t, f.node.Start(t.Context(), true, true, true))
+
+	var restarts []string
+
+	for _, c := range f.h.calls {
+		if strings.HasPrefix(c, "systemctl restart") {
+			restarts = append(restarts, c)
+		}
+	}
+
+	require.Equal(t, []string{"systemctl restart " + none.UnitContainerd, "systemctl restart " + none.UnitKubelet}, restarts, "containerd first")
+
+	f.h.reset()
+	require.NoError(t, f.node.Start(t.Context(), false, true, true))
+	require.NotContains(t, strings.Join(f.h.calls, "\n"), "restart", "a stack this call started has read the new configuration")
+}
+
+func TestStartFailsWhenAUnitDoesNotStart(t *testing.T) {
+	f := newFixture(t, false, nil)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	f.h.fail["systemctl enable --now "+none.UnitContainerd] = errors.New("exec format error")
+	require.ErrorContains(t, f.node.Start(t.Context(), false, false, false), "exec format error")
+	require.NotContains(t, f.h.calls, "systemctl enable --now "+none.UnitKubelet)
+}
+
+func TestRestartRestartsStackThenWaitsForKubelet(t *testing.T) {
+	f := newFixture(t, true, nil)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	f.h.reset()
+	require.NoError(t, f.node.Restart(t.Context()))
+	require.Equal(t, []string{
+		"systemctl restart " + none.UnitLocalDNS,
+		"systemctl restart " + none.UnitContainerd,
+		"systemctl restart " + none.UnitKubelet,
+	}, f.h.calls)
+	require.Equal(t, 1, f.hook.dns)
+	require.Equal(t, 1, f.hook.kubelet)
+}
+
+func TestRestartReportsKubeletNeverComingBack(t *testing.T) {
+	f := newFixture(t, false, nil)
+	f.hook.kubeletErr = errors.New("kubelet not active")
+
+	require.ErrorContains(t, f.node.Restart(t.Context()), "kubelet not active")
+}
+
+func TestRestartStopsAtFirstFailingUnit(t *testing.T) {
+	f := newFixture(t, false, nil)
+	f.h.fail["systemctl restart "+none.UnitContainerd] = errors.New("failed")
+
+	require.ErrorContains(t, f.node.Restart(t.Context()), "failed")
+	require.Zero(t, f.hook.kubelet)
+}
+
+// installPrevious sets up a running node on an earlier version.
+func installPrevious(t *testing.T, f *fixture, prev string) {
+	t.Helper()
+
+	_, err := f.node.p.Layout.Ensure(prev)
+	require.NoError(t, err)
+	_, err = f.node.p.Layout.Flip(prev)
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(goalstates.KubeletKubeconfigPath)), 0o755))
+	require.NoError(t, os.WriteFile(f.hostPath(goalstates.KubeletKubeconfigPath), []byte("old"), 0o600))
+	require.NoError(t, os.MkdirAll(f.hostPath("/var/lib/kubelet/pki"), 0o755))
+}
+
+func TestUpgradeFlipsCleansNetworkAndResetsIdentity(t *testing.T) {
+	f := newFixture(t, true, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+
+	// The new version is bootstrapped, so its kubeconfig appears once kubelet
+	// starts; stand in for that when the host is asked to start it.
+	f.h.reset()
+	require.NoError(t, f.node.Upgrade(t.Context()))
+
+	v, _ := f.node.Version()
+	cur, err := f.node.p.Layout.Current()
+	require.NoError(t, err)
+	require.Equal(t, v, cur)
+
+	require.Equal(t, 1, f.hook.cleanup, "host networking is cleaned between stop and start, as repave does")
+	require.Equal(t, 2, f.hook.setup, "once for configure and once re-establishing LocalDNS after the cleanup removed it")
+	require.NoFileExists(t, f.hostPath(goalstates.KubeletKubeconfigPath), "stale credentials are dropped so kubelet bootstraps afresh")
+	require.NoDirExists(t, f.hostPath("/var/lib/kubelet/pki"))
+
+	// Stop precedes start, and the units start in order.
+	joined := strings.Join(f.h.calls, "\n")
+	require.Less(t, strings.Index(joined, "stop "+none.UnitKubelet), strings.Index(joined, "enable --now "+none.UnitLocalDNS))
+}
+
+func TestUpgradeRollsBackWhenKubeletNeverComesUp(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+
+	f.hook.kubeletErr = errors.New("kubelet crashlooping")
+
+	err := f.node.Upgrade(t.Context())
+	require.ErrorContains(t, err, "kubelet crashlooping")
+	require.ErrorContains(t, err, "rolled back to 1.33.0-aaaaaaaa")
+
+	cur, cerr := f.node.p.Layout.Current()
+	require.NoError(t, cerr)
+	require.Equal(t, "1.33.0-aaaaaaaa", cur)
+	require.Equal(t, 2, f.hook.cleanup, "the previous version also starts on a cleaned host")
+	require.True(t, f.h.active[none.UnitKubelet], "the previous version was started again")
+}
+
+func TestUpgradeKeepsCredentialsForDirectKubeconfigAuth(t *testing.T) {
+	f := newFixture(t, false, func(gs *goalstates.MachineGoalState) {
+		gs.NodeStart.Kubelet.BootstrapToken = ""
+		gs.NodeStart.Kubelet.KubeconfigData = []byte("apiVersion: v1\nkind: Config\n")
+	})
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+
+	require.NoError(t, f.node.Upgrade(t.Context()))
+	require.FileExists(t, f.hostPath(goalstates.KubeletKubeconfigPath), "the raw kubeconfig is rewritten by configure, not removed")
+}
+
+func TestUpgradeInstallFailureLeavesRunningVersionAlone(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+	f.node.p.Download = func(context.Context) error { return errors.New("no network") }
+
+	require.ErrorContains(t, f.node.Upgrade(t.Context()), "no network")
+
+	cur, err := f.node.p.Layout.Current()
+	require.NoError(t, err)
+	require.Equal(t, "1.33.0-aaaaaaaa", cur)
+	require.Empty(t, f.h.calls, "nothing was stopped")
+	require.NoFileExists(t, f.hostPath("/etc/containerd/config.toml"), "configuration is not touched before the install succeeds")
+}
+
+func TestPruneVersionsKeepsActive(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "old")
+
+	for _, v := range []string{"older", "new"} {
+		_, err := f.node.p.Layout.Ensure(v)
+		require.NoError(t, err)
+	}
+
+	_, err := f.node.p.Layout.Flip("new")
+	require.NoError(t, err)
+
+	require.NoError(t, f.node.PruneVersions())
+
+	versions, err := f.node.p.Layout.Versions()
+	require.NoError(t, err)
+	require.Equal(t, []string{"new"}, versions)
+}
+
+func TestRunningReflectsUnitState(t *testing.T) {
+	f := newFixture(t, false, nil)
+
+	ok, err := f.node.Running(t.Context())
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	f.h.active[none.UnitContainerd] = true
+	f.h.active[none.UnitKubelet] = true
+
+	ok, err = f.node.Running(t.Context())
+	require.NoError(t, err)
+	require.True(t, ok)
+}
+
+func TestBackendConformsToInterface(t *testing.T) {
+	f := newFixture(t, false, nil)
+	b, err := f.node.Backend()
+	require.NoError(t, err)
+
+	var _ isolation.Backend = b
+
+	require.Equal(t, isolation.ModeNone, b.Mode())
+}

@@ -27,6 +27,9 @@ const (
 type Root struct {
 	Layout  Layout
 	Version string
+	// HostRoot prefixes the identity-mapped paths. Empty is the real host; tests
+	// and offline tooling point it at a directory tree.
+	HostRoot string
 }
 
 var _ isolation.NodeRoot = Root{}
@@ -45,6 +48,10 @@ func (r Root) Path(inNode string) string {
 		if p == m.from || strings.HasPrefix(p, m.from+"/") {
 			return filepath.Join(r.Layout.VersionDir(r.Version), m.to, strings.TrimPrefix(p, m.from))
 		}
+	}
+
+	if r.HostRoot != "" {
+		return filepath.Join(r.HostRoot, p)
 	}
 
 	return p
