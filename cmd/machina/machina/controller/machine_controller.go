@@ -232,6 +232,15 @@ func (r *MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	// Maintain the isolation version-skew and drift conditions for every
+	// Machine, including agent-registered ones without SSH config.
+	if syncIsolationConditions(&machine) {
+		if err := r.Status().Update(ctx, &machine); err != nil {
+			logger.Error(err, "Failed to update isolation conditions")
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Machines without SSH configuration are not managed by this controller.
 	if machine.Spec.SSH == nil {
 		logger.Info("Machine has no SSH config, skipping", "name", machine.Name)
