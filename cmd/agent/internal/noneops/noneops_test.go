@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/pkg/agent/config"
@@ -526,4 +528,113 @@ func TestBackendConformsToInterface(t *testing.T) {
 	var _ isolation.Backend = b
 
 	require.Equal(t, isolation.ModeNone, b.Mode())
+}
+
+// seedSharedConfig writes the files the running version uses.
+func seedSharedConfig(t *testing.T, f *fixture) {
+	t.Helper()
+
+	for p, content := range map[string]string{
+		"/etc/containerd/config.toml":          "version = 2 # old\n",
+		goalstates.KubeletConfigurationPath:    "old: kubelet config\n",
+		"/var/lib/kubelet/pki/kubelet-key.pem": "OLD-KEY",
+		"/etc/cni/net.d/10-old.conflist":       "old cni",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(p)), 0o755))
+		require.NoError(t, os.WriteFile(f.hostPath(p), []byte(content), 0o600))
+	}
+}
+
+func readHost(t *testing.T, f *fixture, p string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(f.hostPath(p))
+	require.NoError(t, err)
+
+	return string(data)
+}
+
+func TestUpgradeRollbackPutsTheSharedConfigurationBack(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+	seedSharedConfig(t, f)
+
+	f.hook.kubeletErr = errors.New("kubelet crashlooping")
+
+	err := f.node.Upgrade(t.Context())
+	require.ErrorContains(t, err, "rolled back to 1.33.0-aaaaaaaa")
+	require.NotContains(t, err.Error(), "restore shared configuration")
+
+	// Configure rewrote these and the identity reset removed the credentials.
+	assert.Equal(t, "version = 2 # old\n", readHost(t, f, "/etc/containerd/config.toml"))
+	assert.Equal(t, "old: kubelet config\n", readHost(t, f, goalstates.KubeletConfigurationPath))
+	assert.Equal(t, "OLD-KEY", readHost(t, f, "/var/lib/kubelet/pki/kubelet-key.pem"), "the credentials the previous version ran with are back")
+	assert.Equal(t, "old", readHost(t, f, goalstates.KubeletKubeconfigPath))
+	assert.Equal(t, "old cni", readHost(t, f, "/etc/cni/net.d/10-old.conflist"))
+	assert.NoDirExists(t, f.node.configSnapshotDir(), "the snapshot is dropped once restored")
+}
+
+func TestUpgradeSuccessKeepsTheNewConfigurationAndDropsTheSnapshot(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+	seedSharedConfig(t, f)
+
+	require.NoError(t, f.node.Upgrade(t.Context()))
+
+	assert.NotEqual(t, "version = 2 # old\n", readHost(t, f, "/etc/containerd/config.toml"), "configure wrote the new containerd configuration")
+	assert.NoDirExists(t, f.node.configSnapshotDir())
+}
+
+func TestUpgradeFailureBeforeTheSwitchRestoresTheSharedConfiguration(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+	seedSharedConfig(t, f)
+
+	// Stopping the running version fails, so the backend never flips.
+	f.h.fail["systemctl stop "+none.UnitKubelet] = errors.New("stuck")
+
+	err := f.node.Upgrade(t.Context())
+	require.ErrorContains(t, err, "stuck")
+
+	assert.Equal(t, "version = 2 # old\n", readHost(t, f, "/etc/containerd/config.toml"))
+	assert.Equal(t, "OLD-KEY", readHost(t, f, "/var/lib/kubelet/pki/kubelet-key.pem"))
+	assert.NoDirExists(t, f.node.configSnapshotDir())
+}
+
+func TestUpgradeInstallFailureLeavesTheSharedConfigurationAndNoSnapshot(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+	seedSharedConfig(t, f)
+	f.node.p.Download = func(context.Context) error { return errors.New("no network") }
+
+	require.ErrorContains(t, f.node.Upgrade(t.Context()), "no network")
+
+	assert.Equal(t, "version = 2 # old\n", readHost(t, f, "/etc/containerd/config.toml"))
+	assert.NoDirExists(t, f.node.configSnapshotDir())
+}
+
+func TestUpgradeRefusesToStartWhenTheSharedConfigurationCannotBeSaved(t *testing.T) {
+	f := newFixture(t, false, nil)
+	installPrevious(t, f, "1.33.0-aaaaaaaa")
+	seedSharedConfig(t, f)
+
+	// A socket in the PKI directory cannot be saved byte for byte.
+	l, err := net.Listen("unix", f.hostPath("/var/lib/kubelet/pki/s"))
+	require.NoError(t, err)
+
+	defer l.Close() //nolint:errcheck // test cleanup
+
+	f.h.reset()
+	require.ErrorContains(t, f.node.Upgrade(t.Context()), "save shared configuration")
+	assert.Empty(t, f.h.calls, "nothing was stopped or started")
+	assert.Equal(t, 0, f.hook.download, "nothing was installed")
+	assert.Equal(t, "version = 2 # old\n", readHost(t, f, "/etc/containerd/config.toml"))
+}
+
+func TestUpgradeSnapshotDirDefaultsBelowTheHostRootAndCanBeOverridden(t *testing.T) {
+	f := newFixture(t, false, nil)
+	assert.Equal(t, filepath.Join(f.root, goalstates.AgentConfigDir, "none-upgrade-config"), f.node.configSnapshotDir())
+
+	f.node.p.ConfigSnapshotDir = "/somewhere/else"
+	assert.Equal(t, "/somewhere/else", f.node.configSnapshotDir())
 }

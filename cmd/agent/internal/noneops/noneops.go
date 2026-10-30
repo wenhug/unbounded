@@ -32,6 +32,7 @@ import (
 	"sync"
 
 	"github.com/Azure/unbounded/pkg/agent/config"
+	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
@@ -79,6 +80,11 @@ type Params struct {
 	// phases. Nil runs the real ones.
 	SetupNetwork   func(ctx context.Context) error
 	CleanupNetwork func(ctx context.Context) error
+
+	// ConfigSnapshotDir is where Upgrade saves the shared configuration so a
+	// rollback can restore it. Empty means a directory in the agent configuration
+	// directory below HostRoot.
+	ConfigSnapshotDir string
 
 	// WaitLocalDNS and WaitKubelet override the readiness waits. Nil uses the
 	// phases the nspawn mode uses.
@@ -434,9 +440,49 @@ func (n *Node) Restart(ctx context.Context) error {
 // it from the cluster, as for an nspawn repave, and persists the applied config
 // after a nil return.
 //
-// Configuration lives at the same host paths for every version, so a rollback
-// restores the previous binaries but not the previous configuration files.
-func (n *Node) Upgrade(ctx context.Context) error {
+// Configuration lives at the same host paths for every version, so the files
+// the stacks share are saved before anything is written (see confsnap) and put
+// back on every failure: before the flip, and before the previous version
+// starts on a rollback.
+func (n *Node) Upgrade(ctx context.Context) (err error) {
+	if err := n.resolve(); err != nil {
+		return err
+	}
+
+	snapshot := n.configSnapshotDir()
+
+	if err := confsnap.Take(snapshot, n.p.HostRoot, confsnap.SharedPaths()); err != nil {
+		return fmt.Errorf("save shared configuration: %w", err)
+	}
+
+	restored := false
+	restore := func() error {
+		if err := confsnap.Restore(snapshot, n.p.HostRoot); err != nil {
+			return fmt.Errorf("restore shared configuration: %w", err)
+		}
+
+		restored = true
+
+		return nil
+	}
+
+	defer func() {
+		if err != nil && !restored {
+			// A failure the backend did not roll back from, such as an install or
+			// configuration error, or a stop that failed. The snapshot stays when
+			// the restore fails, so it can be tried again.
+			if rerr := restore(); rerr != nil {
+				err = errors.Join(err, rerr)
+
+				return
+			}
+		}
+
+		if derr := confsnap.Discard(snapshot); derr != nil {
+			n.p.Log.Warn("could not remove the saved shared configuration", "error", derr)
+		}
+	}()
+
 	r, err := n.Prepare(ctx)
 	if err != nil {
 		return err
@@ -445,6 +491,8 @@ func (n *Node) Upgrade(ctx context.Context) error {
 	if _, _, err := n.Configure(ctx); err != nil {
 		return err
 	}
+
+	n.backend.BeforeRollbackStart = func(context.Context) error { return restore() }
 
 	first := true
 
@@ -475,6 +523,14 @@ func (n *Node) Upgrade(ctx context.Context) error {
 
 		return n.waitBootstrap(ctx)
 	})
+}
+
+func (n *Node) configSnapshotDir() string {
+	if n.p.ConfigSnapshotDir != "" {
+		return n.p.ConfigSnapshotDir
+	}
+
+	return filepath.Join(n.p.HostRoot, goalstates.AgentConfigDir, "none-upgrade-config")
 }
 
 // resetKubeletIdentity removes the previous kubelet client credentials when the
