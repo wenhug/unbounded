@@ -1,0 +1,152 @@
+// Copyright (c) Microsoft Corporation.
+// SPDX-License-Identifier: Apache-2.0
+
+package isolation
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestParseMode(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    Mode
+		wantErr bool
+	}{
+		{"", ModeNSpawn, false},
+		{"nspawn", ModeNSpawn, false},
+		{"none", ModeNone, false},
+		{"container", ModeContainer, false},
+		{"microvm", "", true},
+		{"NSpawn", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := ParseMode(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseMode(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+			}
+
+			if got != tt.want {
+				t.Fatalf("ParseMode(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+
+			if tt.wantErr && !strings.Contains(err.Error(), tt.in) {
+				t.Fatalf("error %q should name the rejected value", err)
+			}
+		})
+	}
+}
+
+func TestRegistry(t *testing.T) {
+	const mode Mode = "none"
+
+	t.Cleanup(func() { unregister(mode) })
+
+	if _, err := New(mode, nil); err == nil {
+		t.Fatal("New with no registered backend should fail")
+	}
+
+	var gotDeps any
+
+	Register(mode, func(deps any) (Backend, error) {
+		gotDeps = deps
+		return &FakeBackend{FakeMode: mode}, nil
+	})
+
+	b, err := New(mode, "deps")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if b.Mode() != mode || gotDeps != "deps" {
+		t.Fatalf("mode = %q, deps = %v", b.Mode(), gotDeps)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("duplicate Register should panic")
+		}
+	}()
+
+	Register(mode, func(any) (Backend, error) { return nil, nil })
+}
+
+func TestNewRejectsUnknownMode(t *testing.T) {
+	if _, err := New("bogus", nil); err == nil {
+		t.Fatal("unknown mode should fail")
+	}
+}
+
+func TestNewEmptyModeIsDefault(t *testing.T) {
+	t.Cleanup(func() { unregister(DefaultMode) })
+	Register(DefaultMode, func(any) (Backend, error) { return &FakeBackend{}, nil })
+
+	b, err := New("", nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if b.Mode() != DefaultMode {
+		t.Fatalf("mode = %q, want %q", b.Mode(), DefaultMode)
+	}
+}
+
+func TestFakeRootPath(t *testing.T) {
+	if got := (FakeRoot{SlotName: "kube1"}).Path("/etc/x"); got != "/etc/x" {
+		t.Fatalf("identity path = %q", got)
+	}
+
+	r := FakeRoot{SlotName: "kube1", Dir: "/var/lib/machines/kube1"}
+	if got := r.Path("/etc/x"); got != "/var/lib/machines/kube1/etc/x" {
+		t.Fatalf("path = %q", got)
+	}
+
+	if r.Slot() != "kube1" {
+		t.Fatalf("slot = %q", r.Slot())
+	}
+}
+
+func TestFakeBackendRecordsAndInjects(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("boom")
+	f := &FakeBackend{Dir: "/r", StartErr: boom}
+
+	root, err := f.Prepare(ctx, NodeSpec{Slot: "kube2"})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	if err := f.Start(ctx, root); !errors.Is(err, boom) {
+		t.Fatalf("Start error = %v", err)
+	}
+
+	if _, err := f.Exec(ctx, root, ExecSpec{Args: []string{"true"}}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if err := f.Stop(ctx, root); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	want := []string{"prepare kube2", "start kube2", "exec kube2", "stop kube2"}
+	if got := f.Calls(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+
+	if got := f.Execs(); len(got) != 1 || got[0].Args[0] != "true" {
+		t.Fatalf("execs = %v", got)
+	}
+}
+
+func TestFakeBackendPrepareError(t *testing.T) {
+	f := &FakeBackend{PrepareErr: errors.New("nope")}
+	if _, err := f.Prepare(context.Background(), NodeSpec{Slot: "kube1"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
