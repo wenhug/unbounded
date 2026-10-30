@@ -90,14 +90,6 @@ const (
 	// configuration is assigned.
 	MachineConditionConfigurationPending = "ConfigurationPending"
 
-	// MachineConditionIsolationSupported reports whether the Machine's
-	// requested non-default isolation mode can be emitted for its pinned
-	// agent version. It is False (reasons AgentVersionTooOld or
-	// AgentVersionInvalid) when the mode is withheld from generated agent
-	// config, True when supported, and absent when spec.isolation is empty
-	// or nspawn.
-	MachineConditionIsolationSupported = "IsolationSupported"
-
 	// MachineConditionIsolationDrift is True when spec.isolation differs
 	// from the mode the agent reports as applied
 	// (status.observedIsolation). Nothing moves on drift; use an

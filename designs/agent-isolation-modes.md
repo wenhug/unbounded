@@ -148,9 +148,9 @@ and new files.
 ### 6.4 Version skew
 
 - The agent rejects any unrecognized `isolation` value with a clear error.
-- Machina emits a non-default `isolation` into generated agent config only for
-  agent versions known to support it, otherwise it sets a condition on the
-  Machine explaining why.
+- Machina passes `spec.isolation` through to generated agent config without
+  checking the agent version. No release number is compiled into the code; the
+  operator pins an agent version that supports the requested mode.
 
 ### 6.5 Drift
 
@@ -159,13 +159,11 @@ drift. Nothing moves until an `IsolationMigrate` MachineOperation (section 9).
 
 ### 6.6 Implementation status
 
-- 6.4 (control plane): implemented. `provision.BuildAgentConfig` withholds a
-  non-default `isolation` unless `spec.agent.version` is empty or at least
-  `provision.MinIsolationAgentVersion` (a placeholder until a maintainer
-  confirms the first supporting release). The machina controller sets
-  `IsolationSupported` (reasons `AgentVersionSupported`, `AgentVersionTooOld`,
-  `AgentVersionInvalid`) and removes it when the field is unset or `nspawn`.
-  The agent-side rejection of unknown values is covered by config validation.
+- 6.4 (control plane): implemented without a version gate.
+  `provision.BuildAgentConfig` passes `spec.isolation` through to the agent
+  config and no release number is compiled into the code. An agent that does
+  not know the key rejects it through config validation. Pin a supporting
+  agent version before setting a non-default mode.
 - 6.5 (control plane): implemented. The controller sets `IsolationDrift` by
   comparing `spec.isolation` (empty means `nspawn`) with the new
   `status.observedIsolation`. It never moves the node. The agent daemon must
@@ -604,7 +602,7 @@ Steps:
    `make generate`.
 2. Add `Isolation` to `AgentConfig` with validation. Unknown values rejected.
 3. Applied-config records mode, slot, owning backend. Tolerate old files.
-4. Machina gating by agent version and a Machine condition (section 6.4).
+4. Pass `spec.isolation` into generated agent config (section 6.4).
 5. Drift reporting in Machine status.
 6. Implement the migration orchestrator (section 10.3) on top of the
    `Backend` interface, including automatic rollback.
@@ -618,8 +616,8 @@ Acceptance:
   (golden comparison).
 - Migration tests with fake backends: success, preflight failure (no mutation),
   target failure (rollback to source), and unsupported pair (rejected).
-- Version-skew tests: old agent version leads to a condition and no emitted
-  mode.
+- Config tests: `spec.isolation` reaches the generated agent config, and an
+  unset field leaves the output unchanged.
 
 ### WP4: `exec`, `logs`, lifecycle and uninstall
 

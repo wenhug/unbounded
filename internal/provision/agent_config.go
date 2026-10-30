@@ -192,14 +192,6 @@ func BuildAgentConfig(params BuildAgentConfigParams) UnboundedAgentConfig {
 		}
 	}
 
-	// Emit a non-default isolation only for agent versions known to
-	// support it (design section 6.4). The machina controller reports why
-	// via the IsolationSupported condition.
-	isolation := string(machine.Spec.Isolation)
-	if !IsDefaultIsolation(machine.Spec.Isolation) && !CheckIsolationSupport(machine).Supported {
-		isolation = ""
-	}
-
 	cfg := UnboundedAgentConfig{
 		AgentConfig: config.AgentConfig{
 			MachineName: machine.Name,
@@ -218,7 +210,7 @@ func BuildAgentConfig(params BuildAgentConfigParams) UnboundedAgentConfig {
 				RegisterWithTaints: taints,
 			},
 			OCIImage:  ociImage,
-			Isolation: isolation,
+			Isolation: string(machine.Spec.Isolation),
 			LocalDNS:  localDNS,
 		},
 		Downloads: downloads,

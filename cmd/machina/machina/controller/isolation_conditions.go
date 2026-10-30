@@ -10,7 +10,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	unboundedv1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
-	"github.com/Azure/unbounded/internal/provision"
 )
 
 // Reasons for the IsolationDrift condition.
@@ -29,32 +28,14 @@ func effectiveIsolation(mode unboundedv1alpha3.IsolationMode) unboundedv1alpha3.
 	return mode
 }
 
-// syncIsolationConditions maintains the IsolationSupported (design 6.4) and
-// IsolationDrift (design 6.5) conditions on the Machine. It only mutates the
-// in-memory status and reports whether anything changed.
+// syncIsolationConditions maintains the IsolationDrift condition (design 6.5)
+// on the Machine. It only mutates the in-memory status and reports whether
+// anything changed.
 //
-// IsolationSupported is present only while spec.isolation is a non-default
-// mode, so removing the field clears it. IsolationDrift is present only once
-// the agent has reported status.observedIsolation; it is never acted upon.
+// IsolationDrift is present only once the agent has reported
+// status.observedIsolation; it is never acted upon.
 func syncIsolationConditions(machine *unboundedv1alpha3.Machine) bool {
 	changed := false
-
-	support := provision.CheckIsolationSupport(machine)
-	if support.Required {
-		status := metav1.ConditionTrue
-		if !support.Supported {
-			status = metav1.ConditionFalse
-		}
-
-		changed = setConditionIfChanged(machine, metav1.Condition{
-			Type:    unboundedv1alpha3.MachineConditionIsolationSupported,
-			Status:  status,
-			Reason:  support.Reason,
-			Message: support.Message,
-		}) || changed
-	} else if apimeta.RemoveStatusCondition(&machine.Status.Conditions, unboundedv1alpha3.MachineConditionIsolationSupported) {
-		changed = true
-	}
 
 	observed := machine.Status.ObservedIsolation
 	if observed == "" {
