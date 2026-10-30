@@ -617,7 +617,16 @@ func TestSELinuxModeDetection(t *testing.T) {
 	require.Equal(t, SELinuxEnforcing, h.SELinuxMode())
 }
 
-func TestBackendNotRegistered(t *testing.T) {
-	_, err := isolation.New(isolation.ModeContainer, nil)
-	require.Error(t, err)
+// TestBackendRegistered replaces TestBackendNotRegistered: the backend now
+// registers itself, and the registry hands back a working backend with or
+// without deps.
+func TestBackendRegistered(t *testing.T) {
+	b, err := isolation.New(isolation.ModeContainer, nil)
+	require.NoError(t, err)
+	require.Equal(t, isolation.ModeContainer, b.Mode())
+
+	deps := &Backend{RuntimePath: "/custom/runc"}
+	b, err = isolation.New(isolation.ModeContainer, deps)
+	require.NoError(t, err)
+	require.Equal(t, "/custom/runc", b.(*Backend).RuntimePath)
 }

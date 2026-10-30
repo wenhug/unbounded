@@ -78,6 +78,8 @@ func (b *Backend) Preflight() error {
 	info, err := os.Stat(b.runtimePath())
 
 	switch {
+	case err != nil && b.RuntimeProvisioned && errors.Is(err, os.ErrNotExist):
+		// The agent installs the runtime during bootstrap, after preflight.
 	case err != nil:
 		errs = append(errs, fmt.Errorf("container runtime %s: %w", b.runtimePath(), err))
 	case info.IsDir() || info.Mode()&0o111 == 0:

@@ -12,10 +12,9 @@
 // and a stub runtime. Comments marked PROVISIONAL name assumptions that have
 // not been verified on a real node.
 //
-// The backend is deliberately not registered with the isolation registry yet:
-// the daemon's node operations still assume an nspawn machine, so registering
-// it would let those operations run against a container. Registration belongs
-// with the daemon wiring that makes them mode aware.
+// The backend registers itself with the isolation registry. Its operations on
+// a live host (unpack, start, repave, reset) are composed by
+// cmd/agent/internal/containerops, which the daemon and bootstrap use.
 package container
 
 import (
@@ -75,9 +74,30 @@ type Backend struct {
 	SourceRoot string
 	// WritableCheck overrides the writable path probe. Nil uses none.CheckWritable.
 	WritableCheck func(paths ...string) error
+	// RuntimeProvisioned tells Preflight that the agent installs the runtime
+	// later in bootstrap, so a missing runtime file is expected on a clean host.
+	// The runtime is still required to be executable when it is present.
+	RuntimeProvisioned bool
+	// UnitRequires lists host units the supervising unit requires and orders
+	// after, such as the LocalDNS network unit.
+	UnitRequires []string
 }
 
 var _ isolation.Backend = (*Backend)(nil)
+
+func init() {
+	// deps is a *Backend carrying the agent's wiring (layout, runner, unpacker).
+	// Without it the registry returns a backend with production defaults, which
+	// is what a caller that only needs Status, Exec or Logs wants.
+	isolation.Register(isolation.ModeContainer, func(deps any) (isolation.Backend, error) {
+		b := &Backend{Log: slog.Default()}
+		if d, ok := deps.(*Backend); ok && d != nil {
+			*b = *d
+		}
+
+		return b, nil
+	})
+}
 
 // Mode implements isolation.Backend.
 func (*Backend) Mode() isolation.Mode { return isolation.ModeContainer }
@@ -147,7 +167,16 @@ func (b *Backend) systemctl(ctx context.Context, args ...string) error {
 }
 
 func (b *Backend) root(slot string) isolation.NodeRoot {
-	return isolation.DirRoot{SlotName: slot, Dir: b.Layout.RootfsDir(slot)}
+	return Root{SlotName: slot, Dir: b.Layout.RootfsDir(slot), HostRoot: b.SourceRoot}
+}
+
+// NodeRoot returns the node root of a slot without preparing it.
+func (b *Backend) NodeRoot(slot string) (isolation.NodeRoot, error) {
+	if err := ValidSlot(slot); err != nil {
+		return nil, err
+	}
+
+	return b.root(slot), nil
 }
 
 func (b *Backend) statDevice(path string) (DeviceInfo, error) {
@@ -196,12 +225,35 @@ func (b *Backend) RenderBundle(slot string, grants []isolation.Grant) error {
 		in.Devices[g.Source] = info
 	}
 
+	in.ExtraBinds = b.extraBinds()
+
 	data, err := RenderConfig(in)
 	if err != nil {
 		return err
 	}
 
 	return writeAtomic(b.Layout.ConfigPath(slot), data, 0o644)
+}
+
+// extraBinds are the nspawn machine's other host binds. A bind whose source is
+// absent is left out, because the runtime refuses a bundle with a missing
+// source; the pre-start hook re-renders the bundle, so a source that appears
+// later (staged offline archives) is picked up on the next start.
+func (b *Backend) extraBinds() []ExtraBind {
+	var out []ExtraBind
+
+	for _, e := range []ExtraBind{
+		{Source: ImageArchiveHostDir, Target: ImageArchiveDir, ReadOnly: true},
+		{Source: KernelModulesDir, Target: KernelModulesDir, ReadOnly: true},
+	} {
+		if _, err := os.Stat(filepath.Join(b.SourceRoot, e.Source)); err != nil {
+			continue
+		}
+
+		out = append(out, e)
+	}
+
+	return out
 }
 
 // Regenerate re-renders config.json from the NodeSpec recorded by Prepare. The
@@ -262,15 +314,8 @@ func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.
 		return nil, err
 	}
 
-	unit := RenderUnit(UnitSpec{
-		Slot:        n.Slot,
-		RuntimePath: b.runtimePath(),
-		BundleDir:   b.Layout.BundleDir(n.Slot),
-		HelperPath:  b.HelperPath,
-		After:       b.Requirements().After,
-	})
-	if err := writeAtomic(filepath.Join(b.unitDir(), UnitName(n.Slot)), unit, 0o644); err != nil {
-		return nil, fmt.Errorf("write unit: %w", err)
+	if err := b.writeUnit(n.Slot); err != nil {
+		return nil, err
 	}
 
 	if err := b.systemctl(ctx, "daemon-reload"); err != nil {
@@ -278,6 +323,41 @@ func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.
 	}
 
 	return b.root(n.Slot), nil
+}
+
+func (b *Backend) writeUnit(slot string) error {
+	unit := RenderUnit(UnitSpec{
+		Slot:        slot,
+		RuntimePath: b.runtimePath(),
+		BundleDir:   b.Layout.BundleDir(slot),
+		HelperPath:  b.HelperPath,
+		After:       b.Requirements().After,
+		Requires:    b.UnitRequires,
+	})
+	if err := writeAtomic(filepath.Join(b.unitDir(), UnitName(slot)), unit, 0o644); err != nil {
+		return fmt.Errorf("write unit: %w", err)
+	}
+
+	return nil
+}
+
+// RewriteUnit re-renders the supervising unit of a prepared slot and reloads
+// systemd, without restarting a running container. It is how a moved helper
+// path reaches the hooks of an existing unit.
+func (b *Backend) RewriteUnit(ctx context.Context, slot string) error {
+	if err := ValidSlot(slot); err != nil {
+		return err
+	}
+
+	if err := b.writeUnit(slot); err != nil {
+		return err
+	}
+
+	if err := b.systemctl(ctx, "daemon-reload"); err != nil {
+		return fmt.Errorf("daemon-reload: %w", err)
+	}
+
+	return nil
 }
 
 // Start enables and starts the unit. Starting a running unit is a no-op.

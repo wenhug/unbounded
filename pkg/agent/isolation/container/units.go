@@ -21,6 +21,10 @@ type UnitSpec struct {
 	HelperPath string
 	// After lists host-global units to order after.
 	After []string
+	// Requires lists host-global units the container needs. Each is also
+	// ordered before the container, as the nspawn machine's LocalDNS drop-in
+	// does.
+	Requires []string
 }
 
 // RenderUnit returns the systemd unit that supervises the container.
@@ -33,10 +37,15 @@ func RenderUnit(s UnitSpec) []byte {
 
 	after := []string{"network-online.target", "local-fs.target"}
 
-	for _, u := range s.After {
+	for _, u := range append(slices.Clone(s.After), s.Requires...) {
 		if !slices.Contains(after, u) {
 			after = append(after, u)
 		}
+	}
+
+	requires := ""
+	if len(s.Requires) > 0 {
+		requires = "Requires=" + strings.Join(s.Requires, " ") + "\n"
 	}
 
 	var b strings.Builder
@@ -45,7 +54,7 @@ func RenderUnit(s UnitSpec) []byte {
 Description=Unbounded node container (%[1]s)
 ConditionPathExists=%[2]s
 Wants=network-online.target
-After=%[3]s
+%[5]sAfter=%[3]s
 
 [Service]
 Type=simple
@@ -59,7 +68,7 @@ RestartSec=1
 RestartMaxDelaySec=60
 RestartSteps=10
 ExecStartPre=-%[2]s delete --force %[4]s
-`, s.Slot, s.RuntimePath, strings.Join(after, " "), id)
+`, s.Slot, s.RuntimePath, strings.Join(after, " "), id, requires)
 
 	if s.HelperPath != "" {
 		fmt.Fprintf(&b, "ExecStartPre=%s node-lifecycle pre-start %s\n", s.HelperPath, s.Slot)

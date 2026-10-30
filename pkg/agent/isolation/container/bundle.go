@@ -45,6 +45,29 @@ var SamePathMounts = []SameMount{
 	{Path: "/sys/fs/bpf"},
 }
 
+// ExtraBind is a host path bound into the container at a different path than
+// the same-path contract covers, such as the staged offline image archives.
+type ExtraBind struct {
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
+// Host locations the nspawn machine also binds. They are local constants so
+// this package does not import goalstates; a test pins them to goalstates.
+const (
+	// ImageArchiveDir is where staged offline container image archives are
+	// visible inside the node, and the base of their host staging directory.
+	ImageArchiveDir = "/var/lib/unbounded/container-images"
+	// ImageArchiveHostDir is the host symlink to the current staging directory.
+	ImageArchiveHostDir = ImageArchiveDir + "/current"
+	// KernelModulesDir is the host's kernel modules directory, bound read-only
+	// as the nspawn machine does so modprobe inside the node sees the host
+	// kernel's modules. PROVISIONAL: Azure Container Linux may keep modules
+	// elsewhere (for example under /usr/lib/modules); unverified.
+	KernelModulesDir = "/lib/modules"
+)
+
 // DeviceInfo describes a host device node.
 type DeviceInfo struct {
 	Type  string // "c" or "b"
@@ -61,6 +84,8 @@ type BundleInput struct {
 	Grants    []isolation.Grant
 	// Devices maps a granted device path to its node description.
 	Devices map[string]DeviceInfo
+	// ExtraBinds are bound after the same-path mounts and before grants.
+	ExtraBinds []ExtraBind
 }
 
 // The types below are the subset of the OCI runtime spec the backend emits.
@@ -205,6 +230,25 @@ func RenderConfig(in BundleInput) ([]byte, error) {
 
 		mounts = append(mounts, mount{Destination: s.Path, Type: "bind", Source: s.Path, Options: opts})
 		taken[s.Path] = true
+	}
+
+	for _, e := range in.ExtraBinds {
+		if !filepath.IsAbs(e.Source) || !filepath.IsAbs(e.Target) {
+			return nil, fmt.Errorf("extra bind %q to %q must use absolute paths", e.Source, e.Target)
+		}
+
+		if taken[e.Target] {
+			return nil, fmt.Errorf("extra bind target %s conflicts with an existing mount", e.Target)
+		}
+
+		taken[e.Target] = true
+
+		mode := "rw"
+		if e.ReadOnly {
+			mode = "ro"
+		}
+
+		mounts = append(mounts, mount{Destination: e.Target, Type: "bind", Source: e.Source, Options: []string{"rbind", mode}})
 	}
 
 	var (
