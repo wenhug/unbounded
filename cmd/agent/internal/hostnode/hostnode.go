@@ -73,34 +73,63 @@ func (s GoalStateSource) For(slot string) (*goalstates.MachineGoalState, error) 
 	return gs, nil
 }
 
-// SetupNetwork prepares the shared LocalDNS network. A non-nil override
-// replaces the real phase.
-func SetupNetwork(ctx context.Context, override func(context.Context) error, log *slog.Logger, ns *goalstates.NodeStart) error {
-	if override != nil {
-		return override(ctx)
+// Hooks are the seams a node exposes so tests can run it against a temporary
+// tree and a fake host. Production leaves the zero value, which is the real
+// host and the real phases.
+type Hooks struct {
+	// Resolve overrides goal state resolution. The default is
+	// goalstates.ResolveMachine.
+	Resolve func(slot string) (*goalstates.MachineGoalState, error)
+	// HostRoot prefixes the same-path host locations (/etc, /var/lib, /opt/cni)
+	// the node writes. Empty is the real host.
+	HostRoot string
+	// ConfigSnapshotDir is where Upgrade saves the shared configuration so a
+	// rollback can restore it. Empty means a directory in the agent configuration
+	// directory below HostRoot.
+	ConfigSnapshotDir string
+	// SetupNetwork and CleanupNetwork replace the shared LocalDNS network
+	// phases, and WaitLocalDNS the LocalDNS readiness wait.
+	SetupNetwork   func(ctx context.Context) error
+	CleanupNetwork func(ctx context.Context) error
+	WaitLocalDNS   func(ctx context.Context) error
+}
+
+// SetupLocalDNSNetwork prepares the shared LocalDNS network.
+func (h Hooks) SetupLocalDNSNetwork(ctx context.Context, log *slog.Logger, ns *goalstates.NodeStart) error {
+	if h.SetupNetwork != nil {
+		return h.SetupNetwork(ctx)
 	}
 
 	return nodestart.SetupLocalDNSNetwork(log, ns).Do(ctx)
 }
 
-// CleanupNetwork removes host networking the stopped node left behind, as a
-// repave does. A non-nil override replaces the real phase.
-func CleanupNetwork(ctx context.Context, override func(context.Context) error, log *slog.Logger) error {
-	if override != nil {
-		return override(ctx)
+// CleanupHostNetwork removes host networking the stopped node left behind, as a
+// repave does.
+func (h Hooks) CleanupHostNetwork(ctx context.Context, log *slog.Logger) error {
+	if h.CleanupNetwork != nil {
+		return h.CleanupNetwork(ctx)
 	}
 
 	return reset.CleanupNetwork(log).Do(ctx)
 }
 
-// WaitLocalDNS waits for LocalDNS to answer. A non-nil override replaces the
-// real wait.
-func WaitLocalDNS(ctx context.Context, override func(context.Context) error, log *slog.Logger, ns *goalstates.NodeStart) error {
-	if override != nil {
-		return override(ctx)
+// AwaitLocalDNS waits for LocalDNS to answer.
+func (h Hooks) AwaitLocalDNS(ctx context.Context, log *slog.Logger, ns *goalstates.NodeStart) error {
+	if h.WaitLocalDNS != nil {
+		return h.WaitLocalDNS(ctx)
 	}
 
 	return nodestart.WaitForLocalDNS(log, ns).Do(ctx)
+}
+
+// SnapshotDir is where an upgrade saves the shared configuration: the override
+// when set, otherwise name in the agent configuration directory below HostRoot.
+func (h Hooks) SnapshotDir(name string) string {
+	if h.ConfigSnapshotDir != "" {
+		return h.ConfigSnapshotDir
+	}
+
+	return filepath.Join(h.HostRoot, goalstates.AgentConfigDir, name)
 }
 
 // Running reports whether the node root's stack is up.
@@ -141,16 +170,6 @@ func RestartChanged(ctx context.Context, log *slog.Logger, wasRunning bool, unit
 	}
 
 	return nil
-}
-
-// SnapshotDir is where an upgrade saves the shared configuration: override when
-// set, otherwise name in the agent configuration directory below hostRoot.
-func SnapshotDir(override, hostRoot, name string) string {
-	if override != "" {
-		return override
-	}
-
-	return filepath.Join(hostRoot, goalstates.AgentConfigDir, name)
 }
 
 // Snapshot is the saved copy of the configuration files both stacks of a node

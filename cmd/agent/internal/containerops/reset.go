@@ -45,8 +45,9 @@ func (t *Teardown) unitDir() string { return hostnode.OrDefault(t.SystemdDir, co
 
 func (t *Teardown) node(slot string) *Node {
 	return New(Params{
-		Log: t.logger(), Slot: slot, Layout: t.Layout, SystemdDir: t.SystemdDir, RuntimePath: t.RuntimePath,
-		Run: t.Run, HostRoot: t.Root, MountInfoPath: t.MountInfo,
+		Log: t.logger(), Slot: slot,
+		Overrides: Overrides{Layout: t.Layout, SystemdDir: t.SystemdDir, RuntimePath: t.RuntimePath, Run: t.Run, MountInfoPath: t.MountInfo},
+		Hooks:     hostnode.Hooks{HostRoot: t.Root},
 	})
 }
 

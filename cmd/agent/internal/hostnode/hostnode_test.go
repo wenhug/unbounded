@@ -74,9 +74,11 @@ func TestNetworkStepsUseTheirOverride(t *testing.T) {
 		return func(context.Context) error { ran = append(ran, name); return err }
 	}
 
-	require.NoError(t, SetupNetwork(t.Context(), mark("setup", nil), quiet(), nil))
-	require.NoError(t, CleanupNetwork(t.Context(), mark("cleanup", nil), quiet()))
-	require.ErrorIs(t, WaitLocalDNS(t.Context(), mark("wait", boom), quiet(), nil), boom)
+	h := Hooks{SetupNetwork: mark("setup", nil), CleanupNetwork: mark("cleanup", nil), WaitLocalDNS: mark("wait", boom)}
+
+	require.NoError(t, h.SetupLocalDNSNetwork(t.Context(), quiet(), nil))
+	require.NoError(t, h.CleanupHostNetwork(t.Context(), quiet()))
+	require.ErrorIs(t, h.AwaitLocalDNS(t.Context(), quiet(), nil), boom)
 	assert.Equal(t, []string{"setup", "cleanup", "wait"}, ran)
 }
 
@@ -156,8 +158,8 @@ func TestRestartChanged(t *testing.T) {
 func TestSnapshotDir(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "/x/y", SnapshotDir("/x/y", "/root", "name"))
-	assert.Equal(t, filepath.Join("/root", goalstates.AgentConfigDir, "name"), SnapshotDir("", "/root", "name"))
+	assert.Equal(t, "/x/y", Hooks{ConfigSnapshotDir: "/x/y", HostRoot: "/root"}.SnapshotDir("name"))
+	assert.Equal(t, filepath.Join("/root", goalstates.AgentConfigDir, "name"), Hooks{HostRoot: "/root"}.SnapshotDir("name"))
 }
 
 func TestSnapshotRestoresTheSharedConfigurationAndDiscards(t *testing.T) {

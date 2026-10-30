@@ -111,26 +111,13 @@ func newContainerPlan(t *testing.T, running bool) (*containerPlan, *agentStages,
 		},
 	}}
 	p.node = containerops.New(containerops.Params{
-		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Layout:        container.Layout{Base: filepath.Join(dir, "containers")},
-		SystemdDir:    filepath.Join(dir, "units"),
-		RuntimePath:   containerTestRuntime,
-		HelperPath:    "/usr/local/bin/unbounded-agent",
-		Run:           h.run,
-		HostRoot:      filepath.Join(dir, "host"),
-		MountInfoPath: filepath.Join(dir, "mountinfo"),
-		Host:          &container.HostFS{SELinuxEnforce: filepath.Join(dir, "absent")},
-		GoalState:     gs,
-		PollInterval:  time.Millisecond,
-		Unpack:        func(_ context.Context, d string) error { return os.MkdirAll(filepath.Join(d, "etc"), 0o755) },
-		InstallRuntime: func(context.Context) error {
+		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		GoalState: gs,
+		Overrides: containerops.Overrides{Layout: container.Layout{Base: filepath.Join(dir, "containers")}, SystemdDir: filepath.Join(dir, "units"), RuntimePath: containerTestRuntime, HelperPath: "/usr/local/bin/unbounded-agent", Run: h.run, MountInfoPath: filepath.Join(dir, "mountinfo"), Host: &container.HostFS{SELinuxEnforce: filepath.Join(dir, "absent")}, PollInterval: time.Millisecond, Unpack: func(_ context.Context, d string) error { return os.MkdirAll(filepath.Join(d, "etc"), 0o755) }, InstallRuntime: func(context.Context) error {
 			h.calls = append(h.calls, "install-runtime")
 			return nil
-		},
-		InstallHelper:   func(context.Context) error { return nil },
-		ProvisionRootfs: func(context.Context) error { return nil },
-		SetupNetwork:    func(context.Context) error { return nil },
-		WaitLocalDNS:    func(context.Context) error { return nil },
+		}, InstallHelper: func(context.Context) error { return nil }, ProvisionRootfs: func(context.Context) error { return nil }},
+		Hooks: hostnode.Hooks{HostRoot: filepath.Join(dir, "host"), SetupNetwork: func(context.Context) error { return nil }, WaitLocalDNS: func(context.Context) error { return nil }},
 	})
 
 	s := &agentStages{
@@ -186,10 +173,10 @@ func TestContainerPlanPrepareNodeRootLeavesARunningNodeAlone(t *testing.T) {
 func TestContainerPlanPrepareNodeRootFailsWhenTheUnpackFails(t *testing.T) {
 	p, s, _, _, _ := newContainerPlan(t, false)
 	p.node = containerops.New(containerops.Params{
-		Log: slog.New(slog.DiscardHandler), Layout: container.Layout{Base: filepath.Join(t.TempDir(), "c")}, SystemdDir: t.TempDir(),
-		GoalState: s.gs, Run: (&containerHost{active: map[string]bool{}, fail: map[string]error{}}).run, HostRoot: t.TempDir(), MountInfoPath: filepath.Join(t.TempDir(), "mi"),
-		Unpack:         func(context.Context, string) error { return errors.New("registry unreachable") },
-		InstallRuntime: func(context.Context) error { return nil }, InstallHelper: func(context.Context) error { return nil },
+		Log:       slog.New(slog.DiscardHandler),
+		GoalState: s.gs,
+		Overrides: containerops.Overrides{Layout: container.Layout{Base: filepath.Join(t.TempDir(), "c")}, SystemdDir: t.TempDir(), Run: (&containerHost{active: map[string]bool{}, fail: map[string]error{}}).run, MountInfoPath: filepath.Join(t.TempDir(), "mi"), Unpack: func(context.Context, string) error { return errors.New("registry unreachable") }, InstallRuntime: func(context.Context) error { return nil }, InstallHelper: func(context.Context) error { return nil }},
+		Hooks:     hostnode.Hooks{HostRoot: t.TempDir()},
 	})
 
 	err := s.PrepareRootFS(t.Context())

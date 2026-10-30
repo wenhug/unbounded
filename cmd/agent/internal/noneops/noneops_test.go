@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
@@ -111,21 +112,13 @@ func newFixture(t *testing.T, dns bool, mutate func(*goalstates.MachineGoalState
 	}
 
 	f.node = New(Params{
-		Log:        quiet(),
-		Layout:     none.Layout{Base: filepath.Join(t.TempDir(), "node")},
-		SystemdDir: f.sys,
-		Run:        f.h.run,
-		Proc:       filepath.Join(t.TempDir(), "noproc"),
-		HostRoot:   f.root,
-		GoalState:  f.gs,
-		Download: func(ctx context.Context) error {
+		Log:       quiet(),
+		GoalState: f.gs,
+		Overrides: Overrides{Layout: none.Layout{Base: filepath.Join(t.TempDir(), "node")}, SystemdDir: f.sys, Run: f.h.run, Proc: filepath.Join(t.TempDir(), "noproc"), Download: func(ctx context.Context) error {
 			f.hook.download++
 			return nil
-		},
-		SetupNetwork:   func(context.Context) error { f.hook.setup++; return nil },
-		CleanupNetwork: func(context.Context) error { f.hook.cleanup++; return nil },
-		WaitLocalDNS:   func(context.Context) error { f.hook.dns++; return nil },
-		WaitKubelet:    func(context.Context) error { f.hook.kubelet++; return f.hook.kubeletErr },
+		}, WaitKubelet: func(context.Context) error { f.hook.kubelet++; return f.hook.kubeletErr }},
+		Hooks: hostnode.Hooks{HostRoot: f.root, SetupNetwork: func(context.Context) error { f.hook.setup++; return nil }, CleanupNetwork: func(context.Context) error { f.hook.cleanup++; return nil }, WaitLocalDNS: func(context.Context) error { f.hook.dns++; return nil }},
 	})
 
 	return f
@@ -171,7 +164,10 @@ func TestResolveFailures(t *testing.T) {
 	require.ErrorContains(t, err, "no agent configuration")
 
 	boom := errors.New("gpu not ready")
-	n = New(Params{Log: quiet(), Resolve: func(string) (*goalstates.MachineGoalState, error) { return nil, boom }})
+	n = New(Params{
+		Log:   quiet(),
+		Hooks: hostnode.Hooks{Resolve: func(string) (*goalstates.MachineGoalState, error) { return nil, boom }},
+	})
 	_, err = n.GoalState()
 	require.ErrorIs(t, err, boom)
 	require.ErrorContains(t, err, "resolve machine goal state")
@@ -187,10 +183,13 @@ func TestResolveUsesTheFixedSlot(t *testing.T) {
 
 	var slot string
 
-	n := New(Params{Log: quiet(), Resolve: func(s string) (*goalstates.MachineGoalState, error) {
-		slot = s
-		return &goalstates.MachineGoalState{RootFS: &goalstates.RootFS{KubernetesVersion: "1.34.1"}, NodeStart: &goalstates.NodeStart{}}, nil
-	}})
+	n := New(Params{
+		Log: quiet(),
+		Hooks: hostnode.Hooks{Resolve: func(s string) (*goalstates.MachineGoalState, error) {
+			slot = s
+			return &goalstates.MachineGoalState{RootFS: &goalstates.RootFS{KubernetesVersion: "1.34.1"}, NodeStart: &goalstates.NodeStart{}}, nil
+		}},
+	})
 	_, err := n.GoalState()
 	require.NoError(t, err)
 	require.Equal(t, "kube1", slot, "applied config is recorded under kube1 so discovery needs no change")
@@ -744,10 +743,10 @@ func TestRestartRebuildsTheCDISpec(t *testing.T) {
 func TestGPUSetupFailureStopsTheStartBeforeAnyUnit(t *testing.T) {
 	f := newFixture(t, false, nil)
 	f.node = New(Params{
-		Log: quiet(), Layout: none.Layout{Base: filepath.Join(t.TempDir(), "node")}, SystemdDir: f.sys, Run: f.h.run,
-		Proc: filepath.Join(t.TempDir(), "noproc"), HostRoot: f.root, GoalState: f.gs,
-		SetupNetwork: func(context.Context) error { return nil }, WaitLocalDNS: func(context.Context) error { return nil },
-		SetupGPU: func(context.Context) error { return errors.New("no toolkit") },
+		Log:       quiet(),
+		GoalState: f.gs,
+		Overrides: Overrides{Layout: none.Layout{Base: filepath.Join(t.TempDir(), "node")}, SystemdDir: f.sys, Run: f.h.run, Proc: filepath.Join(t.TempDir(), "noproc"), SetupGPU: func(context.Context) error { return errors.New("no toolkit") }},
+		Hooks:     hostnode.Hooks{HostRoot: f.root, SetupNetwork: func(context.Context) error { return nil }, WaitLocalDNS: func(context.Context) error { return nil }},
 	})
 
 	require.ErrorContains(t, f.node.Start(t.Context(), false, false, false), "no toolkit")
@@ -804,9 +803,10 @@ func TestPrepareNamesAMissingConfiguredToolkit(t *testing.T) {
 	f.gs.NodeStart.NvidiaToolkit = tk
 
 	node := New(Params{
-		Log: quiet(), Layout: none.Layout{Base: filepath.Join(t.TempDir(), "node")}, SystemdDir: f.sys, Run: f.h.run,
-		Proc: filepath.Join(t.TempDir(), "noproc"), HostRoot: f.root, GoalState: f.gs,
-		SetupNetwork: func(context.Context) error { return nil }, WaitLocalDNS: func(context.Context) error { return nil },
+		Log:       quiet(),
+		GoalState: f.gs,
+		Overrides: Overrides{Layout: none.Layout{Base: filepath.Join(t.TempDir(), "node")}, SystemdDir: f.sys, Run: f.h.run, Proc: filepath.Join(t.TempDir(), "noproc")},
+		Hooks:     hostnode.Hooks{HostRoot: f.root, SetupNetwork: func(context.Context) error { return nil }, WaitLocalDNS: func(context.Context) error { return nil }},
 	})
 
 	_, err := node.Prepare(t.Context())

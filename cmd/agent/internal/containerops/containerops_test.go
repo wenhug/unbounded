@@ -222,32 +222,17 @@ func (f *fixture) node(slot string, dns bool) *Node {
 	c := f.hooks
 
 	return New(Params{
-		Log:           quiet(),
-		Slot:          slot,
-		Layout:        container.Layout{Base: filepath.Join(f.dir, "containers")},
-		SystemdDir:    filepath.Join(f.dir, "systemd"),
-		RuntimePath:   testRuntime,
-		HelperPath:    "/usr/local/bin/unbounded-agent",
-		Run:           f.h.run,
-		HostRoot:      filepath.Join(f.dir, "host"),
-		MountInfoPath: f.mountInfo(),
-		Host:          &container.HostFS{SELinuxEnforce: filepath.Join(f.dir, "absent")},
-		GoalState:     f.goalState(slot, dns),
-		PollInterval:  time.Millisecond,
-		ReadyTimeout:  50 * time.Millisecond,
-		Unpack: func(_ context.Context, dir string) error {
+		Log:       quiet(),
+		Slot:      slot,
+		GoalState: f.goalState(slot, dns),
+		Overrides: Overrides{Layout: container.Layout{Base: filepath.Join(f.dir, "containers")}, SystemdDir: filepath.Join(f.dir, "systemd"), RuntimePath: testRuntime, HelperPath: "/usr/local/bin/unbounded-agent", Run: f.h.run, MountInfoPath: f.mountInfo(), Host: &container.HostFS{SELinuxEnforce: filepath.Join(f.dir, "absent")}, PollInterval: time.Millisecond, ReadyTimeout: 50 * time.Millisecond, Unpack: func(_ context.Context, dir string) error {
 			if err := c.inc(&c.unpack, &c.unpackErr); err != nil {
 				return err
 			}
 
 			return os.MkdirAll(filepath.Join(dir, "etc"), 0o755)
-		},
-		InstallRuntime:  func(context.Context) error { return c.inc(&c.runtime, new(error)) },
-		InstallHelper:   func(context.Context) error { return c.inc(&c.helper, new(error)) },
-		ProvisionRootfs: func(context.Context) error { return c.inc(&c.provision, &c.provisionErr) },
-		SetupNetwork:    func(context.Context) error { return c.inc(&c.setup, &c.setupErr) },
-		CleanupNetwork:  func(context.Context) error { return c.inc(&c.cleanup, &c.cleanupErr) },
-		WaitLocalDNS:    func(context.Context) error { return c.inc(&c.dns, new(error)) },
+		}, InstallRuntime: func(context.Context) error { return c.inc(&c.runtime, new(error)) }, InstallHelper: func(context.Context) error { return c.inc(&c.helper, new(error)) }, ProvisionRootfs: func(context.Context) error { return c.inc(&c.provision, &c.provisionErr) }},
+		Hooks: hostnode.Hooks{HostRoot: filepath.Join(f.dir, "host"), SetupNetwork: func(context.Context) error { return c.inc(&c.setup, &c.setupErr) }, CleanupNetwork: func(context.Context) error { return c.inc(&c.cleanup, &c.cleanupErr) }, WaitLocalDNS: func(context.Context) error { return c.inc(&c.dns, new(error)) }},
 	})
 }
 
@@ -300,7 +285,10 @@ func TestResolveFailuresAndSlotValidation(t *testing.T) {
 	require.ErrorContains(t, err, "no agent configuration")
 
 	boom := errors.New("gpu not ready")
-	n = New(Params{Log: quiet(), Resolve: func(string) (*goalstates.MachineGoalState, error) { return nil, boom }})
+	n = New(Params{
+		Log:   quiet(),
+		Hooks: hostnode.Hooks{Resolve: func(string) (*goalstates.MachineGoalState, error) { return nil, boom }},
+	})
 	_, err = n.GoalState()
 	require.ErrorIs(t, err, boom)
 	require.ErrorContains(t, err, "resolve machine goal state")
@@ -325,10 +313,13 @@ func TestResolveFailuresAndSlotValidation(t *testing.T) {
 
 	var slot string
 
-	New(Params{Log: quiet(), Resolve: func(s string) (*goalstates.MachineGoalState, error) {
-		slot = s
-		return &goalstates.MachineGoalState{RootFS: &goalstates.RootFS{}, NodeStart: &goalstates.NodeStart{}}, nil
-	}}).GoalState() //nolint:errcheck // only the slot matters
+	New(Params{
+		Log: quiet(),
+		Hooks: hostnode.Hooks{Resolve: func(s string) (*goalstates.MachineGoalState, error) {
+			slot = s
+			return &goalstates.MachineGoalState{RootFS: &goalstates.RootFS{}, NodeStart: &goalstates.NodeStart{}}, nil
+		}},
+	}).GoalState() //nolint:errcheck // only the slot matters
 	require.Equal(t, "kube1", slot, "the default slot is the first")
 }
 

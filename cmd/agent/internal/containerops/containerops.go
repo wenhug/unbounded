@@ -61,7 +61,19 @@ type Params struct {
 	Downloads *goalstates.DownloadOverrides
 	// Slot is kube1 or kube2. Empty means kube1.
 	Slot string
+	// GoalState, when set, is used instead of resolving one. Bootstrap passes
+	// the goal state it has already resolved so GPU and device discovery happens
+	// once.
+	GoalState *goalstates.MachineGoalState
 
+	// Overrides and Hooks are left zero in production, which is the real host.
+	// Tests set them to run a node against a temporary tree and a fake host.
+	Overrides
+	hostnode.Hooks
+}
+
+// Overrides are the container-specific seams of Params.
+type Overrides struct {
 	// Layout, SystemdDir, RuntimePath and HelperPath are as in container.Backend.
 	// An empty HelperPath is the agent's rollback-stable lifecycle helper.
 	Layout      container.Layout
@@ -70,24 +82,10 @@ type Params struct {
 	HelperPath  string
 	// Run executes host commands. Nil uses the real host.
 	Run container.Runner
-	// HostRoot prefixes the same-path host locations. Empty is the real host;
-	// tests use a temporary tree.
-	HostRoot string
-	// ConfigSnapshotDir is where Upgrade saves the shared configuration so a
-	// rollback can restore it. Empty means a directory in the agent configuration
-	// directory below HostRoot.
-	ConfigSnapshotDir string
 	// MountInfoPath is the mount table. Empty means /proc/self/mountinfo.
 	MountInfoPath string
 	// Host locates the SELinux and cgroup interfaces. Nil is the real host.
 	Host *container.HostFS
-
-	// GoalState, when set, is used instead of resolving one. Bootstrap passes
-	// the goal state it has already resolved so GPU and device discovery happens
-	// once.
-	GoalState *goalstates.MachineGoalState
-	// Resolve overrides goal state resolution. Tests use it.
-	Resolve func(slot string) (*goalstates.MachineGoalState, error)
 
 	// Unpack, InstallRuntime, InstallHelper and ProvisionRootfs replace the
 	// real artifact work. Nil does it for real.
@@ -95,12 +93,6 @@ type Params struct {
 	InstallRuntime  func(ctx context.Context) error
 	InstallHelper   func(ctx context.Context) error
 	ProvisionRootfs func(ctx context.Context) error
-	// SetupNetwork and CleanupNetwork replace the shared LocalDNS network
-	// phases. Nil runs the real ones.
-	SetupNetwork   func(ctx context.Context) error
-	CleanupNetwork func(ctx context.Context) error
-	// WaitLocalDNS replaces the LocalDNS readiness wait.
-	WaitLocalDNS func(ctx context.Context) error
 
 	// PollInterval is the wait between readiness polls. Zero means one second.
 	PollInterval time.Duration
@@ -385,7 +377,7 @@ func (n *Node) restartChanged(ctx context.Context, wasRunning, containerdChanged
 }
 
 func (n *Node) waitLocalDNS(ctx context.Context) error {
-	return hostnode.WaitLocalDNS(ctx, n.p.WaitLocalDNS, n.p.Log, n.gs.NodeStart)
+	return n.p.AwaitLocalDNS(ctx, n.p.Log, n.gs.NodeStart)
 }
 
 // waitReady waits until systemd inside the container accepts commands and has
@@ -513,11 +505,11 @@ func (n *Node) RewriteUnit(ctx context.Context) error {
 }
 
 func (n *Node) setupNetwork(ctx context.Context) error {
-	return hostnode.SetupNetwork(ctx, n.p.SetupNetwork, n.p.Log, n.gs.NodeStart)
+	return n.p.SetupLocalDNSNetwork(ctx, n.p.Log, n.gs.NodeStart)
 }
 
 func (n *Node) cleanupNetwork(ctx context.Context) error {
-	return hostnode.CleanupNetwork(ctx, n.p.CleanupNetwork, n.p.Log)
+	return n.p.CleanupHostNetwork(ctx, n.p.Log)
 }
 
 // resetSharedKubeletState prepares the shared kubelet directory for a new slot.
@@ -640,7 +632,7 @@ func (n *Node) abandon(ctx context.Context, cause error) error {
 }
 
 func (n *Node) configSnapshotDir() string {
-	return hostnode.SnapshotDir(n.p.ConfigSnapshotDir, n.p.HostRoot, "container-upgrade-config")
+	return n.p.SnapshotDir("container-upgrade-config")
 }
 
 // restoreShared puts the saved shared configuration back and drops the

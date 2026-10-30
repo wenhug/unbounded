@@ -51,7 +51,19 @@ type Params struct {
 	Config *config.AgentConfig
 	// Downloads optionally overrides artifact download sources.
 	Downloads *goalstates.DownloadOverrides
+	// GoalState, when set, is used instead of resolving one. Bootstrap passes
+	// the goal state it has already resolved so GPU and device discovery happens
+	// once.
+	GoalState *goalstates.MachineGoalState
 
+	// Overrides and Hooks are left zero in production, which is the real host.
+	// Tests set them to run a node against a temporary tree and a fake host.
+	Overrides
+	hostnode.Hooks
+}
+
+// Overrides are the none-specific seams of Params.
+type Overrides struct {
 	// Layout is the agent-owned directory. The zero value is the default.
 	Layout none.Layout
 	// SystemdDir is where units are written. Empty means /etc/systemd/system.
@@ -61,36 +73,13 @@ type Params struct {
 	// Proc is the procfs Destroy scans for container shims. Empty means /proc.
 	Proc string
 
-	// GoalState, when set, is used instead of resolving one. Bootstrap passes
-	// the goal state it has already resolved so GPU and device discovery happens
-	// once.
-	GoalState *goalstates.MachineGoalState
-	// Resolve overrides goal state resolution. Tests use it; the default is
-	// goalstates.ResolveMachine.
-	Resolve func(slot string) (*goalstates.MachineGoalState, error)
-
-	// HostRoot prefixes the same-path host locations (/etc, /var/lib, /opt/cni)
-	// the node writes. Empty is the real host; tests use a temporary tree.
-	HostRoot string
-
 	// Download replaces the artifact installers. Nil downloads for real.
 	Download func(ctx context.Context) error
-	// SetupNetwork and CleanupNetwork replace the shared LocalDNS network
-	// phases. Nil runs the real ones.
-	SetupNetwork   func(ctx context.Context) error
-	CleanupNetwork func(ctx context.Context) error
-
-	// ConfigSnapshotDir is where Upgrade saves the shared configuration so a
-	// rollback can restore it. Empty means a directory in the agent configuration
-	// directory below HostRoot.
-	ConfigSnapshotDir string
-
 	// SetupGPU replaces the host GPU setup that runs before the stack starts.
 	SetupGPU func(ctx context.Context) error
-	// WaitLocalDNS and WaitKubelet override the readiness waits. Nil uses the
-	// phases the nspawn mode uses.
-	WaitLocalDNS func(ctx context.Context) error
-	WaitKubelet  func(ctx context.Context) error
+	// WaitKubelet overrides the kubelet readiness wait. Nil uses the phase the
+	// nspawn mode uses.
+	WaitKubelet func(ctx context.Context) error
 }
 
 // Node is a none node bound to one configuration.
@@ -215,7 +204,7 @@ func (n *Node) setupGPU(ctx context.Context) error {
 }
 
 func (n *Node) waitLocalDNS(ctx context.Context) error {
-	return hostnode.WaitLocalDNS(ctx, n.p.WaitLocalDNS, n.p.Log, n.gs.NodeStart)
+	return n.p.AwaitLocalDNS(ctx, n.p.Log, n.gs.NodeStart)
 }
 
 func (n *Node) waitKubelet(ctx context.Context) error {
@@ -502,7 +491,7 @@ func (n *Node) Upgrade(ctx context.Context) (err error) {
 }
 
 func (n *Node) configSnapshotDir() string {
-	return hostnode.SnapshotDir(n.p.ConfigSnapshotDir, n.p.HostRoot, "none-upgrade-config")
+	return n.p.SnapshotDir("none-upgrade-config")
 }
 
 // PruneVersions removes every installed version except the active one. It runs
@@ -525,11 +514,11 @@ func (n *Node) PruneVersions() error {
 }
 
 func (n *Node) setupNetwork(ctx context.Context) error {
-	return hostnode.SetupNetwork(ctx, n.p.SetupNetwork, n.p.Log, n.gs.NodeStart)
+	return n.p.SetupLocalDNSNetwork(ctx, n.p.Log, n.gs.NodeStart)
 }
 
 func (n *Node) cleanupNetwork(ctx context.Context) error {
-	return hostnode.CleanupNetwork(ctx, n.p.CleanupNetwork, n.p.Log)
+	return n.p.CleanupHostNetwork(ctx, n.p.Log)
 }
 
 func (n *Node) kernelModulesTask() phases.Task {

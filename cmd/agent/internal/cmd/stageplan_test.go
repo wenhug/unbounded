@@ -211,16 +211,10 @@ func newNonePlan(t *testing.T, running bool) (*nonePlan, *agentStages, *fakeHost
 		},
 	}}
 	p.node = noneops.New(noneops.Params{
-		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Layout:       none.Layout{Base: filepath.Join(root, "node")},
-		SystemdDir:   filepath.Join(root, "units"),
-		Run:          h.run,
-		Proc:         filepath.Join(root, "noproc"),
-		HostRoot:     filepath.Join(root, "host"),
-		GoalState:    gs,
-		Download:     func(context.Context) error { return nil },
-		SetupNetwork: func(context.Context) error { return nil },
-		WaitKubelet:  func(context.Context) error { return nil },
+		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		GoalState: gs,
+		Overrides: noneops.Overrides{Layout: none.Layout{Base: filepath.Join(root, "node")}, SystemdDir: filepath.Join(root, "units"), Run: h.run, Proc: filepath.Join(root, "noproc"), Download: func(context.Context) error { return nil }, WaitKubelet: func(context.Context) error { return nil }},
+		Hooks:     hostnode.Hooks{HostRoot: filepath.Join(root, "host"), SetupNetwork: func(context.Context) error { return nil }},
 	})
 
 	s := &agentStages{
