@@ -83,15 +83,54 @@ const (
 	GrantLibraryPath GrantKind = "library-path"
 )
 
+// GrantPurpose says what a Grant is for. Backends use it to place a grant in
+// the right section of their own configuration and to keep a stable rendering
+// order. It carries no host paths.
+type GrantPurpose string
+
+const (
+	// PurposeHostDevice is a discovered or configured host device node, or a
+	// systemd device group specifier, such as /dev/kvm or char-input.
+	PurposeHostDevice GrantPurpose = "host-device"
+	// PurposeHostMount is a configured non-device host path.
+	PurposeHostMount GrantPurpose = "host-mount"
+	// PurposeNvidiaDevice is an NVIDIA GPU device node or directory.
+	PurposeNvidiaDevice GrantPurpose = "nvidia-device"
+	// PurposeNvidiaLibDir is a host directory of NVIDIA driver libraries.
+	PurposeNvidiaLibDir GrantPurpose = "nvidia-lib-dir"
+	// PurposeNvidiaI386LibDir is a host directory of 32-bit NVIDIA libraries.
+	PurposeNvidiaI386LibDir GrantPurpose = "nvidia-i386-lib-dir"
+	// PurposeNvidiaHelperBin is the host directory of NVIDIA helper binaries
+	// that node-start copies into the node.
+	PurposeNvidiaHelperBin GrantPurpose = "nvidia-helper-bin"
+	// PurposeAMDDevice is an AMD GPU device node.
+	PurposeAMDDevice GrantPurpose = "amd-device"
+	// PurposeAMDSysFS is a host sysfs path the AMD device plugin reads.
+	PurposeAMDSysFS GrantPurpose = "amd-sysfs"
+)
+
+// LibDirMount is a host library directory made visible at ContainerDir. Index
+// orders the mounts and maps libraries to their directory.
+type LibDirMount struct {
+	Index        int
+	HostDir      string
+	ContainerDir string
+}
+
 // Grant is a backend-neutral request for host resources. Each backend applies
 // it in its own way, and a backend with nothing to apply ignores it.
 type Grant struct {
-	Kind GrantKind
-	// Source is the host path (or device node).
+	Kind    GrantKind
+	Purpose GrantPurpose
+	// Source is the host path (or device node). It is empty for a GrantDevice
+	// that only names a device class and has no node to expose.
 	Source string
 	// Target is the in-node path. Empty means the same as Source.
 	Target   string
 	ReadOnly bool
+	// DeviceClass is a cgroup device class selector such as char-input, for a
+	// GrantDevice that has no Source.
+	DeviceClass string
 }
 
 // ExecSpec is a command run in the node stack.
