@@ -100,6 +100,15 @@ func bootstrapIdentity(cfg *provision.UnboundedAgentConfig) (bootstrap.Identity,
 	return bootstrap.Identity{MachineName: cfg.MachineName, ConfigFingerprint: installstate.Fingerprint(data)}, nil
 }
 
+// Seams for the credential stage. Tests replace them to drive
+// prepareCredentials without a TPM or the host's agent configuration
+// directory; the TPM flow itself is covered by the attest package's tests and
+// the record file by the daemon package's.
+var (
+	applyAttestation    = attest.ApplyAttestation
+	persistAttestConfig = daemon.PersistAttestConfig
+)
+
 // Credentials must be resolved on every unfinished attempt, but TPM prerequisites
 // must first be installed on a fresh host. This stage always precedes node work.
 func (s *agentStages) prepareCredentials(ctx context.Context) error {
@@ -107,7 +116,7 @@ func (s *agentStages) prepareCredentials(ctx context.Context) error {
 		return nil
 	}
 
-	if err := attest.ApplyAttestation(s.log, s.cfg.Attest, s.cfg.MachineName, s.gs.NodeStart).Do(ctx); err != nil {
+	if err := applyAttestation(s.log, s.cfg.Attest, s.cfg.MachineName, s.gs.NodeStart).Do(ctx); err != nil {
 		return err
 	}
 
@@ -118,7 +127,7 @@ func (s *agentStages) prepareCredentials(ctx context.Context) error {
 	// reprovision can start from any of them, but only for a host that
 	// attests: with no attestation URL nothing is written, so a host that does
 	// not attest, nspawn included, is bootstrapped exactly as before.
-	if err := daemon.PersistAttestConfig(s.log, s.cfg.Attest).Do(ctx); err != nil {
+	if err := persistAttestConfig(s.log, s.cfg.Attest).Do(ctx); err != nil {
 		return err
 	}
 
