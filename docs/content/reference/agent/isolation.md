@@ -60,9 +60,16 @@ Set the mode at provisioning time with any of:
 - `spec.isolation` on the `Machine` (`nspawn`, `none`, or `container`).
 - `--isolation` on `kubectl unbounded machine manual-bootstrap`.
 - `Isolation` in the [agent config]({{< relref "reference/agent/configuration" >}}).
+- `--isolation` on `unbounded-agent start` (and `unbounded-agent preflight`),
+  which overrides `Isolation` from the config file.
 
 An empty value is `nspawn`. The agent rejects any unrecognized value with a
 clear error rather than running it as `nspawn`.
+
+A host records the mode it was installed in. Starting the agent in a different
+mode on that host is refused with `installation intent differs; explicit reset
+is required`, whether the mode comes from the flag or the config file, so a flag
+never re-modes a running node. Use an `IsolationMigrate` operation to switch.
 
 ```bash
 kubectl unbounded machine manual-bootstrap my-node --site mysite \

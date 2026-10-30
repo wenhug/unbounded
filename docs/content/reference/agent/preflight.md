@@ -47,6 +47,7 @@ environment to skip that automatic preflight step.
 | Flag | Description |
 |---|---|
 | `--config` | Path to the agent config file. When omitted, the agent uses its normal config loading behavior. |
+| `--isolation` | Isolation mode to check: `nspawn`, `none`, or `container`. Overrides `Isolation` from the config file. When omitted, the config file decides, and an empty value is `nspawn`. |
 | `--ignore-preflight-errors` | Comma-separated check names whose errors should be reported as warnings. Use `all` to ignore all fatal checks. |
 | `--fail-on-warnings` | Exit non-zero when any warning is returned, even if there are no fatal errors. |
 | `--output` | Output format. Supported values are `text` and `json`. Default: `text`. |

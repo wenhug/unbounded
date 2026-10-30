@@ -34,7 +34,8 @@ Preflight reads and mutates nothing on the host.
 ## Selecting the mode
 
 Set `spec.isolation: none` on the `Machine`, `Isolation` to `none` in the agent
-config, or pass `--isolation none` to `kubectl unbounded machine manual-bootstrap`.
+config, pass `--isolation none` to `kubectl unbounded machine manual-bootstrap`, or pass
+`--isolation none` to `unbounded-agent start`.
 
 ## Layout
 

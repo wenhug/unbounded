@@ -30,7 +30,7 @@ that have not been checked on a node.
 - A loadable `runc`. The agent downloads it to
   `/opt/unbounded/runtime/runc` (the version and download source follow the
   configured `CRI.Runc` version and download override, and offline artifacts),
-  and only in this mode. `crun` is not supported yet. The host's own docker and
+  and only in this mode. Only `runc` is supported. The host's own docker and
   containerd are not used, and the host's containerd and kubelet units are
   disabled because the container shares `/run/containerd` with the host.
 - cgroup v2.
@@ -45,8 +45,9 @@ that have not been checked on a node.
 ## Selecting the mode
 
 Set `spec.isolation: container` on the `Machine`, `Isolation` to `container` in
-the agent config, or pass `--isolation container` to
-`kubectl unbounded machine manual-bootstrap`.
+the agent config, pass `--isolation container` to
+`kubectl unbounded machine manual-bootstrap`, or pass `--isolation container` to
+`unbounded-agent start`.
 
 ## How it works
 

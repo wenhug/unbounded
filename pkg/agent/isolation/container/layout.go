@@ -18,7 +18,7 @@ import (
 const (
 	// DefaultBase holds one directory per slot (the unpacked rootfs).
 	DefaultBase = "/var/lib/unbounded/containers"
-	// DefaultRuntimePath is the OCI runtime executable (runc; crun is not supported).
+	// DefaultRuntimePath is the runc executable. Only runc is supported.
 	DefaultRuntimePath = "/opt/unbounded/runtime/runc"
 	// SystemdDir is where the agent writes the supervising unit.
 	SystemdDir = "/etc/systemd/system"

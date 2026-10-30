@@ -54,7 +54,8 @@ type Unpacker func(ctx context.Context, n isolation.NodeSpec, dir string) error
 type Backend struct {
 	Log    *slog.Logger
 	Layout Layout
-	// RuntimePath is the runc or crun executable. Empty means DefaultRuntimePath.
+	// RuntimePath is the runc executable (only runc is supported). Empty means
+	// DefaultRuntimePath.
 	RuntimePath string
 	// HelperPath is the agent binary providing node-lifecycle hooks.
 	HelperPath string
