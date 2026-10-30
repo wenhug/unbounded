@@ -21,6 +21,8 @@ import (
 )
 
 func newCmdStart(cmdCtx *CommandContext) *cobra.Command {
+	var overrides *configOverrides
+
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Bootstrap the host, rootfs, and start the node",
@@ -29,17 +31,19 @@ func newCmdStart(cmdCtx *CommandContext) *cobra.Command {
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer cancel()
 
-			return runStart(ctx, cmdCtx)
+			return runStart(ctx, cmdCtx, *overrides)
 		},
 	}
+
+	overrides = addIsolationFlag(cmd)
 
 	return cmd
 }
 
 // runStart is the start command: it loads the configuration the environment
-// names and runs the bootstrap stages of the configured isolation mode. The
+// names, applies the command line overrides, and runs the bootstrap stages of the configured isolation mode. The
 // isolation-reprovision command runs it after a reset.
-func runStart(ctx context.Context, cmdCtx *CommandContext) error {
+func runStart(ctx context.Context, cmdCtx *CommandContext, overrides configOverrides) error {
 	cmdCtx.Setup()
 
 	cmdCtx.Logger.Info("starting unbounded-agent",
@@ -51,7 +55,7 @@ func runStart(ctx context.Context, cmdCtx *CommandContext) error {
 		return err
 	}
 
-	cfg, err := loadConfig(cmdCtx.Logger)
+	cfg, err := loadConfigWith(cmdCtx.Logger, overrides)
 	if err != nil {
 		return err
 	}

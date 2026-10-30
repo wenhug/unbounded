@@ -81,7 +81,7 @@ func newCmdIsolationReprovision(cmdCtx *CommandContext) *cobra.Command {
 					return daemon.AbandonReprovision(ctx, cmdCtx.Logger, dir)
 				},
 				maxAttempts: daemon.ReprovisionMaxAttempts,
-				start:       func(ctx context.Context) error { return runStart(ctx, cmdCtx) },
+				start:       func(ctx context.Context) error { return runStart(ctx, cmdCtx, configOverrides{}) },
 				loadPlan:    func() error { return checkStagedConfig(cmdCtx.Logger) },
 				sleep:       time.Sleep,
 			}
