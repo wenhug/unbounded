@@ -29,6 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 )
 
 // AgentConfig is the core configuration needed to bootstrap a Kubernetes
@@ -56,6 +58,11 @@ type AgentConfig struct {
 	// selects automatically. HTTPS URLs may contain signed query parameters.
 	// When empty the agent uses the built-in default image.
 	OCIImage string `json:"OCIImage,omitempty"`
+
+	// Isolation selects where the node stack runs: nspawn, none or container.
+	// Empty means nspawn, which is also what every config written before this
+	// field existed means.
+	Isolation string `json:"Isolation,omitempty"`
 
 	// AdditionalHostDevices lists extra host device nodes under /dev or systemd
 	// device group specifiers that should be exposed to the nspawn machine in
@@ -308,6 +315,10 @@ func (a *AgentConfig) Validate() error {
 
 	if err := ValidateNSpawnLifecycle(a.NSpawnLifecycle); err != nil {
 		errs = append(errs, err)
+	}
+
+	if _, err := isolation.ParseMode(a.Isolation); err != nil {
+		errs = append(errs, fmt.Errorf("invalid Isolation: %w", err))
 	}
 
 	if err := a.Kubelet.Validate(); err != nil {
@@ -760,4 +771,10 @@ type RuncConfig struct {
 type CNIConfig struct {
 	// PluginVersion overrides the default CNI plugin version (e.g. "1.5.1").
 	PluginVersion string `json:"PluginVersion,omitempty"`
+}
+
+// IsolationMode returns the configured isolation mode. An empty value is the
+// default mode; an unrecognized value is an error.
+func (a *AgentConfig) IsolationMode() (isolation.Mode, error) {
+	return isolation.ParseMode(a.Isolation)
 }
