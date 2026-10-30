@@ -11,13 +11,9 @@ its daemon run on the host, as in every mode. See
 [Isolation Modes]({{< relref "reference/agent/isolation" >}}) to compare.
 
 {{< callout type="important" >}}
-**Availability.** The `none` backend is registered with the agent and wired into
-bootstrap, soft reboot, upgrade, reset, `exec` and `logs`. It has been exercised
-with unit tests and the shared backend conformance suite against stubbed systemd
-and containerd, not yet against a real host, so treat it as experimental until
-your release notes say otherwise. Moving a host to or from `none` is a
-reprovision (see [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}})),
-which is wired but has not run on a real host.
+`none` mode is experimental and has not yet been validated on real hosts. Moving
+a host to or from `none` is a reprovision; see
+[Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 {{< /callout >}}
 
 ## Requirements
@@ -29,7 +25,8 @@ which is wired but has not run on a real host.
   unit file in the systemd unit directories, a `kubelet` or `containerd`
   executable on the standard binary paths, or a running `kubelet` or
   `containerd` process. Remove them, or use `nspawn` or `container`.
-- A read-only `/usr` is not a supported target. Use `container` there.
+- `/usr` is never modified, so a read-only `/usr` is expected to work. This has
+  not yet been validated on a read-only `/usr` host.
 - Units start after `network-online.target`.
 
 Preflight reads and mutates nothing on the host.
@@ -59,9 +56,8 @@ unchanged configuration reuses its directory.
 The agent never writes or edits the distro's `kubelet.service` or
 `containerd.service`.
 
-The same-path contract holds: `/run/containerd`, `/etc/containerd/certs.d`,
-`/var/lib/kubelet`, `/opt/cni`, and bpffs resolve for the node stack exactly as in
-the other modes, so unbounded-net-node and gantry are unchanged.
+The same-path contract holds, as in every mode; see
+[Isolation Modes]({{< relref "reference/agent/isolation" >}}).
 
 ## Operations
 
@@ -74,15 +70,10 @@ the other modes, so unbounded-net-node and gantry are unchanged.
 | Repave and upgrade | The new version is installed beside the running one. Then the units stop, host networking is cleaned as for an `nspawn` repave, kubelet's old credentials are removed so it bootstraps again, `current` flips, the units start, and the agent waits for LocalDNS and kubelet. If any step after the flip fails, the link is flipped back and the previous version is started. The node is briefly down. The caller drains and deletes the Node first, as for `nspawn`. |
 | Reset and delete | Same order as `nspawn`: stop the units, remove WireGuard keys, remove the configuration the agent wrote at shared paths, end leftover container shims, remove the units, drop-ins and `/opt/unbounded/node`, unmount and remove `/var/lib/kubelet`, `/var/lib/containerd`, `/etc/cni/net.d` and `/opt/cni/bin`, then the host-global cleanup. |
 | Health | Both units are active, kubelet is healthy, and LocalDNS answers when enabled. |
-| Exec and logs | `unbounded-agent exec` runs on the host. `unbounded-agent logs` reads the journal of the agent-owned units; `--unit kubelet` and `--unit containerd` select them. |
+| Exec and logs | `unbounded-agent exec` runs on the host. `unbounded-agent logs` reads the journal of the agent-owned units; `--unit kubelet` and `--unit containerd` select them. See [Running commands and reading logs]({{< relref "reference/agent/isolation" >}}#running-commands-and-reading-logs). |
 | GPU and devices | Native. Nothing is bind-mounted because the stack sees the host directly. NVIDIA GPUs need the NVIDIA Container Toolkit on the host; before each start the agent selects CDI mode and regenerates `/etc/cdi/nvidia.yaml`. Every device and mount request is either honored or refused, never ignored. See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
 | LocalDNS | CoreDNS runs as the `unbounded-localdns.service` host unit and the LocalDNS network unit is unchanged. The host's own `/etc/resolv.conf` is not rewritten; kubelet uses its dedicated resolver file. |
 | Uninstall | The uninstall script reads the mode from the applied config and runs the `none` cleanup. |
-
-```bash
-sudo unbounded-agent exec -- crictl ps
-sudo unbounded-agent logs --unit kubelet --follow --lines 200
-```
 
 ## Limits
 
@@ -102,26 +93,12 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
 - **Pods outlive the units.** containerd runs with `KillMode=process`, so a plain
   unit stop leaves pods running. Reset ends the shims; an upgrade does not need
   to because the operator drains the Node first.
-- **NVIDIA GPUs.** The host driver and the NVIDIA Container Toolkit
-  (`/usr/bin/nvidia-ctk`, `/usr/bin/nvidia-container-runtime`) must be installed
-  on the host; the agent does not install them in this mode. A host that
-  installs the toolkit elsewhere sets `NvidiaToolkit.CTKPath` and
-  `NvidiaToolkit.ContainerRuntimePath` in the agent config (see
-  [Agent Configuration]({{< relref "reference/agent/configuration" >}})); every
-  check, command, and the containerd `nvidia` runtime handler then use those
-  paths. When NVIDIA devices
-  are present and the toolkit is missing, Prepare fails with a message naming the
-  missing file, before any unit is written. Before containerd and kubelet start
-  (on start, soft reboot, and upgrade, including an upgrade rollback) the agent
-  selects CDI mode in the toolkit config and regenerates the CDI spec with
-  `create-symlinks` and `update-ldcache` hooks only, as `nspawn` does. This
-  changes two host-global files, the toolkit's `config.toml` and
-  `/etc/cdi/nvidia.yaml`; reset removes the spec and leaves `config.toml`.
-- **Requests the host view cannot honor.** A configured host mount at a different
-  path than its source, or a library-path request, cannot be honored when the
-  stack sees the host. Such a request fails Prepare with an error instead of
-  being ignored. Mounts at their own path and device nodes are checked for
-  existence.
+- **NVIDIA GPUs.** The host driver and the NVIDIA Container Toolkit must be
+  installed on the host; the agent does not install them in this mode. The
+  toolkit paths are configurable, and the agent selects CDI mode and regenerates
+  the CDI spec before each start. A device or mount request the host view cannot
+  honor fails `Prepare` instead of being ignored. See
+  [Toolkit and CDI in `none` mode]({{< relref "reference/gpu/nvidia" >}}#toolkit-and-cdi-in-none-mode).
 - **Migration.** Any move to or from `none` is a reprovision. In-place migration
   is not supported. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 

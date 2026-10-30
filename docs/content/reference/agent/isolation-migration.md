@@ -10,12 +10,11 @@ when an `IsolationMigrate` [MachineOperation]({{< relref "guides/operations" >}}
 runs.
 
 {{< callout type="important" >}}
-**Availability.** The agent validates the request, picks the strategy, and
-rejects unsupported moves before touching the node. Both strategies are wired to
-host operations and are tested against fake backends and stubbed hosts. They
-have not been run against real hosts, and any move that involves `container` is
-provisional because that mode is. The agent does not cordon or drain the node;
-see [Before you start](#before-you-start).
+Migration is experimental and has not yet been validated on real hosts. Any move
+that involves `container` is experimental because that mode is. The agent
+validates the request, picks the strategy, and rejects unsupported moves before
+touching the node. It does not cordon or drain the node; see
+[Before you start](#before-you-start).
 {{< /callout >}}
 
 ## Create an operation

@@ -1,7 +1,7 @@
 ---
 title: "container Mode (Experimental)"
 weight: 6
-description: "Provisional mode that runs the Kubernetes node stack in a privileged OCI container, for Azure Container Linux."
+description: "Experimental mode that runs the Kubernetes node stack in a privileged OCI container, for Azure Container Linux."
 ---
 
 `container` mode runs the node stack in a privileged OCI container on hosts that
@@ -10,14 +10,9 @@ Linux. See [Isolation Modes]({{< relref "reference/agent/isolation" >}}) to
 compare.
 
 {{< callout type="warning" >}}
-**Provisional and experimental.** The `container` backend is registered with the
-agent and wired into bootstrap, soft reboot, repave, reset, `exec` and `logs`.
-It has been exercised with unit tests and the shared backend conformance suite
-against a stubbed runtime and systemd, never against a real `runc`, systemd, or
-Azure Container Linux node. It stays provisional until facts about those nodes
-are verified: kernel and runtime versions, SELinux mode, kernel module loading,
-mount propagation, and whether `systemd-nspawn` and `machinectl` ship on the
-image. Details here may change. Do not rely on it for production hosts.
+`container` mode is experimental and has not yet been validated on real hosts or
+on Azure Container Linux. Details here may change. Do not rely on it for
+production hosts.
 {{< /callout >}}
 
 ## Target host
@@ -26,8 +21,8 @@ Azure Container Linux is derived from Flatcar. These properties are confirmed by
 Microsoft documentation: a read-only `/usr` protected by dm-verity, weekly
 image-based updates, a signed unified kernel image with Secure Boot, and
 enforcing SELinux. Public documentation does not cover container runtimes,
-kernel modules, or mount propagation, so the requirements below are the
-design's assumptions.
+kernel modules, or mount propagation, so the requirements below are assumptions
+that have not been checked on a node.
 
 ## Requirements
 
@@ -93,46 +88,32 @@ configuration are not used by this mode.
 | Repave and upgrade | Blue/green. The alternate slot is built beside the running one, then the old container is stopped, host networking is cleaned, the shared kubelet state is reset (pod mounts unmounted, previous kubelet credentials removed when a bootstrap token is used), and the new container is started and waited on. The kubelet, containerd, CNI and LocalDNS configuration files both slots share on the host are saved first (in `/etc/unbounded/agent/container-upgrade-config`). If the new slot does not come up it is removed, the saved files are put back, and the old container is started again; the error says whether that worked. The applied config moves to the new slot only after it is healthy, then the old slot is removed. |
 | Reset and delete | Stop the containers, remove the bundle, rootfs, and unit of each slot, the shared kubelet and CNI directories and the host runtime, then the host-global cleanup in the usual order. |
 | Health | The container is running, kubelet is healthy, and LocalDNS answers when enabled. |
-| Exec and logs | `unbounded-agent exec` runs through `runc exec`. `unbounded-agent logs` runs `journalctl` in the container. |
-| GPU and devices | The grants become OCI mounts and devices; the container runs with every device allowed. NVIDIA libraries and the CDI spec are wired by the `node-lifecycle` hooks, as `nspawn-lifecycle` does for an `nspawn` machine (provisional, see below). See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
+| Exec and logs | `unbounded-agent exec` runs through `runc exec`. `unbounded-agent logs` runs `journalctl` in the container. See [Running commands and reading logs]({{< relref "reference/agent/isolation" >}}#running-commands-and-reading-logs). |
+| GPU and devices | The grants become OCI mounts and devices; the container runs with every device allowed. NVIDIA libraries and the CDI spec are wired by the `node-lifecycle` hooks, as `nspawn-lifecycle` does for an `nspawn` machine (experimental, see below). See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
 | LocalDNS | CoreDNS runs in the container and the LocalDNS network unit is unchanged. |
 | Uninstall | The uninstall script reads the mode from the applied config and runs the `container` cleanup. |
 
-```bash
-sudo unbounded-agent exec -- crictl ps
-sudo unbounded-agent logs --unit kubelet --follow --lines 200
-```
-
 ## Limits
 
-- Provisional: every item above can change when node facts are verified.
-- Unverified assumptions in the implementation: `spc_t` is accepted by the node
-  policy; `rshared` on `/var/lib/kubelet` propagates through the host root mount;
-  `SIGRTMIN+3` through `runc` stops systemd as PID 1; the capability, device and
-  mount set in `config.json` is enough for kubelet, containerd, and the CNI; a
-  process in the container has the bundle rootfs as its root in `/proc`; the
-  runtime path and the `/lib/modules` bind are right for the image.
-- Both slots share the same-path directories, so a repave rewrites the kubelet
-  configuration and CNI files the previous slot also sees, and a rollback
-  restarts the previous slot against those new files.
-- NVIDIA GPU wiring is implemented but has not run on a GPU host. The
-  pre-start hook rediscovers NVIDIA devices and libraries and re-renders the
-  bundle (a node recorded without NVIDIA grants is left alone, because adding a
-  GPU to a node provisioned with the CPU rootfs needs a new rootfs). The
-  post-start hook waits for systemd in the container, then stops containerd and
-  kubelet, links the host libraries, builds `/run/nvidia/driver`, generates
-  `/etc/cdi/nvidia.yaml`, selects CDI mode, and starts them again. A host that
-  reports NVIDIA devices with incomplete driver state fails the start, as in
-  `nspawn`. The `agent-*-nvidia` image supplies `nvidia-ctk`, at the image's fixed path, so the `NvidiaToolkit` setting does not apply to this mode and the agent rejects it. Whether the
-  privileged container, the `/run/host-nvidia*` binds, and the CDI hooks behave
-  on Azure Container Linux is unverified.
-- `crun` is not implemented. `IsolationMigrate` to and
-  from this mode is wired but has not run on a real host.
-- Whether Azure Container Linux accepts user-supplied Ignition when AKS
-  provisions the node is unverified, as is whether a sysext would be a better
-  delivery path.
-- Migration to and from `nspawn` can be in place; any move involving `none` is a
-  reprovision. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
+- **Experimental.** Behavior can change when the mode is validated on Azure
+  Container Linux.
+- **Shared directories.** Both slots share the same-path directories, so a
+  repave rewrites the kubelet configuration and CNI files the previous slot also
+  sees. The agent saves these files before an upgrade and puts them back if the
+  new slot does not come up.
+- **NVIDIA GPUs.** GPU wiring is implemented but has not run on a GPU host. The
+  rootfs image supplies `nvidia-ctk` at the image's fixed path, so the
+  `NvidiaToolkit` setting does not apply to this mode and the agent rejects it.
+  A node provisioned without NVIDIA devices stays CPU-only, because adding a GPU
+  to it needs a new rootfs. A host that reports NVIDIA devices with incomplete
+  driver state fails the start, as in `nspawn`. See
+  [NVIDIA]({{< relref "reference/gpu/nvidia" >}}).
+- **Runtime.** Only `runc` is supported; `crun` is not.
+- **Provisioning.** Whether Azure Container Linux accepts user-supplied Ignition
+  when AKS provisions the node is unverified.
+- **Migration.** Migration to and from `nspawn` can be in place; any move
+  involving `none` is a reprovision. See
+  [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 
 ## Troubleshooting
 

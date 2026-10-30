@@ -40,11 +40,40 @@ requests once, and each mode applies them its own way.
 | Mode | How GPU devices and libraries reach the node stack |
 |---|---|
 | [`nspawn`]({{< relref "reference/agent/isolation-nspawn" >}}) | Device and library bind-mounts plus `DeviceAllow=` entries in the nspawn config. The rest of this page describes this mode. |
-| [`none`]({{< relref "reference/agent/isolation-none" >}}) | Native. The node stack runs on the host and sees the driver, libraries, and `/dev/nvidia*` directly, so there is nothing to bind-mount and no `/run/host-nvidia` indirection. The NVIDIA Container Toolkit comes from the host, not from an `agent-*-nvidia` image, and must be installed: `nvidia-ctk` and `nvidia-container-runtime` at `/usr/bin`, or at the paths set by `NvidiaToolkit.CTKPath` and `NvidiaToolkit.ContainerRuntimePath` in the agent config. Bootstrap fails before it changes the host if they are missing on a GPU host. Before containerd and kubelet start, on every start, restart, and upgrade, the agent selects CDI mode (`nvidia-ctk config --set nvidia-container-runtime.mode=cdi --in-place`) and regenerates `/etc/cdi/nvidia.yaml` from the host driver with `nvidia-ctk cdi generate`, so the spec follows the devices present at that start. Reset removes the spec. The toolkit's own `config.toml` is left in CDI mode. |
-| [`container`]({{< relref "reference/agent/isolation-container" >}}) | The same grants become OCI mounts, devices, and cgroup device rules for the container, and the node-lifecycle hooks do what the `nspawn` lifecycle hooks do: pre-start refreshes the grants from the host, and post-start, once systemd in the container is up, links the libraries, builds the driver root, generates the CDI spec, and restarts containerd and kubelet around it. It uses the same `agent-*-nvidia` rootfs images as `nspawn`, and so the toolkit paths inside the image; `NvidiaToolkit` is rejected in this mode. Provisional: not run on a GPU host or on Azure Container Linux. |
+| [`none`]({{< relref "reference/agent/isolation-none" >}}) | Native. The node stack runs on the host and sees the driver, libraries, and `/dev/nvidia*` directly, so there is nothing to bind-mount and no `/run/host-nvidia` indirection. The NVIDIA Container Toolkit comes from the host. See [Toolkit and CDI in `none` mode](#toolkit-and-cdi-in-none-mode). |
+| [`container`]({{< relref "reference/agent/isolation-container" >}}) | The same grants become OCI mounts, devices, and cgroup device rules for the container, and the node-lifecycle hooks do what the `nspawn` lifecycle hooks do: pre-start refreshes the grants from the host, and post-start, once systemd in the container is up, links the libraries, builds the driver root, generates the CDI spec, and restarts containerd and kubelet around it. It uses the same `agent-*-nvidia` rootfs images as `nspawn`, and so the toolkit paths inside the image; `NvidiaToolkit` is rejected in this mode. Experimental: not run on a GPU host or on Azure Container Linux. |
 
 The Fabric Manager and persistence mode prerequisites are host requirements in
 every mode.
+
+### Toolkit and CDI in `none` mode
+
+The agent does not install the NVIDIA Container Toolkit in `none` mode, so it
+must already be on the host: `nvidia-ctk` and `nvidia-container-runtime`, at
+`/usr/bin` by default. A host that installs the toolkit elsewhere, for example
+`/usr/local/nvidia/toolkit`, sets `NvidiaToolkit.CTKPath` and
+`NvidiaToolkit.ContainerRuntimePath` in the
+[agent config]({{< relref "reference/agent/configuration" >}}); every check,
+command, and the containerd `nvidia` runtime handler then use those paths. The
+setting is rejected in `nspawn` and `container` modes, which use the copies in
+the rootfs image.
+
+- On a host with NVIDIA devices, bootstrap fails before it writes any unit if
+  either file is missing, and the message names the missing file.
+- Before containerd and kubelet start, on every start, soft reboot, and upgrade
+  (including an upgrade rollback), the agent selects CDI mode with
+  `nvidia-ctk config --set nvidia-container-runtime.mode=cdi --in-place` and
+  regenerates `/etc/cdi/nvidia.yaml` from the host driver with
+  `nvidia-ctk cdi generate`, using the `create-symlinks` and `update-ldcache`
+  hooks only, as `nspawn` does. The spec therefore follows the devices present
+  at that start.
+- This changes two host-global files, the toolkit's `config.toml` and
+  `/etc/cdi/nvidia.yaml`. Reset removes the spec and leaves `config.toml` in CDI
+  mode.
+- Every device and mount request is either honored or refused. A configured host
+  mount at a different path than its source, or a library-path request, cannot
+  be honored when the stack sees the host, so it fails with an error instead of
+  being ignored.
 
 ## How It Works
 
