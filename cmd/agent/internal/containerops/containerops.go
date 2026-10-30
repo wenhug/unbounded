@@ -23,9 +23,10 @@
 //
 // Shared state. Because those directories are shared by both slots, a repave
 // rewrites the kubelet configuration, kubeconfig and CNI binaries the previous
-// slot also sees, and a rollback restarts the previous slot's services against
-// the new shared files. The previous slot's rootfs-private state (containerd
-// data, unit drop-ins, binaries) is not touched until the new slot is healthy.
+// slot also sees. Upgrade saves the shared configuration files first and puts
+// them back before the previous slot starts again on a rollback. The previous
+// slot's rootfs-private state (containerd data, unit drop-ins, binaries) is not
+// touched until the new slot is healthy.
 package containerops
 
 import (
@@ -34,12 +35,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/noneops"
 	"github.com/Azure/unbounded/pkg/agent/config"
+	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/container"
@@ -79,6 +82,10 @@ type Params struct {
 	// HostRoot prefixes the same-path host locations. Empty is the real host;
 	// tests use a temporary tree.
 	HostRoot string
+	// ConfigSnapshotDir is where Upgrade saves the shared configuration so a
+	// rollback can restore it. Empty means a directory in the agent configuration
+	// directory below HostRoot.
+	ConfigSnapshotDir string
 	// MountInfoPath is the mount table. Empty means /proc/self/mountinfo.
 	MountInfoPath string
 	// Host locates the SELinux and cgroup interfaces. Nil is the real host.
@@ -116,6 +123,10 @@ type Node struct {
 	p       Params
 	slot    string
 	backend *container.Backend
+
+	// snapshot is the directory of the shared configuration saved by a running
+	// Upgrade, until it is restored or discarded.
+	snapshot string
 
 	once sync.Once
 	gs   *goalstates.MachineGoalState
@@ -612,9 +623,10 @@ func (n *Node) resetSharedKubeletState(ctx context.Context) error {
 // persists the applied config after a nil return, and then retires old.
 //
 // If anything fails the new slot is removed and the old one is started again,
-// and the returned error says whether that worked. The shared configuration
-// files are not restored; see the package comment.
-func (n *Node) Upgrade(ctx context.Context, old *Node) error {
+// and the returned error says whether that worked. The files both slots share
+// at the same host paths, such as the kubelet identity, are saved first (see
+// confsnap) and restored before the old slot starts again.
+func (n *Node) Upgrade(ctx context.Context, old *Node) (err error) {
 	if n.slot == old.slot {
 		return fmt.Errorf("upgrade needs a different slot than the running %s", old.slot)
 	}
@@ -626,6 +638,24 @@ func (n *Node) Upgrade(ctx context.Context, old *Node) error {
 			return fmt.Errorf("remove stale slot %s: %w", n.slot, err)
 		}
 	}
+
+	dir := n.configSnapshotDir()
+	if err := confsnap.Take(dir, n.p.HostRoot, confsnap.SharedPaths()); err != nil {
+		return fmt.Errorf("save shared configuration: %w", err)
+	}
+
+	n.snapshot = dir
+
+	defer func() {
+		// A snapshot that is still set was not restored, and is kept for that.
+		if err == nil && n.snapshot != "" {
+			if derr := confsnap.Discard(n.snapshot); derr != nil {
+				n.p.Log.Warn("could not remove the saved shared configuration", "error", derr)
+			}
+
+			n.snapshot = ""
+		}
+	}()
 
 	if _, err := n.Prepare(ctx); err != nil {
 		// The old slot has not been touched.
@@ -677,11 +707,45 @@ func (n *Node) Activate(ctx context.Context) error {
 // abandon removes the half built new slot after a failure before the old slot
 // was touched.
 func (n *Node) abandon(ctx context.Context, cause error) error {
+	var errs []error
+
 	if err := n.Destroy(context.WithoutCancel(ctx)); err != nil {
-		return errors.Join(cause, fmt.Errorf("remove slot %s: %w", n.slot, err))
+		errs = append(errs, fmt.Errorf("remove slot %s: %w", n.slot, err))
 	}
 
-	return cause
+	if err := n.restoreShared(); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(append([]error{cause}, errs...)...)
+}
+
+func (n *Node) configSnapshotDir() string {
+	if n.p.ConfigSnapshotDir != "" {
+		return n.p.ConfigSnapshotDir
+	}
+
+	return filepath.Join(n.p.HostRoot, goalstates.AgentConfigDir, "container-upgrade-config")
+}
+
+// restoreShared puts the saved shared configuration back and drops the
+// snapshot. A failure keeps it.
+func (n *Node) restoreShared() error {
+	if n.snapshot == "" {
+		return nil
+	}
+
+	if err := confsnap.Restore(n.snapshot, n.p.HostRoot); err != nil {
+		return fmt.Errorf("restore shared configuration: %w", err)
+	}
+
+	if err := confsnap.Discard(n.snapshot); err != nil {
+		n.p.Log.Warn("could not remove the saved shared configuration", "error", err)
+	}
+
+	n.snapshot = ""
+
+	return nil
 }
 
 // rollback removes the new slot and starts the old one again.
@@ -698,6 +762,12 @@ func (n *Node) rollback(ctx context.Context, old *Node, cause error) error {
 
 	if err := n.cleanupNetwork(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("clean up network: %w", err))
+	}
+
+	// The new slot is gone, so nothing writes the shared files any more, and the
+	// old slot starts on the files it was running with.
+	if err := n.restoreShared(); err != nil {
+		errs = append(errs, err)
 	}
 
 	if err := old.Resume(ctx); err != nil {

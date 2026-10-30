@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ type host struct {
 	failAll map[string]error  // substring of the call line, never consumed
 	out     map[string]string // prefix of the call line to stdout
 	state   string            // SystemState reported by systemd inside the container
+	onCall  func(call string) // runs for every call, before any failure is injected
 }
 
 func newHost() *host {
@@ -51,6 +53,10 @@ func (h *host) run(_ context.Context, _ *slog.Logger, name string, args ...strin
 
 	call := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	h.calls = append(h.calls, call)
+
+	if h.onCall != nil {
+		h.onCall(call)
+	}
 
 	for sub, err := range h.failOne {
 		if strings.Contains(call, sub) {
@@ -842,4 +848,96 @@ func TestUpgradeRemovesAStaleTargetSlotFirst(t *testing.T) {
 	require.ErrorContains(t, err, "remove stale slot kube2")
 	require.True(t, f.h.active[container.UnitName("kube1")])
 	require.Equal(t, -1, index(f.h.snapshot(), "systemctl stop "+container.UnitName("kube1"), 0))
+}
+
+func TestUpgradeRollbackPutsTheSharedConfigurationBack(t *testing.T) {
+	for name, set := range map[string]func(f *fixture){
+		"cleanup network": func(f *fixture) { f.hooks.cleanupErr = errors.New("routes busy") },
+		"new kubelet does not start": func(f *fixture) {
+			f.h.failOne["unbounded-kube2 systemctl enable --now kubelet.service"] = errors.New("kubelet failed")
+		},
+		"new container does not start": func(f *fixture) { f.h.failOne["enable --now "+container.UnitName("kube2")] = errors.New("unit failed") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, oldNode, newNode := upgradeFixture(t)
+			set(f)
+
+			// Configuration the old slot runs with and the new slot rewrites.
+			cfg := f.hostPath(goalstates.KubeletConfigurationPath)
+			require.NoError(t, os.WriteFile(cfg, []byte("old: config\n"), 0o600))
+
+			err := newNode.Upgrade(t.Context(), oldNode)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "restore shared configuration")
+
+			// resetSharedKubeletState removed these for the new slot; the old slot
+			// is started on the identity it had.
+			require.FileExists(t, f.hostPath(goalstates.KubeletKubeconfigPath))
+			require.FileExists(t, f.hostPath(kubeletClientPKIDir+"/kubelet-client-current.pem"))
+			require.NoDirExists(t, newNode.configSnapshotDir(), "the snapshot is dropped once restored")
+		})
+	}
+}
+
+func TestUpgradeRestoresSharedConfigurationBeforeTheOldSlotStarts(t *testing.T) {
+	f, oldNode, newNode := upgradeFixture(t)
+	f.h.failOne["unbounded-kube2 systemctl enable --now kubelet.service"] = errors.New("kubelet failed")
+
+	var seen string
+
+	f.h.onCall = func(call string) {
+		if strings.Contains(call, "enable --now "+container.UnitName("kube1")) {
+			data, err := os.ReadFile(f.hostPath(goalstates.KubeletKubeconfigPath))
+			if err == nil {
+				seen = string(data)
+			}
+		}
+	}
+
+	require.Error(t, newNode.Upgrade(t.Context(), oldNode))
+	require.Equal(t, "old", seen, "the old slot starts with its kubeconfig back")
+}
+
+func TestUpgradeSuccessDropsTheSnapshotAndKeepsTheNewFiles(t *testing.T) {
+	f, oldNode, newNode := upgradeFixture(t)
+
+	require.NoError(t, newNode.Upgrade(t.Context(), oldNode))
+	require.NoDirExists(t, newNode.configSnapshotDir())
+	require.NoFileExists(t, f.hostPath(goalstates.KubeletKubeconfigPath), "the new slot bootstraps its own credentials")
+}
+
+func TestUpgradeRollbackKeepsTheSnapshotWhenTheRestoreFails(t *testing.T) {
+	f, oldNode, newNode := upgradeFixture(t)
+	f.h.failOne["unbounded-kube2 systemctl enable --now kubelet.service"] = errors.New("kubelet failed")
+
+	// A snapshot directory that was replaced by a file cannot be read back.
+	newNode.p.ConfigSnapshotDir = filepath.Join(f.dir, "snap")
+
+	f.h.onCall = func(call string) {
+		if strings.Contains(call, "systemctl stop "+container.UnitName("kube1")) {
+			require.NoError(t, os.RemoveAll(newNode.p.ConfigSnapshotDir))
+		}
+	}
+
+	err := newNode.Upgrade(t.Context(), oldNode)
+	require.ErrorContains(t, err, "kubelet failed")
+	require.ErrorContains(t, err, "restore shared configuration")
+}
+
+func TestUpgradeRefusesToStartWhenTheSharedConfigurationCannotBeSaved(t *testing.T) {
+	f, oldNode, newNode := upgradeFixture(t)
+
+	// A named pipe cannot be saved byte for byte.
+	require.NoError(t, syscall.Mkfifo(f.hostPath(kubeletClientPKIDir+"/pipe"), 0o600))
+
+	require.ErrorContains(t, newNode.Upgrade(t.Context(), oldNode), "save shared configuration")
+	require.Equal(t, -1, index(f.h.snapshot(), "systemctl stop "+container.UnitName("kube1"), 0), "the old slot was never touched")
+	require.Equal(t, 0, f.hooks.unpack, "nothing was built")
+}
+
+func TestUpgradeSnapshotDirDefaultsBelowTheHostRoot(t *testing.T) {
+	f := newFixture(t)
+	n := f.node("kube2", true)
+
+	require.Equal(t, filepath.Join(f.dir, "host", goalstates.AgentConfigDir, "container-upgrade-config"), n.configSnapshotDir())
 }
