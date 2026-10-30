@@ -335,6 +335,36 @@ daemon integration. `images/agent-*` already install systemd and the bundle sets
 `process.args`, so no image entrypoint was added. The open items below are
 unchanged.
 
+**Implementation status (WP2 completion, container end to end, still
+provisional).** The backend now registers itself with the isolation registry and
+is wired like `none`: `cmd/agent/internal/containerops` (composition root:
+runtime and helper install, OCI unpack through `phases/rootfs/oci`, bundle and
+unit, in-rootfs provisioning and configuration through the `RootOverride` and
+`ExecOverride` goal-state hooks, start, stop, restart, blue/green upgrade with
+rollback, teardown), the `container` bootstrap stage plan
+(`cmd/agent/internal/cmd/stageplan_container.go`), the container node operator
+(`cmd/agent/internal/daemon/nodeoperator_container.go`), a mode-aware
+`resetResources`, host preflight (`container-backend` check, container
+artifacts in the clean-host check, no `systemd-container`, no machined guards)
+and registry-built `exec` and `logs`. The runtime is `runc`, downloaded by
+`rootfs.InstallHostRuntime` to `/opt/unbounded/runtime/runc` from the same
+version and source resolution as the in-node `runc`, in this mode only.
+Decisions: `container.Root` maps paths under the same-path bind mounts to the
+host directory, since a file written below a bind mount in the rootfs is hidden
+by it; both slots share those directories, so repave resets the shared kubelet
+state (pod mounts, previous kubelet credentials) and a rollback restarts the old
+slot against the new shared files; the applied config moves to the new slot only
+after it is healthy; the node-lifecycle post-start hook asks the runtime, not
+`systemctl is-active`, because the unit is still activating while
+`ExecStartPost` runs (an inference from systemd semantics, not observed). Not
+done: NVIDIA library wiring (the nspawn lifecycle hook's job), `crun`, nspawn
+lifecycle hook commands supplied through config, and `IsolationMigrate` to or
+from `container`. Unverified, in addition to the assumptions above: everything
+against a real `runc`, systemd and Azure Container Linux; that
+`/proc/<pid>/root` of a containerized process resolves to the bundle rootfs
+(used by the bind-address ownership preflight); the `/lib/modules` bind on
+that image; and that pod mounts propagate to the host through `rshared`.
+
 ## 9. Operation matrix
 
 | Operation | `nspawn` | `none` | `container` |

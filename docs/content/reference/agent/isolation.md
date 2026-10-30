@@ -12,7 +12,7 @@ node stack runs: containerd, kubelet, CNI plugins, and CoreDNS.
 |---|---|---|
 | [`nspawn`]({{< relref "reference/agent/isolation-nspawn" >}}) | In a systemd-nspawn machine | Default. Existing behavior. |
 | [`none`]({{< relref "reference/agent/isolation-none" >}}) | Directly on the host as agent-owned systemd units | New and experimental. Wired end to end; not yet exercised on a real host. See the mode page. |
-| [`container`]({{< relref "reference/agent/isolation-container" >}}) | In a privileged OCI container, for Azure Container Linux | New and provisional. Experimental. |
+| [`container`]({{< relref "reference/agent/isolation-container" >}}) | In a privileged OCI container, for Azure Container Linux | New and provisional. Wired end to end; verified only against stubbed hosts. See the mode page. |
 
 {{< callout type="important" >}}
 Only `nspawn` is production behavior today. `none` and `container` are being
@@ -28,10 +28,10 @@ behavior does not change.
 | Filesystem isolation | Separate rootfs per slot | None, host filesystem | Separate rootfs per slot |
 | Node stack source | OCI rootfs image, artifacts downloaded into it | Release artifacts in versioned directories, no distro packages | OCI rootfs image run by an OCI runtime |
 | Host `/usr` | Writable (installs `systemd-container`) | Not modified, but a read-only `/usr` is not a supported target; use `container` | May be read-only |
-| Supervised by | `systemd-nspawn@<slot>.service` | `unbounded-containerd.service`, `unbounded-kubelet.service` | An agent-owned systemd unit |
+| Supervised by | `systemd-nspawn@<slot>.service` | `unbounded-containerd.service`, `unbounded-kubelet.service` | `unbounded-node-<slot>.service`, an agent-owned unit running `runc` |
 | Slots and upgrade | Blue/green, `kube1` and `kube2` | Versioned directories and a `current` link | Blue/green, `kube1` and `kube2` |
 | Upgrade downtime | Node moves to a new slot | Brief, the node stack restarts | Node moves to a new slot |
-| bpffs | Private mount per machine | Host `/sys/fs/bpf` directly | Not yet verified |
+| bpffs | Private mount per machine | Host `/sys/fs/bpf` directly | Host `/sys/fs/bpf` (unverified) |
 | Network | Host network namespace | Host | Host network namespace |
 | Best for | General Linux hosts | Hosts where you accept running the node stack directly on the host | Immutable hosts such as Azure Container Linux |
 
@@ -75,7 +75,7 @@ a live host, run an `IsolationMigrate` operation; see
 
 | Operation | `nspawn` | `none` | `container` |
 |---|---|---|---|
-| Preflight | `systemd-container` and the nspawn runtime | No unmanaged kubelet or containerd, writable `/etc`, `/opt/unbounded/node`, `/var` | Runtime artifact, cgroup v2, SELinux label, kernel modules |
+| Preflight | `systemd-container` and the nspawn runtime | No unmanaged kubelet or containerd, writable `/etc`, `/opt/unbounded/node`, `/var` | cgroup v2, SELinux label, writable `/etc` `/opt` `/var` (the `runc` runtime is installed by bootstrap) |
 | Bootstrap | Unpack rootfs to a slot, render nspawn config, start machine, start stack inside | Install versioned artifacts, write units, start units | Unpack rootfs to a slot, generate an OCI bundle, write unit, start container, start stack inside |
 | Start | `machinectl start`, then in-machine units | Start host units in order | Start container unit, then in-container units |
 | Stop | Stop kubelet and containerd in the machine, stop the machine | Stop host units in reverse order | Stop in-container units, stop the container |
@@ -84,7 +84,7 @@ a live host, run an `IsolationMigrate` operation; see
 | Reset and delete | Stop slots, remove config, remove machine, clean bpffs, host-global cleanup | Stop units, remove versioned directories and units, host-global cleanup | Stop container, remove bundle, rootfs, and unit, host-global cleanup |
 | Health | Machine registered, kubelet healthy, LocalDNS | Units active, kubelet healthy, LocalDNS | Container running, kubelet healthy, LocalDNS |
 | Exec and logs | `systemd-run --machine`, machine journal | Host exec, `journalctl` | Runtime exec, container journal |
-| GPU and devices | Bind-mounts and `DeviceAllow=` | Native | OCI mounts and devices |
+| GPU and devices | Bind-mounts and `DeviceAllow=` | Native | OCI mounts and devices (NVIDIA wiring not implemented) |
 | LocalDNS | CoreDNS in the machine | CoreDNS host unit | CoreDNS in the container |
 | Agent binary upgrade | Unchanged | Unchanged | Unchanged |
 | Uninstall | Mode read from the applied config | Same | Same |
