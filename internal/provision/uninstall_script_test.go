@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/Azure/unbounded/pkg/agent/isolation/container"
 )
 
 // uninstallHarness runs the uninstall script against a temporary root with
@@ -200,7 +202,7 @@ func TestUninstallScriptContainer(t *testing.T) {
 
 	h := newUninstallHarness(t)
 	h.writeApplied("kube2", `{"Isolation":"container"}`)
-	h.touch("etc/systemd/system/unbounded-container-kube2.service")
+	h.touch("etc/systemd/system/" + container.UnitName("kube2"))
 	h.touch("var/lib/unbounded/containers/kube2/rootfs/x")
 	h.touch("var/lib/unbounded/containers/kube1/rootfs/x")
 	h.touch("etc/systemd/system/unrelated.service")
@@ -208,10 +210,10 @@ func TestUninstallScriptContainer(t *testing.T) {
 	out, calls := h.run()
 
 	require.Contains(t, out, "Isolation mode: container")
-	require.Contains(t, calls, "systemctl disable --now unbounded-container-kube2.service")
+	require.Contains(t, calls, "systemctl disable --now "+container.UnitName("kube2"))
 	require.NotContains(t, calls, "machinectl")
 	h.requireGone(
-		"etc/systemd/system/unbounded-container-kube2.service",
+		"etc/systemd/system/"+container.UnitName("kube2"),
 		"var/lib/unbounded/containers/kube2",
 		"etc/unbounded/agent",
 	)

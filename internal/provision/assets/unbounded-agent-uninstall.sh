@@ -117,12 +117,12 @@ remove_node_none() {
 }
 
 # --- container: node stack runs in an agent-owned container ---------
-# Provisional: the container backend owns the exact unit names, so this
-# removes any agent-owned container unit generically.
+# The units are named unbounded-node-<slot>.service by the container backend
+# (container.UnitName); uninstall_script_test.go keeps this pattern in step.
 stop_node_container() {
   echo "Stopping agent-owned container units..."
   local unit
-  for unit_path in "${ROOT}"/etc/systemd/system/unbounded-container*.service; do
+  for unit_path in "${ROOT}"/etc/systemd/system/unbounded-node-*.service; do
     [ -e "${unit_path}" ] || continue
     unit="$(basename "${unit_path}")"
     systemctl stop "${unit}" 2>/dev/null || true
@@ -132,7 +132,7 @@ stop_node_container() {
 remove_node_container() {
   echo "Removing agent-owned container units..."
   local unit
-  for unit_path in "${ROOT}"/etc/systemd/system/unbounded-container*.service; do
+  for unit_path in "${ROOT}"/etc/systemd/system/unbounded-node-*.service; do
     [ -e "${unit_path}" ] || continue
     unit="$(basename "${unit_path}")"
     remove_unit "${unit}"
