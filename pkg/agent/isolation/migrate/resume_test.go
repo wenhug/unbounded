@@ -250,14 +250,14 @@ func TestJournalStoreRejectsDamagedFile(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported version")
 }
 
-func TestJournalLoadToleratesLegacyFields(t *testing.T) {
+func TestJournalLoadIgnoresUnknownFields(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "journal.json")
-	legacy := `{"version":1,"operation":"op-1","strategy":"inPlace","from":"nspawn","to":"container",` +
-		`"sourceSlot":"kube1","targetSlot":"kube2","step":"preparing","cordoned":true,` +
-		`"startedAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","targetStartedAt":"2026-01-01T00:00:00Z"}`
-	require.NoError(t, os.WriteFile(path, []byte(legacy), 0o600))
+	raw := `{"version":1,"operation":"op-1","strategy":"inPlace","from":"nspawn","to":"container",` +
+		`"sourceSlot":"kube1","targetSlot":"kube2","step":"preparing","someFutureField":true,` +
+		`"startedAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`
+	require.NoError(t, os.WriteFile(path, []byte(raw), 0o600))
 
 	j, err := JournalStore{Path: path}.Load()
 	require.NoError(t, err)

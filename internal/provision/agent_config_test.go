@@ -416,6 +416,7 @@ func TestBuildAgentConfig_Isolation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(data), "Isolation")
 
+	require.Equal(t, "nspawn", build(v1alpha3.IsolationNSpawn).Isolation)
 	require.Equal(t, "none", build(v1alpha3.IsolationNone).Isolation)
 	require.Equal(t, "container", build(v1alpha3.IsolationContainer).Isolation)
 }
