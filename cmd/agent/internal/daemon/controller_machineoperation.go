@@ -29,6 +29,10 @@ type machineOperationTarget struct {
 	client.Client
 	log                  *slog.Logger
 	machineName          string
+	// nodeName and nodes are the Kubernetes Node and the way to cordon, drain
+	// and watch it, for IsolationMigrate. Nil nodes refuses a migration.
+	nodeName             string
+	nodes                nodeScheduler
 	nodeOperator         nodeOperator
 	agentUpgradeLockPath string
 	// requestRestart stops the controller so the daemon restarts from the
@@ -273,16 +277,54 @@ func (t *machineOperationTarget) reconcileIsolationMigrate(ctx context.Context, 
 		return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{Phase: v1alpha3.OperationPhaseFailed, Reason: "UnsupportedMigration", Message: err.Error()})
 	}
 
-	if err := t.nodeOperator.MigrateIsolation(ctx, t.log, active, req, strategy); err != nil {
-		return finishFailedMachineOperation(ctx, store, op, err)
+	env := migrationEnv{Operation: op.Name, NodeName: t.nodeName, Nodes: t.nodes}
+
+	err = t.nodeOperator.MigrateIsolation(ctx, t.log, active, req, strategy, env)
+
+	switch {
+	case errors.Is(err, ErrMigrationHandedOff):
+		// The host resets and bootstraps without this daemon. The daemon that
+		// starts afterward reports the operation.
+		return ctrl.Result{}, store.MarkInProgress(ctx, op, fmt.Sprintf("reprovisioning to %s: the host resets and bootstraps in the new mode; the new daemon reports completion", req.Target))
+	case err != nil:
+		res, finishErr := finishFailedMachineOperation(ctx, store, op, err)
+		if finishErr == nil {
+			clearReportedJournals(t.log)
+		}
+
+		return res, finishErr
 	}
 
-	return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{
+	t.reportMigratedIsolation(ctx)
+
+	if err := store.Finish(ctx, op, daemon.MachineOperationResult[int64]{
 		Phase:                     v1alpha3.OperationPhaseComplete,
 		Reason:                    "Succeeded",
 		Message:                   fmt.Sprintf("IsolationMigrate to %s completed (%s)", req.Target, strategy),
 		ObservedMachineGeneration: machine.Generation,
-	})
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	clearReportedJournals(t.log)
+
+	return ctrl.Result{}, nil
+}
+
+// reportMigratedIsolation updates status.observedIsolation from the applied
+// config the migration left. A failure is logged and not returned: the
+// migration succeeded, and the daemon reports it again when it next starts.
+func (t *machineOperationTarget) reportMigratedIsolation(ctx context.Context) {
+	active, err := t.nodeOperator.FindActiveMachine(t.log)
+	if err != nil {
+		t.log.Warn("could not read the applied config to report observed isolation", "error", err)
+
+		return
+	}
+
+	if err := reportObservedIsolation(ctx, t.Client, active.Config); err != nil {
+		t.log.Warn("could not report observed isolation", "error", err)
+	}
 }
 
 func finishFailedMachineOperation(ctx context.Context, store daemon.MachineOperationStore[int64], op daemon.MachineOperation, executionErr error) (ctrl.Result, error) {

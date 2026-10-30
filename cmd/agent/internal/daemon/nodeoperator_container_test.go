@@ -247,7 +247,7 @@ func TestContainerOperatorRepaveSetupAndRecordFailures(t *testing.T) {
 }
 
 func TestContainerOperatorMigrationIsNotWiredAndNamesTheMode(t *testing.T) {
-	err := containerNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), containerActive("kube1"), migrate.Request{Target: isolation.ModeNSpawn}, migrate.Strategy("reprovision"))
+	err := containerNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), containerActive("kube1"), migrate.Request{Target: isolation.ModeNSpawn}, migrate.Strategy("reprovision"), migrationEnv{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "container")
 }

@@ -134,6 +134,6 @@ func TestNspawnNodeOperator_MigrateIsolationFailsWithoutTargetBackend(t *testing
 	t.Cleanup(func() { isolation.Register(isolation.ModeContainer, factory) })
 
 	err := nspawnNodeOperator{}.MigrateIsolation(context.Background(), discardLogger(), active,
-		migrate.Request{Target: isolation.ModeContainer}, migrate.InPlace)
+		migrate.Request{Target: isolation.ModeContainer}, migrate.InPlace, migrationEnv{})
 	require.ErrorContains(t, err, "no registered backend")
 }

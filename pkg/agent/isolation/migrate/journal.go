@@ -24,9 +24,22 @@ const JournalVersion = 1
 // migration is gone by then.
 const StepReprovisioning Step = "reprovisioning"
 
+// StepBootstrapping follows the reset of a reprovision migration: the old node
+// is gone and bootstrap in the target mode is running or retrying.
+const StepBootstrapping Step = "bootstrapping"
+
 // StepBootstrapped is the last step of a reprovision migration: the node runs
 // in the target mode and only the report to the MachineOperation is left.
 const StepBootstrapped Step = "bootstrapped"
+
+// StepRolledBack is terminal: the migration failed and the node runs in its
+// original mode again. StepFailed is terminal too: the migration failed and the
+// node could not be put back, so it needs attention. In both the journal's
+// Message says why, until whoever reports the outcome removes it.
+const (
+	StepRolledBack Step = "rolled-back"
+	StepFailed     Step = "failed"
+)
 
 // Journal is the small state file of a migration in progress. It is written
 // atomically before each step (see InPlaceSpec.Record), so a daemon that
@@ -48,6 +61,10 @@ type Journal struct {
 	Cordoned  bool      `json:"cordoned,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// TargetStartedAt is when the target was about to be started, so that a
+	// Ready condition the previous kubelet reported is not mistaken for the new
+	// one's.
+	TargetStartedAt time.Time `json:"targetStartedAt,omitzero"`
 	// Message is the last failure the handoff command saw, for operators.
 	Message string `json:"message,omitempty"`
 }
@@ -131,4 +148,11 @@ func (s JournalStore) Remove() error {
 }
 
 // Terminal reports whether nothing is left to do for the journal but report it.
-func (j Journal) Terminal() bool { return j.Step == StepComplete || j.Step == StepBootstrapped }
+func (j Journal) Terminal() bool {
+	switch j.Step {
+	case StepComplete, StepBootstrapped, StepRolledBack, StepFailed:
+		return true
+	default:
+		return false
+	}
+}

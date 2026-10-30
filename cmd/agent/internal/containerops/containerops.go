@@ -640,24 +640,38 @@ func (n *Node) Upgrade(ctx context.Context, old *Node) error {
 		return n.rollback(ctx, old, fmt.Errorf("clean up network: %w", err))
 	}
 
-	if err := n.resetSharedKubeletState(ctx); err != nil {
-		return n.rollback(ctx, old, err)
-	}
-
-	containerdChanged, kubeletChanged, err := n.Configure(ctx)
-	if err != nil {
-		return n.rollback(ctx, old, fmt.Errorf("configure slot %s: %w", n.slot, err))
-	}
-
-	if err := n.Start(ctx, false, containerdChanged, kubeletChanged); err != nil {
-		return n.rollback(ctx, old, fmt.Errorf("start slot %s: %w", n.slot, err))
-	}
-
-	if err := nodestart.WaitForKubeletOnHost(n.p.Log, n.gs.NodeStart, goalstates.SystemdUnitKubelet).Do(ctx); err != nil {
+	if err := n.Activate(ctx); err != nil {
 		return n.rollback(ctx, old, err)
 	}
 
 	return nil
+}
+
+// Activate brings a prepared slot up as the node's only running slot: it resets
+// the shared kubelet state so the new kubelet bootstraps fresh credentials,
+// configures the node, starts it and waits for kubelet to be active. The caller
+// has stopped whatever ran before and cleaned host networking. It is the tail
+// of Upgrade, shared with an isolation migration into this mode, and removes
+// nothing on failure: the caller decides how to roll back.
+func (n *Node) Activate(ctx context.Context) error {
+	if err := n.resolve(); err != nil {
+		return err
+	}
+
+	if err := n.resetSharedKubeletState(ctx); err != nil {
+		return err
+	}
+
+	containerdChanged, kubeletChanged, err := n.Configure(ctx)
+	if err != nil {
+		return fmt.Errorf("configure slot %s: %w", n.slot, err)
+	}
+
+	if err := n.Start(ctx, false, containerdChanged, kubeletChanged); err != nil {
+		return fmt.Errorf("start slot %s: %w", n.slot, err)
+	}
+
+	return nodestart.WaitForKubeletOnHost(n.p.Log, n.gs.NodeStart, goalstates.SystemdUnitKubelet).Do(ctx)
 }
 
 // abandon removes the half built new slot after a failure before the old slot

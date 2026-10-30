@@ -91,7 +91,10 @@ type nodeOperator interface {
 	// MigrateIsolation moves the active node to another isolation mode using
 	// the already planned strategy. The caller has validated the request with
 	// migrate.Plan and holds installation ownership.
-	MigrateIsolation(context.Context, *slog.Logger, *ActiveMachine, migrate.Request, migrate.Strategy) error
+	//
+	// It returns ErrMigrationHandedOff when the migration continues without the
+	// daemon (reprovision). The operation then stays InProgress.
+	MigrateIsolation(context.Context, *slog.Logger, *ActiveMachine, migrate.Request, migrate.Strategy, migrationEnv) error
 	// StageAgentUpgrade stages a new host-side agent binary.
 	StageAgentUpgrade(context.Context, *slog.Logger, agentUpgradeRequest) error
 	// ReconcileHostRoot moves the agent's files to the host root on a host an
@@ -105,66 +108,100 @@ type nodeOperator interface {
 type nspawnNodeOperator struct{}
 
 func (nspawnNodeOperator) FindActiveMachine(log *slog.Logger) (*ActiveMachine, error) {
-	// Verify the SHA-256 sidecar before trusting the applied config. A missing
-	// sidecar is logged as a warning and not treated as an error.
-	for _, name := range []string{goalstates.NSpawnMachineKube1, goalstates.NSpawnMachineKube2} {
-		path := goalstates.AppliedConfigPath(name)
-
-		data, err := os.ReadFile(path)
+	for _, name := range activeSlotOrder() {
+		active, err := readActiveSlot(log, name)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 
 		if err != nil {
-			return nil, fmt.Errorf("read applied config %s: %w", path, err)
+			return nil, err
 		}
 
-		// Verify the sidecar checksum before trusting the config data.
-		checksumPath := goalstates.AppliedConfigChecksumPath(name)
-		if err := goalstates.VerifyChecksum(data, checksumPath); err != nil {
-			return nil, fmt.Errorf("verify applied config checksum for %s: %w", name, err)
-		}
-
-		// If the sidecar file is missing, log a warning so operators
-		// know the integrity check was skipped.
-		if _, statErr := os.Stat(checksumPath); errors.Is(statErr, os.ErrNotExist) {
-			log.Warn("no checksum sidecar found, skipping integrity check",
-				"config_path", path,
-				"checksum_path", checksumPath,
-			)
-		}
-
-		var cfg provision.AgentConfig
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("decode applied config %s: %w", path, err)
-		}
-
-		// MachineName must be resolved before the node name because
-		// BackfillNodeName falls back to MachineName. The applied config is
-		// normally persisted with a name already set, so this is usually a
-		// no-op; it covers configs written by older agents or hand-edited.
-		source, err := provision.ResolveMachineName(&cfg)
-		if err != nil {
-			return nil, fmt.Errorf("resolve applied config machine name %s: %w", path, err)
-		}
-
-		if source != "config" {
-			log.Info("resolved unbounded MachineName", "name", cfg.MachineName, "source", source)
-		}
-
-		if err := cfg.BackfillNodeName(); err != nil {
-			return nil, fmt.Errorf("backfill applied config node name %s: %w", path, err)
-		}
-
-		mode, err := activeMode(&cfg)
-		if err != nil {
-			return nil, fmt.Errorf("applied config %s: %w", path, err)
-		}
-
-		return &ActiveMachine{Name: name, Config: &cfg, Mode: mode}, nil
+		return active, nil
 	}
 
 	return nil, fmt.Errorf("no applied config found in %s", goalstates.AgentConfigDir)
+}
+
+// activeSlotOrder is the order in which slots are searched for the applied
+// config of the running node. It is kube1 then kube2, except while an in-place
+// migration has both recorded: the journal says which one the node runs on.
+func activeSlotOrder() []string {
+	order := []string{goalstates.NSpawnMachineKube1, goalstates.NSpawnMachineKube2}
+
+	j, err := inPlaceJournalStore().Load()
+	if err != nil || j.Strategy != migrate.InPlace || j.SourceSlot == "" || j.TargetSlot == "" {
+		return order
+	}
+
+	switch j.Step {
+	case migrate.StepAwaitingReady, migrate.StepReady, migrate.StepComplete:
+		return []string{j.TargetSlot, j.SourceSlot}
+	default:
+		return []string{j.SourceSlot, j.TargetSlot}
+	}
+}
+
+// readActiveSlot reads and verifies the applied config of one slot. A missing
+// file is an error that matches os.ErrNotExist.
+func readActiveSlot(log *slog.Logger, name string) (*ActiveMachine, error) {
+	// Verify the SHA-256 sidecar before trusting the applied config. A missing
+	// sidecar is logged as a warning and not treated as an error.
+	path := goalstates.AppliedConfigPath(name)
+
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("read applied config %s: %w", path, err)
+	}
+
+	// Verify the sidecar checksum before trusting the config data.
+	checksumPath := goalstates.AppliedConfigChecksumPath(name)
+	if err := goalstates.VerifyChecksum(data, checksumPath); err != nil {
+		return nil, fmt.Errorf("verify applied config checksum for %s: %w", name, err)
+	}
+
+	// If the sidecar file is missing, log a warning so operators
+	// know the integrity check was skipped.
+	if _, statErr := os.Stat(checksumPath); errors.Is(statErr, os.ErrNotExist) {
+		log.Warn("no checksum sidecar found, skipping integrity check",
+			"config_path", path,
+			"checksum_path", checksumPath,
+		)
+	}
+
+	var cfg provision.AgentConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("decode applied config %s: %w", path, err)
+	}
+
+	// MachineName must be resolved before the node name because
+	// BackfillNodeName falls back to MachineName. The applied config is
+	// normally persisted with a name already set, so this is usually a
+	// no-op; it covers configs written by older agents or hand-edited.
+	source, err := provision.ResolveMachineName(&cfg)
+	if err != nil {
+		return nil, fmt.Errorf("resolve applied config machine name %s: %w", path, err)
+	}
+
+	if source != "config" {
+		log.Info("resolved unbounded MachineName", "name", cfg.MachineName, "source", source)
+	}
+
+	if err := cfg.BackfillNodeName(); err != nil {
+		return nil, fmt.Errorf("backfill applied config node name %s: %w", path, err)
+	}
+
+	mode, err := activeMode(&cfg)
+	if err != nil {
+		return nil, fmt.Errorf("applied config %s: %w", path, err)
+	}
+
+	return &ActiveMachine{Name: name, Config: &cfg, Mode: mode}, nil
 }
 
 // hasDrift reports whether the desired AgentConfig differs from the applied
@@ -336,22 +373,14 @@ func (nspawnNodeOperator) RepaveNode(
 }
 
 func (nspawnNodeOperator) MigrateIsolation(
-	_ context.Context,
+	ctx context.Context,
 	log *slog.Logger,
 	active *ActiveMachine,
 	req migrate.Request,
 	strategy migrate.Strategy,
+	env migrationEnv,
 ) error {
-	// The target backend must exist in this agent. Until a backend other than
-	// the source's is registered there is nothing to migrate to, and failing
-	// here leaves the node untouched.
-	if _, err := isolation.New(req.Target, nil); err != nil {
-		return fmt.Errorf("cannot migrate %s to %s: %w", active.Mode, req.Target, err)
-	}
-
-	log.Info("isolation migration requested", "from", active.Mode, "to", req.Target, "strategy", strategy)
-
-	return fmt.Errorf("isolation migration from %s to %s (%s) is not yet wired to host operations", active.Mode, req.Target, strategy)
+	return migrateIsolation(ctx, log, active, req, strategy, env)
 }
 
 func (nspawnNodeOperator) StageAgentUpgrade(ctx context.Context, log *slog.Logger, request agentUpgradeRequest) error {

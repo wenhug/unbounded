@@ -39,6 +39,7 @@ func Run() {
 		newCmdRecordAgentUpgradeFailureSignal(),
 		newCmdExec(cmdCtx),
 		newCmdLogs(cmdCtx),
+		newCmdIsolationReprovision(cmdCtx),
 	)
 
 	if err := root.Execute(); err != nil {

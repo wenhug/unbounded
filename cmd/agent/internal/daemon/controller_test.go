@@ -70,6 +70,7 @@ type fakeNodeOperator struct {
 	migrateReq      migrate.Request
 	migrateStrategy migrate.Strategy
 	migrateErr      error
+	migrateEnv      migrationEnv
 
 	// restartRequests counts the target's restart requests; the test
 	// reconciler wires them here.
@@ -110,7 +111,8 @@ func (op *fakeNodeOperator) RestartNode(_ context.Context, _ *slog.Logger, activ
 	return op.restartErr
 }
 
-func (op *fakeNodeOperator) MigrateIsolation(_ context.Context, _ *slog.Logger, active *ActiveMachine, req migrate.Request, strategy migrate.Strategy) error {
+func (op *fakeNodeOperator) MigrateIsolation(_ context.Context, _ *slog.Logger, active *ActiveMachine, req migrate.Request, strategy migrate.Strategy, env migrationEnv) error {
+	op.migrateEnv = env
 	op.migrateCalls++
 	op.migrateActive = active
 	op.migrateReq = req

@@ -182,7 +182,7 @@ func TestNoneOperatorLifecycleMigrationIsANoOp(t *testing.T) {
 }
 
 func TestNoneOperatorMigrationIsNotWiredAndNamesTheMode(t *testing.T) {
-	err := noneNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), noneActive(), migrate.Request{Target: isolation.ModeNSpawn}, migrate.Strategy("reprovision"))
+	err := noneNodeOperator{}.MigrateIsolation(t.Context(), discardLogger(), noneActive(), migrate.Request{Target: isolation.ModeNSpawn}, migrate.Strategy("reprovision"), migrationEnv{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "none")
 }

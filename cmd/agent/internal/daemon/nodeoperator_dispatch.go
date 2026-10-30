@@ -155,13 +155,13 @@ func (d *dispatchOperator) RepaveNode(ctx context.Context, log *slog.Logger, act
 	return op.RepaveNode(ctx, log, active, newCfg)
 }
 
-func (d *dispatchOperator) MigrateIsolation(ctx context.Context, log *slog.Logger, active *ActiveMachine, req migrate.Request, strategy migrate.Strategy) error {
+func (d *dispatchOperator) MigrateIsolation(ctx context.Context, log *slog.Logger, active *ActiveMachine, req migrate.Request, strategy migrate.Strategy, env migrationEnv) error {
 	op, err := d.forActive(active)
 	if err != nil {
 		return err
 	}
 
-	return op.MigrateIsolation(ctx, log, active, req, strategy)
+	return op.MigrateIsolation(ctx, log, active, req, strategy, env)
 }
 
 func (d *dispatchOperator) StageAgentUpgrade(ctx context.Context, log *slog.Logger, request agentUpgradeRequest) error {
