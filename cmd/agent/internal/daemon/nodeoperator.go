@@ -17,6 +17,7 @@ import (
 	"github.com/Azure/unbounded/cmd/agent/internal/nspawnops"
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/internal/provision"
+	"github.com/Azure/unbounded/pkg/agent/appliedconfig"
 	daemon "github.com/Azure/unbounded/pkg/agent/daemon"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
@@ -125,52 +126,27 @@ func (nspawnNodeOperator) FindActiveMachine(log *slog.Logger) (*ActiveMachine, e
 }
 
 // activeSlotOrder is the order in which slots are searched for the applied
-// config of the running node. It is kube1 then kube2, except while an in-place
-// migration has both recorded: the journal says which one the node runs on.
+// config of the running node; see appliedconfig.SlotOrder.
 func activeSlotOrder() []string {
-	order := []string{goalstates.NSpawnMachineKube1, goalstates.NSpawnMachineKube2}
-
-	j, err := inPlaceJournalStore().Load()
-	if err != nil || j.Strategy != migrate.InPlace || j.SourceSlot == "" || j.TargetSlot == "" {
-		return order
-	}
-
-	switch j.Step {
-	case migrate.StepAwaitingReady, migrate.StepReady, migrate.StepComplete:
-		return []string{j.TargetSlot, j.SourceSlot}
-	default:
-		return []string{j.SourceSlot, j.TargetSlot}
-	}
+	return appliedconfig.SlotOrder(inPlaceJournalPath())
 }
 
 // readActiveSlot reads and verifies the applied config of one slot. A missing
 // file is an error that matches os.ErrNotExist.
 func readActiveSlot(log *slog.Logger, name string) (*ActiveMachine, error) {
-	// Verify the SHA-256 sidecar before trusting the applied config. A missing
-	// sidecar is logged as a warning and not treated as an error.
+	// A present SHA-256 sidecar is verified before the config is trusted. A
+	// missing one is logged as a warning and not treated as an error.
 	path := goalstates.AppliedConfigPath(name)
 
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+	data, checksumMissing, err := appliedconfig.ReadVerified(path)
+	if err != nil {
 		return nil, err
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("read applied config %s: %w", path, err)
-	}
-
-	// Verify the sidecar checksum before trusting the config data.
-	checksumPath := goalstates.AppliedConfigChecksumPath(name)
-	if err := goalstates.VerifyChecksum(data, checksumPath); err != nil {
-		return nil, fmt.Errorf("verify applied config checksum for %s: %w", name, err)
-	}
-
-	// If the sidecar file is missing, log a warning so operators
-	// know the integrity check was skipped.
-	if _, statErr := os.Stat(checksumPath); errors.Is(statErr, os.ErrNotExist) {
+	if checksumMissing {
 		log.Warn("no checksum sidecar found, skipping integrity check",
 			"config_path", path,
-			"checksum_path", checksumPath,
+			"checksum_path", goalstates.AppliedConfigChecksumPath(name),
 		)
 	}
 
@@ -307,7 +283,9 @@ func (nspawnNodeOperator) RestartNode(ctx context.Context, log *slog.Logger, act
 
 func (nspawnNodeOperator) ResetAgentResources(ctx context.Context, log *slog.Logger) error {
 	// The MachineOperation holds installation ownership through daemon stop.
-	return resetUnderLock(ctx, log, installstate.DefaultStore(), resetResources(log))
+	mode := detectResetMode(log)
+
+	return resetUnderLock(ctx, log, installstate.DefaultStore(), mode, resetResourcesFor(log, mode))
 }
 
 func (nspawnNodeOperator) StopDaemon(ctx context.Context, log *slog.Logger) error {

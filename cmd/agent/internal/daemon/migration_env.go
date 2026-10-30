@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Azure/unbounded/pkg/agent/appliedconfig"
 	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
@@ -34,7 +35,7 @@ var ErrMigrationHandedOff = errors.New("isolation migration handed off to the re
 
 const (
 	// migrationJournalName is the in-place journal, next to the applied config.
-	migrationJournalName = "isolation-migration.json"
+	migrationJournalName = appliedconfig.InPlaceJournalName
 
 	// ReprovisionDir holds what a reprovision needs to survive its own reset:
 	// the journal, a copy of the agent binary and the target configuration. The

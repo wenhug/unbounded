@@ -33,13 +33,17 @@ import (
 // the daemon first. The daemon's own operation path stops it last instead, so
 // that ordering stays with the caller.
 func ResetAgent(log *slog.Logger) phases.Task {
-	return ownedReset(log, installstate.DefaultStore(), phases.Serial(log, StopDaemon(log), resetResources(log)))
+	mode := detectResetMode(log)
+
+	return ownedReset(log, installstate.DefaultStore(), mode, phases.Serial(log, StopDaemon(log), resetResourcesFor(log, mode)))
 }
 
 // ResetAgentForReprovision is ResetAgent for the reprovision handoff: it leaves
 // the handoff's unit, binary, configuration and journal in place.
 func ResetAgentForReprovision(log *slog.Logger) phases.Task {
-	return ownedReset(log, installstate.DefaultStore(), phases.Serial(log, StopDaemon(log), resetNodeResources(log)))
+	mode := detectResetMode(log)
+
+	return ownedReset(log, installstate.DefaultStore(), mode, phases.Serial(log, StopDaemon(log), resetNodeResourcesFor(log, mode)))
 }
 
 type lifecycleTask struct {
@@ -50,7 +54,7 @@ type lifecycleTask struct {
 func (t lifecycleTask) Name() string                 { return t.name }
 func (t lifecycleTask) Do(ctx context.Context) error { return t.run(ctx) }
 
-func ownedReset(log *slog.Logger, store *installstate.Store, inner phases.Task) phases.Task {
+func ownedReset(log *slog.Logger, store *installstate.Store, mode isolation.Mode, inner phases.Task) phases.Task {
 	// The composed name keeps the underlying cleanup sequence visible to callers
 	// and to the reset ordering test.
 	return lifecycleTask{name: "owned-reset(" + inner.Name() + ")", run: func(ctx context.Context) error {
@@ -65,7 +69,7 @@ func ownedReset(log *slog.Logger, store *installstate.Store, inner phases.Task) 
 			}
 		}()
 
-		return resetUnderLock(ctx, log, store, inner)
+		return resetUnderLock(ctx, log, store, mode, inner)
 	}}
 }
 
@@ -89,7 +93,7 @@ func recordForTeardown(log *slog.Logger, store *installstate.Store) (installstat
 	return installstate.NewRecord("legacy-reset", "legacy-reset")
 }
 
-func resetUnderLock(ctx context.Context, log *slog.Logger, store *installstate.Store, inner phases.Task) error {
+func resetUnderLock(ctx context.Context, log *slog.Logger, store *installstate.Store, mode isolation.Mode, inner phases.Task) error {
 	r, err := recordForTeardown(log, store)
 	if err != nil {
 		return err
@@ -105,12 +109,11 @@ func resetUnderLock(ctx context.Context, log *slog.Logger, store *installstate.S
 	}
 
 	paths := teardownSyncPaths(store.Root())
-	if hostIsNone() {
-		// The node's own directory may be on another filesystem than /etc.
+	// The node's own directory may be on another filesystem than /etc.
+	switch mode {
+	case isolation.ModeNone:
 		paths = append(paths, none.DefaultBase)
-	}
-
-	if hostIsContainer() {
+	case isolation.ModeContainer:
 		paths = append(paths, container.DefaultBase)
 	}
 
@@ -187,29 +190,52 @@ func durableReset(ctx context.Context, store *installstate.Store, inner phases.T
 	return store.Remove()
 }
 
-// hostIsNone reports whether the host runs, or has traces of, a host-native
-// node, from the applied config or from the node's own units and directory. The
-// second source matters for a reset retried after the applied config is gone.
-// Reading the applied config can fail on a damaged host; reset must still
-// proceed, so any failure falls back to the traces.
-var hostIsNone = func() bool {
-	if applied, err := appliedconfig.Read(); err == nil && applied.Mode == isolation.ModeNone {
-		return true
+// readAppliedMode is the isolation mode the applied config records. It is a
+// variable so tests can stand in for the host.
+var readAppliedMode = func() (isolation.Mode, error) {
+	applied, err := appliedconfig.Read()
+	if err != nil {
+		return "", err
 	}
 
-	return noneops.Present()
+	return applied.Mode, nil
 }
 
-// hostIsContainer reports whether the host runs, or has traces of, a node in an
-// OCI container, from the applied config or from the node's units and
-// directory, for the same reasons as hostIsNone. PROVISIONAL: container mode is
-// experimental.
-var hostIsContainer = func() bool {
-	if applied, err := appliedconfig.Read(); err == nil && applied.Mode == isolation.ModeContainer {
-		return true
+// hostIsNone and hostIsContainer report whether the host has traces of a
+// host-native node or of a node in an OCI container: the node's own units and
+// directory. They are what detectResetMode falls back to when the applied
+// config cannot be read. PROVISIONAL: container mode is experimental.
+var (
+	hostIsNone      = noneops.Present
+	hostIsContainer = containerops.Present
+)
+
+// detectResetMode decides which teardown a reset runs. When the applied config
+// is readable its mode is trusted, so an nspawn host that has stray none or
+// container leftovers still gets the nspawn teardown. Reading it can fail on a
+// damaged host, or the config may already be gone when a reset is retried; reset
+// must still proceed, so then the node's traces decide. It is called once per
+// reset.
+func detectResetMode(log *slog.Logger) isolation.Mode {
+	mode, err := readAppliedMode()
+	if err == nil {
+		return mode
 	}
 
-	return containerops.Present()
+	switch {
+	case hostIsNone():
+		mode = isolation.ModeNone
+	case hostIsContainer():
+		mode = isolation.ModeContainer
+	default:
+		mode = isolation.ModeNSpawn
+	}
+
+	if !errors.Is(err, appliedconfig.ErrNotFound) {
+		log.Warn("applied config is unreadable; choosing the reset from the node's traces", "mode", mode, "error", err)
+	}
+
+	return mode
 }
 
 // resetResources builds the reset sequence. The order is the same for every
@@ -218,17 +244,25 @@ var hostIsContainer = func() bool {
 // For a host-native node the stop, config and root steps are the none
 // teardown's, and there is no per-machine bpffs mount to clean.
 func resetResources(log *slog.Logger) phases.Task {
-	return phases.Serial(log, resetNodeResources(log), RemoveReprovisionHandoff(log))
+	return resetResourcesFor(log, detectResetMode(log))
+}
+
+func resetResourcesFor(log *slog.Logger, mode isolation.Mode) phases.Task {
+	return phases.Serial(log, resetNodeResourcesFor(log, mode), RemoveReprovisionHandoff(log))
 }
 
 // resetNodeResources is the reset without the cleanup of a reprovision
 // handoff. The handoff's own reset uses it, since the handoff runs from the
 // directory the cleanup removes.
 func resetNodeResources(log *slog.Logger) phases.Task {
-	switch {
-	case hostIsNone():
+	return resetNodeResourcesFor(log, detectResetMode(log))
+}
+
+func resetNodeResourcesFor(log *slog.Logger, mode isolation.Mode) phases.Task {
+	switch mode {
+	case isolation.ModeNone:
 		return resetResourcesNone(log, noneTeardown(log))
-	case hostIsContainer():
+	case isolation.ModeContainer:
 		return resetResourcesContainer(log, containerTeardown(log))
 	default:
 		return resetResourcesNSpawn(log)
