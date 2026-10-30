@@ -531,7 +531,17 @@ func TestUpgradeRollbackSurvivesCancelledContext(t *testing.T) {
 	require.NoError(t, rollbackCtxErr)
 }
 
-func TestNotRegisteredWithRegistry(t *testing.T) {
-	_, err := isolation.New(isolation.ModeNone, nil)
-	require.ErrorContains(t, err, "no registered backend")
+// The backend used to be withheld from the registry until the daemon was mode
+// aware. It is registered now; this asserts the registry hands back a none
+// backend, and that the deps argument carries the agent's wiring through.
+func TestRegisteredWithRegistry(t *testing.T) {
+	b, err := isolation.New(isolation.ModeNone, nil)
+	require.NoError(t, err)
+	require.Equal(t, isolation.ModeNone, b.Mode())
+
+	wired := &Backend{Layout: Layout{Base: "/x"}, Proc: "/p"}
+	b, err = isolation.New(isolation.ModeNone, wired)
+	require.NoError(t, err)
+	require.Equal(t, "/x", b.(*Backend).Layout.Base)
+	require.Equal(t, "/p", b.(*Backend).Proc)
 }

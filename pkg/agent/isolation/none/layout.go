@@ -6,10 +6,9 @@
 // directories under an agent-owned base, selected by a "current" symlink, so an
 // upgrade is a symlink flip that can be flipped back.
 //
-// The backend is deliberately not registered with the isolation registry yet:
-// the daemon's node operations still assume an nspawn machine, so registering
-// it would let those operations run against a host-native node. Registration
-// belongs with the daemon wiring that makes them mode aware.
+// The backend registers itself with the isolation registry when this package is
+// imported. The agent's composition root (cmd/agent/internal/noneops) supplies
+// the install and readiness hooks through the registry's deps argument.
 package none
 
 import (

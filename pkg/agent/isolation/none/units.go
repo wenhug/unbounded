@@ -4,6 +4,7 @@
 package none
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,9 +25,20 @@ type UnitSpec struct {
 	// BinDir is the directory the binaries are executed from, normally
 	// Layout.BinDir so the units follow the current link.
 	BinDir string
-	// KubeletConfigPath is the kubelet configuration file.
+	// KubeletConfigPath is the kubelet configuration file. Empty means
+	// DefaultKubeletConfigPath.
 	KubeletConfigPath string
+	// LocalDNS adds the CoreDNS unit and makes containerd and kubelet depend on
+	// it.
+	LocalDNS bool
+	// LocalDNSSupervisor is the CoreDNS supervisor script the LocalDNS unit
+	// runs. Empty means <BinDir>/../libexec/unbounded-localdns-supervisor.
+	LocalDNSSupervisor string
 }
+
+// DefaultKubeletConfigPath is where the node-start phases write the kubelet
+// configuration, the same path the nspawn machine uses.
+const DefaultKubeletConfigPath = "/var/lib/kubelet/config.yaml"
 
 // RenderContainerd returns the containerd unit.
 func RenderContainerd(s UnitSpec) []byte {
@@ -125,4 +137,64 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	}
 
 	return nil
+}
+
+// DropInDir is the drop-in directory of an agent-owned unit.
+func DropInDir(dir, unit string) string { return filepath.Join(dir, unit+".d") }
+
+// WriteDropIns writes the PATH drop-in for every unit, the LocalDNS ordering
+// drop-ins for the node units, and the LocalDNS unit itself when s.LocalDNS is
+// set. It returns the paths written.
+func WriteDropIns(dir string, s UnitSpec) ([]string, error) {
+	type file struct {
+		path string
+		body []byte
+	}
+
+	var files []file
+
+	for _, u := range []string{UnitContainerd, UnitKubelet} {
+		files = append(files, file{filepath.Join(DropInDir(dir, u), "00-path.conf"), RenderPathDropIn(s.BinDir)})
+	}
+
+	if s.LocalDNS {
+		supervisor := s.LocalDNSSupervisor
+		if supervisor == "" {
+			supervisor = filepath.Join(filepath.Dir(s.BinDir), "libexec", "unbounded-localdns-supervisor")
+		}
+
+		files = append(files, file{filepath.Join(dir, UnitLocalDNS), RenderLocalDNS(supervisor)})
+		files = append(files, file{filepath.Join(DropInDir(dir, UnitLocalDNS), "00-path.conf"), RenderPathDropIn(s.BinDir)})
+
+		for _, u := range []string{UnitContainerd, UnitKubelet} {
+			files = append(files, file{filepath.Join(DropInDir(dir, u), "05-localdns.conf"), RenderLocalDNSDropIn()})
+		}
+	}
+
+	if !s.LocalDNS {
+		// A reconfigured node that no longer uses LocalDNS must not keep units
+		// and ordering from the previous configuration.
+		stale := []string{
+			filepath.Join(dir, UnitLocalDNS),
+			filepath.Join(DropInDir(dir, UnitContainerd), "05-localdns.conf"),
+			filepath.Join(DropInDir(dir, UnitKubelet), "05-localdns.conf"),
+		}
+		for _, path := range stale {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+		}
+	}
+
+	var paths []string
+
+	for _, f := range files {
+		if err := writeAtomic(f.path, f.body, 0o644); err != nil {
+			return paths, err
+		}
+
+		paths = append(paths, f.path)
+	}
+
+	return paths, nil
 }
