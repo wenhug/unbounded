@@ -51,6 +51,11 @@ type Backend struct {
 	// the previous version starts on rollback. The agent uses it to clean up
 	// host networking as repave does.
 	BeforeUpgradeStart func(ctx context.Context) error
+	// BeforeRollbackStart runs during a failed Upgrade after the link has
+	// flipped back and before the previous version starts, so the previous
+	// version starts on the configuration it was running with. A failure is
+	// reported with the rollback and does not stop it.
+	BeforeRollbackStart func(ctx context.Context) error
 	// CheckPaths replaces Requirements().WritablePaths in Preflight when set.
 	// Tests and offline tooling use it to probe a temporary tree instead of the
 	// real /etc, /opt and /var.
@@ -517,6 +522,12 @@ func (b *Backend) Upgrade(ctx context.Context, r isolation.NodeRoot, waitReady f
 
 	if _, ferr := b.Layout.Flip(prev); ferr != nil {
 		rbErrs = append(rbErrs, fmt.Errorf("flip back to %s: %w", prev, ferr))
+	}
+
+	if b.BeforeRollbackStart != nil {
+		if herr := b.BeforeRollbackStart(rb); herr != nil {
+			rbErrs = append(rbErrs, fmt.Errorf("restore configuration for %s: %w", prev, herr))
+		}
 	}
 
 	if herr := b.beforeUpgradeStart(rb); herr != nil {

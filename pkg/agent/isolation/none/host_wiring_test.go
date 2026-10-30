@@ -296,6 +296,60 @@ func TestUpgradeRunsBeforeStartHookAndAgainOnRollback(t *testing.T) {
 	require.NotEmpty(t, rec.calls)
 }
 
+func TestUpgradeRollbackRestoresConfigurationBeforeThePreviousVersionStarts(t *testing.T) {
+	b, rec := newBackend(t)
+	installVersions(t, b, "v1", "v2")
+
+	var order []string
+
+	b.BeforeRollbackStart = func(context.Context) error {
+		cur, err := b.Layout.Current()
+		require.NoError(t, err)
+
+		order = append(order, "restore with link "+cur+" after "+rec.calls[len(rec.calls)-1])
+
+		return nil
+	}
+
+	err := b.Upgrade(context.Background(), root("v2"), func(context.Context) error {
+		order = append(order, "wait")
+		return errors.New("never ready")
+	})
+	require.ErrorContains(t, err, "rolled back to v1")
+	require.Len(t, order, 2)
+	require.Equal(t, "wait", order[0])
+	require.Contains(t, order[1], "restore with link v1", "the link is flipped back first")
+	require.Contains(t, order[1], "stop", "the new version is stopped first")
+}
+
+func TestUpgradeRollbackHookIsNotRunOnSuccess(t *testing.T) {
+	b, _ := newBackend(t)
+	installVersions(t, b, "v1", "v2")
+
+	b.BeforeRollbackStart = func(context.Context) error {
+		t.Fatal("a successful upgrade has nothing to roll back")
+		return nil
+	}
+
+	require.NoError(t, b.Upgrade(context.Background(), root("v2"), nil))
+}
+
+func TestUpgradeRollbackHookFailureIsReportedAndTheRollbackContinues(t *testing.T) {
+	b, rec := newBackend(t)
+	installVersions(t, b, "v1", "v2")
+
+	b.BeforeRollbackStart = func(context.Context) error { return errors.New("read-only file system") }
+
+	err := b.Upgrade(context.Background(), root("v2"), func(context.Context) error { return errors.New("never ready") })
+	require.ErrorContains(t, err, "restore configuration for v1")
+	require.ErrorContains(t, err, "read-only file system")
+
+	cur, cerr := b.Layout.Current()
+	require.NoError(t, cerr)
+	require.Equal(t, "v1", cur, "the link is back and the previous version is still started")
+	require.NotEmpty(t, rec.calls)
+}
+
 func TestUpgradeBeforeStartHookFailureRollsBack(t *testing.T) {
 	b, _ := newBackend(t)
 	installVersions(t, b, "v1", "v2")
