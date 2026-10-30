@@ -6,28 +6,9 @@ package isolation
 import (
 	"context"
 	"io"
-	"path/filepath"
 	"strings"
 	"sync"
 )
-
-// FakeRoot is a NodeRoot rooted at a directory, for tests.
-type FakeRoot struct {
-	SlotName string
-	Dir      string
-}
-
-// Slot implements NodeRoot.
-func (r FakeRoot) Slot() string { return r.SlotName }
-
-// Path implements NodeRoot. An empty Dir is the identity mapping.
-func (r FakeRoot) Path(inNode string) string {
-	if r.Dir == "" {
-		return inNode
-	}
-
-	return filepath.Join(r.Dir, strings.TrimPrefix(inNode, "/"))
-}
 
 // FakeBackend records every call and returns configured results. It is safe for
 // concurrent use. Set the Err fields to inject failures.
@@ -91,7 +72,7 @@ func (f *FakeBackend) Prepare(_ context.Context, n NodeSpec) (NodeRoot, error) {
 		return nil, f.PrepareErr
 	}
 
-	return FakeRoot{SlotName: n.Slot, Dir: f.Dir}, nil
+	return DirRoot{SlotName: n.Slot, Dir: f.Dir}, nil
 }
 
 // Start implements Backend.

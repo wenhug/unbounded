@@ -13,6 +13,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 )
 
 // Mode names an isolation mode.
@@ -128,6 +130,26 @@ type NodeRoot interface {
 	// Path maps an in-node absolute path to its path as seen by the agent. For
 	// ModeNone this is the identity.
 	Path(inNode string) string
+}
+
+// DirRoot is a NodeRoot whose filesystem is a directory on the host. nspawn and
+// container backends use it with the unpacked rootfs directory; an empty Dir is
+// the identity mapping, which is what ModeNone uses.
+type DirRoot struct {
+	SlotName string
+	Dir      string
+}
+
+// Slot implements NodeRoot.
+func (r DirRoot) Slot() string { return r.SlotName }
+
+// Path implements NodeRoot.
+func (r DirRoot) Path(inNode string) string {
+	if r.Dir == "" {
+		return inNode
+	}
+
+	return filepath.Join(r.Dir, strings.TrimPrefix(inNode, "/"))
 }
 
 // Backend owns where the node stack runs.

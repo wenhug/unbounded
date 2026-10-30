@@ -97,12 +97,12 @@ func TestNewEmptyModeIsDefault(t *testing.T) {
 	}
 }
 
-func TestFakeRootPath(t *testing.T) {
-	if got := (FakeRoot{SlotName: "kube1"}).Path("/etc/x"); got != "/etc/x" {
+func TestDirRootPath(t *testing.T) {
+	if got := (DirRoot{SlotName: "kube1"}).Path("/etc/x"); got != "/etc/x" {
 		t.Fatalf("identity path = %q", got)
 	}
 
-	r := FakeRoot{SlotName: "kube1", Dir: "/var/lib/machines/kube1"}
+	r := DirRoot{SlotName: "kube1", Dir: "/var/lib/machines/kube1"}
 	if got := r.Path("/etc/x"); got != "/var/lib/machines/kube1/etc/x" {
 		t.Fatalf("path = %q", got)
 	}
