@@ -498,3 +498,15 @@ func TestValidateIsolationMigrateParameters(t *testing.T) {
 	require.Equal(t, v1alpha3.OperationIsolationMigrate, op.Spec.OperationKind)
 	require.Equal(t, "container", op.Spec.Parameters["targetMode"])
 }
+
+func TestMachineOperationCreateHelpListsIsolationMigrate(t *testing.T) {
+	t.Parallel()
+
+	cmd := newMachineOperationCreateCommand(&machineCommandRuntime{})
+	usage := cmd.Flags().Lookup("kind").Usage
+
+	require.Contains(t, usage, "IsolationMigrate")
+	require.Contains(t, usage, "targetMode")
+	require.Contains(t, usage, "strategy")
+	require.Contains(t, cmd.Example, "IsolationMigrate")
+}

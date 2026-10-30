@@ -69,7 +69,11 @@ terminal phase.`,
 
   kubectl unbounded machine operation create upgrade-worker-01 \
     --kind AgentUpgrade --machine worker-01 \
-    --param downloadURL=https://example.com/unbounded-agent-linux-amd64.tar.gz`,
+    --param downloadURL=https://example.com/unbounded-agent-linux-amd64.tar.gz
+
+  kubectl unbounded machine operation create migrate-worker-01 \
+    --kind IsolationMigrate --machine worker-01 \
+    --param targetMode=container --param strategy=inPlace`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.name = args[0]
@@ -88,7 +92,7 @@ terminal phase.`,
 }
 
 func addMachineOperationCreateFlags(cmd *cobra.Command, o *machineOperationCreateOptions) {
-	cmd.Flags().StringVar((*string)(&o.kind), "kind", "", "Operation kind: NodeReboot, AgentUpgrade, AgentReset, HostHardReboot, HostSoftReboot, HostPowerOff, HostPowerOn, or HostReplace")
+	cmd.Flags().StringVar((*string)(&o.kind), "kind", "", "Operation kind: NodeReboot, AgentUpgrade, AgentReset, HostHardReboot, HostSoftReboot, HostPowerOff, HostPowerOn, HostReplace, or IsolationMigrate (requires --param targetMode=<nspawn|none|container>, optional --param strategy=<inPlace|reprovision>)")
 	cmd.Flags().StringVar(&o.machine, "machine", "", "Target Machine name")
 	cmd.Flags().StringVarP(&o.selector, "selector", "l", "", "Machine label selector")
 	cmd.Flags().StringArrayVar(&o.parameterArgs, "param", nil, "Operation parameter as key=value (repeatable)")
