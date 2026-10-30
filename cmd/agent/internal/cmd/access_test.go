@@ -175,3 +175,11 @@ func TestBackendForModeNoneIsRegistryBuilt(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "/proc", nb.Proc)
 }
+
+func TestBackendForModeBuildsTheRegisteredContainerBackend(t *testing.T) {
+	t.Parallel()
+
+	b, err := backendForMode(isolation.ModeContainer, slog.Default())
+	require.NoError(t, err)
+	require.Equal(t, isolation.ModeContainer, b.Mode())
+}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Azure/unbounded/pkg/agent/appliedconfig"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
+	"github.com/Azure/unbounded/pkg/agent/isolation/container"
 	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 )
@@ -31,13 +32,16 @@ type accessResolver func(*slog.Logger) (*nodeAccess, error)
 
 // backendForMode builds the backend for a mode through the isolation registry.
 // The registry hands each factory the deps it understands: the nspawn backend
-// takes its logger, the none backend its logger and the host's /proc.
+// takes its logger, the none backend its logger and the host's /proc, and the
+// container backend its logger (exec and logs go through the default runtime).
 func backendForMode(mode isolation.Mode, log *slog.Logger) (isolation.Backend, error) {
 	var deps any
 
 	switch mode {
 	case isolation.ModeNone:
 		deps = &none.Backend{Log: log, Proc: "/proc"}
+	case isolation.ModeContainer:
+		deps = &container.Backend{Log: log}
 	default:
 		deps = &nspawn.Backend{Log: log}
 	}
