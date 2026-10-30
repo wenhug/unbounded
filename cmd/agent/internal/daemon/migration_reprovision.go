@@ -9,11 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/google/renameio/v2"
+	"k8s.io/client-go/rest"
 
 	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/internal/fsutil"
@@ -104,6 +108,20 @@ func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMac
 		return err
 	}
 
+	// The bootstrap that follows the reset needs a credential. An attested host
+	// attests again; any other host reuses the recorded token, which must still
+	// be accepted, or the node would be reset and could not rejoin.
+	attest, err := readAttestRecord()
+	if err != nil {
+		return err
+	}
+
+	if attest == nil {
+		if err := checkBootstrapCredential(ctx, log, targetCfg); err != nil {
+			return err
+		}
+	}
+
 	dir := reprovisionDir()
 	store := reprovisionJournalFor()
 
@@ -116,7 +134,7 @@ func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMac
 		return cause
 	}
 
-	if err := stageHandoff(log, dir, targetCfg); err != nil {
+	if err := stageHandoff(log, dir, targetCfg, attest); err != nil {
 		return cleanup(err)
 	}
 
@@ -143,8 +161,79 @@ func migrateReprovision(ctx context.Context, log *slog.Logger, active *ActiveMac
 	return ErrMigrationHandedOff
 }
 
+// ErrBootstrapTokenRejected is returned, before anything is reset, when the
+// bootstrap token recorded for the node is no longer accepted.
+var ErrBootstrapTokenRejected = errors.New("the bootstrap token recorded for this node is no longer accepted by the API server")
+
+// probeBootstrapToken asks the API server whether it accepts the bootstrap
+// token. It reports nil when the token is accepted, ErrBootstrapTokenRejected
+// when the server answers 401, and any other error when the question could not
+// be answered.
+var probeBootstrapToken = defaultProbeBootstrapToken
+
+func defaultProbeBootstrapToken(ctx context.Context, cfg *rest.Config) error {
+	httpClient, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(cfg.Host, "/")+"/version", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close() //nolint:errcheck // the status is all that is read
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrBootstrapTokenRejected
+	}
+
+	return nil
+}
+
+// checkBootstrapCredential refuses a reprovision that could not bootstrap again
+// because the recorded token has expired or been revoked. A token cannot be
+// renewed from the agent: it is issued by the cluster, so the operator renews
+// it and retries. Hosts that authenticate with an exec credential have no token
+// to check. When the server cannot be asked, the reprovision goes ahead, and
+// the bounded retry of the handoff reports the failure if it is real.
+func checkBootstrapCredential(ctx context.Context, log *slog.Logger, cfg *provision.AgentConfig) error {
+	if cfg.Kubelet.Auth.BootstrapToken == "" {
+		return nil
+	}
+
+	restCfg, err := buildBootstrapRESTConfig(cfg)
+	if err != nil {
+		log.Warn("could not check the bootstrap token before the reprovision", "error", err)
+
+		return nil
+	}
+
+	err = probeBootstrapToken(ctx, restCfg)
+
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrBootstrapTokenRejected):
+		return fmt.Errorf("%w; a reprovision would reset the node and it could not rejoin the cluster. "+
+			"Renew the token, or bootstrap the host with attestation, and request the migration again", err)
+	default:
+		log.Warn("could not check the bootstrap token before the reprovision; continuing", "error", err)
+
+		return nil
+	}
+}
+
 // stageHandoff writes the binary copy and target configuration.
-func stageHandoff(log *slog.Logger, dir string, cfg *provision.AgentConfig) error {
+func stageHandoff(log *slog.Logger, dir string, cfg *provision.AgentConfig, attest *provision.AgentAttestConfig) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
@@ -158,7 +247,7 @@ func stageHandoff(log *slog.Logger, dir string, cfg *provision.AgentConfig) erro
 		return fmt.Errorf("copy the agent binary into %s: %w", dir, err)
 	}
 
-	data, err := json.MarshalIndent(provision.UnboundedAgentConfig{AgentConfig: *cfg}, "", "  ")
+	data, err := json.MarshalIndent(provision.UnboundedAgentConfig{AgentConfig: *cfg, Attest: attest}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal target configuration: %w", err)
 	}

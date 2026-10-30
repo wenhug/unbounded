@@ -91,6 +91,12 @@ func (s *agentStages) prepareCredentials(ctx context.Context) error {
 
 	syncAttestedKubeletConfig(&s.cfg.AgentConfig, s.gs.NodeStart)
 
+	// Recorded so a reprovision can attest again instead of reusing a token
+	// that has expired by then.
+	if err := daemon.PersistAttestConfig(s.log, s.cfg.Attest).Do(ctx); err != nil {
+		return err
+	}
+
 	// The reporter is built here rather than in the constructor because it
 	// captures credentials at construction: an empty bootstrap token makes it a
 	// permanent no-op, and it registers the Machine over the API. On an attested

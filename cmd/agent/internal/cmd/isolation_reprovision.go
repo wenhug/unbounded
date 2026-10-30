@@ -81,9 +81,9 @@ func newCmdIsolationReprovision(cmdCtx *CommandContext) *cobra.Command {
 					return daemon.AbandonReprovision(ctx, cmdCtx.Logger, dir)
 				},
 				maxAttempts: daemon.ReprovisionMaxAttempts,
-				start:    func(ctx context.Context) error { return runStart(ctx, cmdCtx) },
-				loadPlan: func() error { return checkStagedConfig(cmdCtx.Logger) },
-				sleep:    time.Sleep,
+				start:       func(ctx context.Context) error { return runStart(ctx, cmdCtx) },
+				loadPlan:    func() error { return checkStagedConfig(cmdCtx.Logger) },
+				sleep:       time.Sleep,
 			}
 
 			store := migrate.JournalStore{Path: filepath.Join(dir, daemon.ReprovisionJournalName)}

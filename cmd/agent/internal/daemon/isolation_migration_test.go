@@ -5,9 +5,12 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +18,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/rest"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/Azure/unbounded/internal/provision"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
@@ -105,6 +110,11 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 	h.replace(&preflightMigrationTarget, func(_ context.Context, _ *slog.Logger, mode isolation.Mode, _ *provision.AgentConfig) error {
 		h.events = append(h.events, "preflight "+string(mode))
 		return h.failAt["preflight"]
+	})
+	h.replace(&attestRecordPath, func() string { return filepath.Join(h.dir, "attest.json") })
+	h.replace(&probeBootstrapToken, func(context.Context, *rest.Config) error {
+		h.events = append(h.events, "probe-token")
+		return h.failAt["probe-token"]
 	})
 	h.replace(&readMigrationConfig, func(_ *slog.Logger, slot string) (*ActiveMachine, error) {
 		if err := h.failAt["read "+slot]; err != nil {
@@ -201,6 +211,11 @@ func (h *migHarness) replace(target any, value any) {
 	case *func(context.Context, string, ...string) error:
 		old := *p
 		*p = value.(func(context.Context, string, ...string) error)
+
+		h.t.Cleanup(func() { *p = old })
+	case *func(context.Context, *rest.Config) error:
+		old := *p
+		*p = value.(func(context.Context, *rest.Config) error)
 
 		h.t.Cleanup(func() { *p = old })
 	case *func() (string, error):
@@ -634,6 +649,7 @@ func TestMigrateReprovision_StagesTheHandoffAndStartsTheUnit(t *testing.T) {
 			// starts, and nothing drains or cordons the node.
 			assert.Equal(t, []string{
 				"preflight " + string(tt.to),
+				"probe-token",
 				"handoff unbounded-agent isolation-reprovision --check",
 				"systemctl daemon-reload",
 				"systemctl enable " + ReprovisionUnit,
@@ -745,4 +761,98 @@ func TestRenderReprovisionUnit(t *testing.T) {
 	unit := renderReprovisionUnit("/var/lib/x")
 	assert.Contains(t, unit, "ExecStart=/var/lib/x/unbounded-agent isolation-reprovision --handoff-dir /var/lib/x")
 	assert.NotContains(t, unit, "—", "no em-dashes")
+}
+
+func TestMigrateReprovision_AttestedHostAttestsAgainInsteadOfReusingTheToken(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	require.NoError(t, os.WriteFile(attestRecordPath(), []byte(`{"URL":"http://10.0.0.1:8880"}`), 0o600))
+
+	// An expired token does not matter: the bootstrap gets a new one.
+	h.failAt["probe-token"] = ErrBootstrapTokenRejected
+
+	require.ErrorIs(t, h.run(isolation.ModeNone, migrate.Reprovision), ErrMigrationHandedOff)
+	assert.NotContains(t, h.events, "probe-token", "an attested host does not depend on the recorded token")
+
+	data, err := os.ReadFile(filepath.Join(reprovisionDir(), ReprovisionConfigName))
+	require.NoError(t, err)
+
+	var staged provision.UnboundedAgentConfig
+	require.NoError(t, json.Unmarshal(data, &staged))
+	require.NotNil(t, staged.Attest)
+	assert.Equal(t, "http://10.0.0.1:8880", staged.Attest.URL)
+}
+
+func TestMigrateReprovision_HostWithoutAttestationStagesNone(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+
+	require.ErrorIs(t, h.run(isolation.ModeNone, migrate.Reprovision), ErrMigrationHandedOff)
+
+	data, err := os.ReadFile(filepath.Join(reprovisionDir(), ReprovisionConfigName))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "Attest")
+}
+
+func TestMigrateReprovision_RejectedTokenFailsBeforeAnythingChanges(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.failAt["probe-token"] = ErrBootstrapTokenRejected
+
+	err := h.run(isolation.ModeNone, migrate.Reprovision)
+	require.ErrorIs(t, err, ErrBootstrapTokenRejected)
+	require.NotErrorIs(t, err, ErrMigrationHandedOff)
+	assert.Contains(t, err.Error(), "Renew the token")
+
+	assert.Equal(t, []string{"preflight none", "probe-token"}, h.events, "nothing was staged, installed or started")
+	assert.NoDirExists(t, reprovisionDir())
+	assert.Empty(t, h.source.Calls())
+
+	_, jerr := reprovisionJournalFor().Load()
+	assert.ErrorIs(t, jerr, migrate.ErrNoJournal)
+}
+
+func TestMigrateReprovision_UnanswerableTokenCheckDoesNotBlockTheMigration(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.failAt["probe-token"] = errors.New("connection refused")
+
+	require.ErrorIs(t, h.run(isolation.ModeNone, migrate.Reprovision), ErrMigrationHandedOff)
+}
+
+func TestMigrateReprovision_NoTokenToCheckForAnExecCredentialHost(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.active.Config.Kubelet.Auth = provision.KubeletAuthInfo{ExecCredential: &clientcmdapi.ExecConfig{Command: "cred"}}
+
+	require.ErrorIs(t, h.run(isolation.ModeNone, migrate.Reprovision), ErrMigrationHandedOff)
+	assert.NotContains(t, h.events, "probe-token")
+}
+
+func TestCheckBootstrapCredentialAgainstAServer(t *testing.T) {
+	// The real probe, against servers that answer as an API server does.
+	for _, tt := range []struct {
+		name    string
+		status  int
+		wantErr error
+	}{
+		{"accepted", http.StatusOK, nil},
+		{"rejected", http.StatusUnauthorized, ErrBootstrapTokenRejected},
+		{"authenticated but forbidden is still accepted", http.StatusForbidden, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotAuth string
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+
+				w.WriteHeader(tt.status)
+			}))
+			defer srv.Close()
+
+			err := defaultProbeBootstrapToken(context.Background(), &rest.Config{Host: srv.URL, BearerToken: "abc123.xyz789"})
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tt.wantErr)
+			}
+
+			assert.Equal(t, "Bearer abc123.xyz789", gotAuth)
+		})
+	}
 }
