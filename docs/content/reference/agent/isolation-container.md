@@ -123,7 +123,7 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
   kubelet, links the host libraries, builds `/run/nvidia/driver`, generates
   `/etc/cdi/nvidia.yaml`, selects CDI mode, and starts them again. A host that
   reports NVIDIA devices with incomplete driver state fails the start, as in
-  `nspawn`. The `agent-*-nvidia` image supplies `nvidia-ctk`. Whether the
+  `nspawn`. The `agent-*-nvidia` image supplies `nvidia-ctk`, at the image's fixed path, so the `NvidiaToolkit` setting does not apply to this mode and the agent rejects it. Whether the
   privileged container, the `/run/host-nvidia*` binds, and the CDI hooks behave
   on Azure Container Linux is unverified.
 - `crun` is not implemented. `IsolationMigrate` to and

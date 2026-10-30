@@ -294,8 +294,11 @@ ignored: device nodes and identity mounts are checked for existence, NVIDIA
 library and helper directories are satisfied by the host view, and a mount at
 another path or a library-path grant is an error. On a host with NVIDIA devices
 `Prepare` also requires `/usr/bin/nvidia-ctk` and
-`/usr/bin/nvidia-container-runtime`; the agent does not install the toolkit in
-this mode. Before the units start on `Start`, `Restart` and `Upgrade` (and its
+`/usr/bin/nvidia-container-runtime`, or the paths in the agent config
+`NvidiaToolkit` (`CTKPath`, `ContainerRuntimePath`; absolute and clean, valid
+only for `none`, dropped when a reprovision leaves `none`); the agent does not
+install the toolkit in this mode. `container` runs the toolkit from its rootfs
+image, so the setting does not apply there and is rejected. Before the units start on `Start`, `Restart` and `Upgrade` (and its
 rollback), `nodestart.SetupNVIDIAOnHost` selects CDI mode and regenerates
 `/etc/cdi/nvidia.yaml` from the host driver with the same hook selection as
 nspawn; the containerd nvidia runtime drop-in is the existing one. Reset removes

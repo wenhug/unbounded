@@ -104,7 +104,12 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
   to because the operator drains the Node first.
 - **NVIDIA GPUs.** The host driver and the NVIDIA Container Toolkit
   (`/usr/bin/nvidia-ctk`, `/usr/bin/nvidia-container-runtime`) must be installed
-  on the host; the agent does not install them in this mode. When NVIDIA devices
+  on the host; the agent does not install them in this mode. A host that
+  installs the toolkit elsewhere sets `NvidiaToolkit.CTKPath` and
+  `NvidiaToolkit.ContainerRuntimePath` in the agent config (see
+  [Agent Configuration]({{< relref "reference/agent/configuration" >}})); every
+  check, command, and the containerd `nvidia` runtime handler then use those
+  paths. When NVIDIA devices
   are present and the toolkit is missing, Prepare fails with a message naming the
   missing file, before any unit is written. Before containerd and kubelet start
   (on start, soft reboot, and upgrade, including an upgrade rollback) the agent
