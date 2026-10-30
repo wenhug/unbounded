@@ -316,6 +316,22 @@ func (n *Node) Prepare(ctx context.Context) (isolation.NodeRoot, error) {
 	return n.backend.Prepare(ctx, isolation.NodeSpec{Slot: n.version, Version: n.gs.RootFS.KubernetesVersion})
 }
 
+// Provision installs the version, writes the units and points the current link
+// at it. Bootstrap uses it for the first install, where there is no previous
+// version to keep running.
+func (n *Node) Provision(ctx context.Context) error {
+	r, err := n.Prepare(ctx)
+	if err != nil {
+		return err
+	}
+
+	if _, err := n.backend.Activate(r); err != nil {
+		return fmt.Errorf("activate %s: %w", r.Slot(), err)
+	}
+
+	return nil
+}
+
 // Configure writes the node configuration at its host paths and prepares the
 // shared LocalDNS network. It reports whether containerd or kubelet
 // configuration differed from what was on disk, so a reapply against a running
@@ -385,7 +401,14 @@ func (n *Node) Start(ctx context.Context, wasRunning, containerdChanged, kubelet
 		}
 	}
 
-	return nodestart.WaitForKubeletBootstrapOnHost(n.p.Log, n.gs.NodeStart).Do(ctx)
+	return n.waitBootstrap(ctx)
+}
+
+// waitBootstrap waits for kubelet's client credentials to appear. It runs
+// through a serial group so a failure carries the task name the Machine
+// condition reason is classified from.
+func (n *Node) waitBootstrap(ctx context.Context) error {
+	return phases.Serial(n.p.Log, nodestart.WaitForKubeletBootstrapOnHost(n.p.Log, n.gs.NodeStart)).Do(ctx)
 }
 
 // Restart restarts the node stack in place (soft reboot): LocalDNS, containerd,
@@ -450,7 +473,7 @@ func (n *Node) Upgrade(ctx context.Context) error {
 			return err
 		}
 
-		return nodestart.WaitForKubeletBootstrapOnHost(n.p.Log, n.gs.NodeStart).Do(ctx)
+		return n.waitBootstrap(ctx)
 	})
 }
 
