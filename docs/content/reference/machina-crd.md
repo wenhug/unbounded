@@ -34,8 +34,8 @@ This document describes the custom resource definitions shipped with machina: **
 | `spec.isolation` | string | No | Where the node stack (containerd, kubelet, CNI, CoreDNS) runs on the host. One of `nspawn`, `none`, or `container`. Empty means `nspawn`. Passed to the agent config as `Isolation`. Changing it on a running Machine does not move the node; run an `IsolationMigrate` operation. |
 
 See [Isolation Modes]({{< relref "reference/agent/isolation" >}}). `none` and
-`container` may not be available in every agent build, and `container` is
-experimental.
+`container` are experimental. Machina does not check the agent version, so pin
+an agent version (`spec.agent.version`) that supports the mode you set.
 
 ### spec.ssh
 
@@ -277,6 +277,7 @@ after a controller restart. Each entry includes:
 | `bootstrap.credentialID` | string | Credential ID (`JTI=<jti>`) of the last bootstrap token issued by metalman attestation. Used by metalman to approve the node's kubelet CSR. |
 | `bootstrap.nodeName` | string | Kubernetes Node name the bootstrap token was issued for. Metalman approves the kubelet CSR only for this name. During a virtual-media `HostReplace` it is the name captured when the replacement started. |
 | `bootstrap.issuedAt` | time | When that bootstrap token was issued. |
+| `observedIsolation` | string | The isolation mode (`nspawn`, `none`, or `container`) the agent reports as applied on the host. Written by the agent daemon at startup and after an `IsolationMigrate`. Empty until the agent reports one. Compared with `spec.isolation` to set the `IsolationDrift` condition. |
 | `conditions` | []Condition | Standard Kubernetes conditions (see below). |
 
 ### Conditions
@@ -287,6 +288,7 @@ after a controller restart. Each entry includes:
 | `Provisioning` | machina | `True` while the install script is running over SSH. `lastTransitionTime` records when provisioning started, used to detect stale provisioning attempts (e.g. after a controller restart). |
 | `Provisioned` | machina | `True` after successful SSH provisioning. `ObservedGeneration` tracks the spec generation. |
 | `CloudInitDone` | metalman | Observed first-boot cloud-init result for PXE machines. Metalman also mirrors cloud-init progress to active `HostReplace` `MachineOperation` conditions. |
+| `IsolationDrift` | machina | `True` (reason `AppliedModeDiffers`) when `spec.isolation` differs from `status.observedIsolation`, with an empty `spec.isolation` meaning `nspawn`. `False` (reason `AppliedModeMatches`) when they match. Absent until the agent has reported a mode. Nothing moves on drift; run an `IsolationMigrate` operation. |
 
 ### Phase lifecycle
 

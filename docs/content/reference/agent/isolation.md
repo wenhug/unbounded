@@ -11,14 +11,14 @@ node stack runs: containerd, kubelet, CNI plugins, and CoreDNS.
 | Mode | Node stack runs | Status |
 |---|---|---|
 | [`nspawn`]({{< relref "reference/agent/isolation-nspawn" >}}) | In a systemd-nspawn machine | Default. Existing behavior. |
-| [`none`]({{< relref "reference/agent/isolation-none" >}}) | Directly on the host as agent-owned systemd units | New and experimental. Wired end to end; not yet exercised on a real host. See the mode page. |
-| [`container`]({{< relref "reference/agent/isolation-container" >}}) | In a privileged OCI container, for Azure Container Linux | New and provisional. Wired end to end; verified only against stubbed hosts. See the mode page. |
+| [`none`]({{< relref "reference/agent/isolation-none" >}}) | Directly on the host as agent-owned systemd units | Experimental. |
+| [`container`]({{< relref "reference/agent/isolation-container" >}}) | In a privileged OCI container, for Azure Container Linux | Experimental. |
 
 {{< callout type="important" >}}
-Only `nspawn` is production behavior today. `none` and `container` are being
-added. Each mode page states exactly what is and is not available in the agent
-build you run. Hosts with no recorded mode are `nspawn` hosts, and their
-behavior does not change.
+`nspawn` is the default and the only mode validated on real hosts. `none` and
+`container` are experimental: they have not yet been validated on real hosts.
+Hosts with no recorded mode are `nspawn` hosts, and their behavior does not
+change.
 {{< /callout >}}
 
 ## Comparison
@@ -27,7 +27,7 @@ behavior does not change.
 |---|---|---|---|
 | Filesystem isolation | Separate rootfs per slot | None, host filesystem | Separate rootfs per slot |
 | Node stack source | OCI rootfs image, artifacts downloaded into it | Release artifacts in versioned directories, no distro packages | OCI rootfs image run by an OCI runtime |
-| Host `/usr` | Writable (installs `systemd-container`) | Not modified, but a read-only `/usr` is not a supported target; use `container` | May be read-only |
+| Host `/usr` | Writable (installs `systemd-container`) | Not modified, so it may be read-only (not yet validated on a read-only `/usr` host) | May be read-only |
 | Supervised by | `systemd-nspawn@<slot>.service` | `unbounded-containerd.service`, `unbounded-kubelet.service` | `unbounded-node-<slot>.service`, an agent-owned unit running `runc` |
 | Slots and upgrade | Blue/green, `kube1` and `kube2` | Versioned directories and a `current` link | Blue/green, `kube1` and `kube2` |
 | Upgrade downtime | Node moves to a new slot | Brief, the node stack restarts | Node moves to a new slot |
@@ -37,14 +37,16 @@ behavior does not change.
 
 Across all modes these paths resolve identically for the node stack and for pods:
 `/run/containerd`, `/etc/containerd/certs.d`, `/var/lib/kubelet`, `/opt/cni`, and
-bpffs. unbounded-net-node and gantry do not change per mode.
+bpffs (the same-path contract). The agent writes configuration under them on the
+host side, and the node stack sees it at the same path. unbounded-net-node and
+gantry do not change per mode.
 
 ## Choosing a mode
 
 1. Start with `nspawn` unless you have a reason not to. It is the default, it is
    the most exercised, and it keeps the node stack separate from host packages.
 2. Choose `container` when the host has a read-only `/usr` and cannot install
-   `systemd-container`, such as Azure Container Linux. It is provisional.
+   `systemd-container`, such as Azure Container Linux. It is experimental.
 3. Choose `none` when you want the node stack on the host with no machine or
    container layer, and the host has no kubelet or containerd of its own. The
    agent refuses to start on a host that already has one.
@@ -97,7 +99,7 @@ every mode; a backend only declares ordering dependencies on them.
 ## Running commands and reading logs
 
 `unbounded-agent exec` and `unbounded-agent logs` work in every mode and replace
-mode-specific recipes such as `machinectl shell`:
+mode-specific recipes such as `machinectl shell`. The other mode pages link here.
 
 ```bash
 sudo unbounded-agent exec -- crictl ps
@@ -108,18 +110,21 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
 for a unit in the node stack: `--unit` selects it, `--follow` keeps the stream
 open, and `--lines` limits output to the last N entries.
 
-{{< callout type="note" >}}
-`exec` and `logs` are new. A host whose agent build predates them still needs
-the mode-specific recipes on the mode pages.
-{{< /callout >}}
-
 ## Drift
 
-If `spec.isolation` differs from the mode recorded in the host's applied config,
-the Machine is drifted. Nothing moves until an `IsolationMigrate` operation runs.
-Machine status reporting for this drift and the Machina check that withholds a
-non-default mode from agents that do not support it are part of the design and
-are not available in every build.
+The agent records the mode it applied in `status.observedIsolation` on the
+`Machine`. When that differs from `spec.isolation` (an empty `spec.isolation`
+means `nspawn`), Machina sets the `IsolationDrift` condition to `True` with
+reason `AppliedModeDiffers`; it is `False` with reason `AppliedModeMatches` when
+they agree, and absent until the agent has reported a mode. Nothing moves on
+drift. The node changes mode only when an `IsolationMigrate` operation runs. See
+[Machina CRDs]({{< relref "reference/machina-crd" >}}).
+
+Machina does not check the agent version. Pin an agent version that supports the
+mode you set with `spec.agent.version`. An agent that predates isolation modes
+does not know the `Isolation` config key and ignores it, so it runs the node as
+`nspawn`. Such an agent also does not report `status.observedIsolation`, so
+`IsolationDrift` stays absent and does not flag the mismatch.
 
 ## See also
 
