@@ -6,9 +6,11 @@ package none
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -458,4 +460,48 @@ func TestPreflightCheckPathsOverride(t *testing.T) {
 
 	b.CheckPaths = []string{t.TempDir()}
 	require.NoError(t, b.Preflight())
+}
+
+func TestUpgradeStopFailureRestoresConfigurationBeforeTheStackStartsAgain(t *testing.T) {
+	b, rec := newBackend(t)
+	installVersions(t, b, "v1", "v2")
+
+	rec.fail["systemctl stop "+UnitKubelet] = errors.New("stuck")
+
+	var order []string
+
+	b.BeforeRollbackStart = func(context.Context) error {
+		order = append(order, "restore")
+		return nil
+	}
+
+	b.Run = func(ctx context.Context, l *slog.Logger, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		if strings.HasPrefix(call, "systemctl enable --now") {
+			order = append(order, "start")
+		}
+
+		return rec.run(ctx, l, name, args...)
+	}
+
+	err := b.Upgrade(context.Background(), root("v2"), nil)
+	require.ErrorContains(t, err, "stuck")
+	require.NotEmpty(t, order)
+	require.Equal(t, "restore", order[0], "the files are put back before anything starts")
+	require.Contains(t, order, "start", "the stack is started again")
+
+	cur, _ := b.Layout.Current()
+	require.Equal(t, "v1", cur, "the version did not change")
+}
+
+func TestUpgradeStopFailureReportsAConfigurationRestoreFailure(t *testing.T) {
+	b, rec := newBackend(t)
+	installVersions(t, b, "v1", "v2")
+
+	rec.fail["systemctl stop "+UnitKubelet] = errors.New("stuck")
+	b.BeforeRollbackStart = func(context.Context) error { return errors.New("read-only file system") }
+
+	err := b.Upgrade(context.Background(), root("v2"), nil)
+	require.ErrorContains(t, err, "stuck")
+	require.ErrorContains(t, err, "restore configuration: read-only file system")
 }

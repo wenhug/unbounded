@@ -51,10 +51,11 @@ type Backend struct {
 	// the previous version starts on rollback. The agent uses it to clean up
 	// host networking as repave does.
 	BeforeUpgradeStart func(ctx context.Context) error
-	// BeforeRollbackStart runs during a failed Upgrade after the link has
-	// flipped back and before the previous version starts, so the previous
-	// version starts on the configuration it was running with. A failure is
-	// reported with the rollback and does not stop it.
+	// BeforeRollbackStart runs during a failed Upgrade before the previous
+	// version starts again, so it starts on the configuration it was running
+	// with: after the link has flipped back on a rollback, and without a flip
+	// when the stop or the activation failed. A failure is reported with the
+	// rollback and does not stop it.
 	BeforeRollbackStart func(ctx context.Context) error
 
 	// BeforeStart runs at the start of Start and Restart, before any unit is
@@ -509,12 +510,12 @@ func (b *Backend) Upgrade(ctx context.Context, r isolation.NodeRoot, waitReady f
 	if err := b.Stop(ctx, r); err != nil {
 		// Whatever stopped is restarted so a failed stop does not leave the
 		// node down; the version has not changed.
-		return errors.Join(fmt.Errorf("stop before upgrade: %w", err), b.Start(context.WithoutCancel(ctx), r))
+		return errors.Join(fmt.Errorf("stop before upgrade: %w", err), b.restartUnchanged(ctx, r))
 	}
 
 	prev, err := b.Activate(r)
 	if err != nil {
-		return errors.Join(fmt.Errorf("activate %s: %w", r.Slot(), err), b.Start(context.WithoutCancel(ctx), r))
+		return errors.Join(fmt.Errorf("activate %s: %w", r.Slot(), err), b.restartUnchanged(ctx, r))
 	}
 
 	err = b.beforeUpgradeStart(ctx)
@@ -569,6 +570,27 @@ func (b *Backend) Upgrade(ctx context.Context, r isolation.NodeRoot, waitReady f
 	}
 
 	return fmt.Errorf("%w (rolled back to %s)", err, prev)
+}
+
+// restartUnchanged starts the stack again after an upgrade failed before the
+// version changed. The configuration is put back first, as on a rollback, so
+// the running version does not start on files the upgrade already rewrote.
+func (b *Backend) restartUnchanged(ctx context.Context, r isolation.NodeRoot) error {
+	rb := context.WithoutCancel(ctx)
+
+	var errs []error
+
+	if b.BeforeRollbackStart != nil {
+		if err := b.BeforeRollbackStart(rb); err != nil {
+			errs = append(errs, fmt.Errorf("restore configuration: %w", err))
+		}
+	}
+
+	if err := b.Start(rb, r); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
 }
 
 func (b *Backend) beforeStart(ctx context.Context) error {

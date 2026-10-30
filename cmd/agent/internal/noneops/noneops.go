@@ -86,7 +86,6 @@ type Params struct {
 	// directory below HostRoot.
 	ConfigSnapshotDir string
 
-
 	// SetupGPU replaces the host GPU setup that runs before the stack starts.
 	SetupGPU func(ctx context.Context) error
 	// WaitLocalDNS and WaitKubelet override the readiness waits. Nil uses the

@@ -104,5 +104,5 @@ func TestMachineReconciler_IsolationConditionsPersisted(t *testing.T) {
 	var got unboundedv1alpha3.Machine
 	require.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{Name: "iso"}, &got))
 	require.Equal(t, unboundedv1alpha3.IsolationNone, got.Spec.Isolation)
-		require.Equal(t, metav1.ConditionTrue, cond(&got, unboundedv1alpha3.MachineConditionIsolationDrift).Status)
+	require.Equal(t, metav1.ConditionTrue, cond(&got, unboundedv1alpha3.MachineConditionIsolationDrift).Status)
 }
