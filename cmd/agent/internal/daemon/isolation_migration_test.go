@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,11 +22,35 @@ import (
 	"k8s.io/client-go/rest"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	v1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
 	"github.com/Azure/unbounded/internal/provision"
+	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
+
+// hookedBackend lets a test run code when the target starts.
+type hookedBackend struct {
+	isolation.Backend
+	h *migHarness
+}
+
+func (b hookedBackend) Start(ctx context.Context, r isolation.NodeRoot) error {
+	if b.h.onTargetStart != nil {
+		b.h.onTargetStart()
+	}
+
+	return b.Backend.Start(ctx, r)
+}
+
+// sharedTestPaths stands in for confsnap.SharedPaths in the tests: a file, a
+// credentials directory and a drop-in directory that does not exist yet.
+var sharedTestPaths = []string{
+	"/var/lib/kubelet/config.yaml",
+	"/var/lib/kubelet/pki",
+	"/etc/containerd/conf.d",
+}
 
 // migHarness replaces every host-touching seam of a migration with a recorder.
 type migHarness struct {
@@ -35,8 +60,13 @@ type migHarness struct {
 	source, target *isolation.FakeBackend
 	applied        map[string]*provision.AgentConfig
 	failAt         map[string]error
-	active         *ActiveMachine
-	dir            string
+	// hostRoot holds the shared configuration files the tests change.
+	hostRoot string
+	// onTargetStart runs when the target backend starts, as the target stack
+	// would rewrite the shared files.
+	onTargetStart func()
+	active        *ActiveMachine
+	dir           string
 }
 
 const testNode = "node-1"
@@ -74,7 +104,7 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 
 		h.target.FakeMode = e.Mode
 
-		return h.target, root, nil
+		return hookedBackend{Backend: h.target, h: h}, root, nil
 	})
 	h.replace(&resolveMigrationDownloads, func(context.Context, *provision.UnboundedAgentConfig) (*goalstates.DownloadOverrides, *goalstates.ContainerImageArchiveStaging, error) {
 		return nil, nil, h.failAt["downloads"]
@@ -111,6 +141,9 @@ func newMigHarness(t *testing.T, from isolation.Mode) *migHarness {
 		h.events = append(h.events, "preflight "+string(mode))
 		return h.failAt["preflight"]
 	})
+	h.hostRoot = filepath.Join(h.dir, "hostroot")
+	h.replace(&migrationConfigRoot, func() string { return h.hostRoot })
+	h.replace(&migrationConfigPaths, func() []string { return sharedTestPaths })
 	h.replace(&attestRecordPath, func() string { return filepath.Join(h.dir, "attest.json") })
 	h.replace(&probeBootstrapToken, func(context.Context, *rest.Config) error {
 		h.events = append(h.events, "probe-token")
@@ -211,6 +244,11 @@ func (h *migHarness) replace(target any, value any) {
 	case *func(context.Context, string, ...string) error:
 		old := *p
 		*p = value.(func(context.Context, string, ...string) error)
+
+		h.t.Cleanup(func() { *p = old })
+	case *func() []string:
+		old := *p
+		*p = value.(func() []string)
 
 		h.t.Cleanup(func() { *p = old })
 	case *func(context.Context, *rest.Config) error:
@@ -855,4 +893,192 @@ func TestCheckBootstrapCredentialAgainstAServer(t *testing.T) {
 			assert.Equal(t, "Bearer abc123.xyz789", gotAuth)
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Shared host configuration across a migration
+// ---------------------------------------------------------------------------
+
+func (h *migHarness) hostWrite(rel, content string) {
+	h.t.Helper()
+
+	path := filepath.Join(h.hostRoot, rel)
+	require.NoError(h.t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(h.t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+func (h *migHarness) hostRead(rel string) string {
+	h.t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(h.hostRoot, rel))
+	require.NoError(h.t, err)
+
+	return string(data)
+}
+
+// seedHost writes the files the source stack runs on.
+func (h *migHarness) seedHost() {
+	h.hostWrite("var/lib/kubelet/config.yaml", "source: config\n")
+	h.hostWrite("var/lib/kubelet/pki/kubelet-client-current.pem", "SOURCE-KEY")
+}
+
+// targetRewritesTheHost is what starting the target stack does to the shared
+// files: a new kubelet configuration, new client credentials and a new drop-in.
+func (h *migHarness) targetRewritesTheHost() {
+	h.hostWrite("var/lib/kubelet/config.yaml", "target: config\n")
+	require.NoError(h.t, os.RemoveAll(filepath.Join(h.hostRoot, "var/lib/kubelet/pki")))
+	h.hostWrite("var/lib/kubelet/pki/kubelet-client-current.pem", "TARGET-KEY")
+	h.hostWrite("etc/containerd/conf.d/10-target.toml", "target")
+}
+
+func (h *migHarness) assertHostIsTheSources() {
+	h.t.Helper()
+
+	assert.Equal(h.t, "source: config\n", h.hostRead("var/lib/kubelet/config.yaml"))
+	assert.Equal(h.t, "SOURCE-KEY", h.hostRead("var/lib/kubelet/pki/kubelet-client-current.pem"))
+	assert.NoDirExists(h.t, filepath.Join(h.hostRoot, "etc/containerd/conf.d"))
+}
+
+func TestMigrateInPlace_RollbackRestoresTheSharedConfiguration(t *testing.T) {
+	for _, failing := range []string{"cleanup-network", "persist kube2", "kubelet-on-host"} {
+		t.Run(failing, func(t *testing.T) {
+			h := newMigHarness(t, isolation.ModeNSpawn)
+			h.seedHost()
+			h.onTargetStart = h.targetRewritesTheHost
+			h.failAt[failing] = errors.New("boom")
+
+			err := h.run(isolation.ModeContainer, migrate.InPlace)
+			require.ErrorContains(t, err, "rolled back to nspawn")
+
+			h.assertHostIsTheSources()
+			assert.NoDirExists(t, inPlaceConfigSnapshotDir(), "the snapshot goes once it is restored")
+		})
+	}
+}
+
+func TestMigrateInPlace_TargetStartFailureRestoresTheSharedConfiguration(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.seedHost()
+	h.onTargetStart = h.targetRewritesTheHost
+	h.target.StartErr = errors.New("cannot start")
+
+	require.ErrorContains(t, h.run(isolation.ModeContainer, migrate.InPlace), "cannot start")
+
+	h.assertHostIsTheSources()
+}
+
+func TestMigrateInPlace_SuccessKeepsTheTargetsFilesAndDropsTheSnapshot(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.seedHost()
+	h.onTargetStart = h.targetRewritesTheHost
+
+	require.NoError(t, h.run(isolation.ModeContainer, migrate.InPlace))
+
+	assert.Equal(t, "target: config\n", h.hostRead("var/lib/kubelet/config.yaml"))
+	assert.Equal(t, "TARGET-KEY", h.hostRead("var/lib/kubelet/pki/kubelet-client-current.pem"))
+	assert.NoDirExists(t, inPlaceConfigSnapshotDir())
+}
+
+func TestMigrateInPlace_PreflightFailureSavesNothing(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.seedHost()
+	h.failAt["preflight"] = errors.New("no runtime")
+
+	require.Error(t, h.run(isolation.ModeContainer, migrate.InPlace))
+	assert.NoDirExists(t, inPlaceConfigSnapshotDir())
+}
+
+func TestMigrateInPlace_SnapshotFailureChangesNothing(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.seedHost()
+
+	// A socket among the shared files cannot be saved, so nothing may start.
+	sock := filepath.Join(h.hostRoot, "var/lib/kubelet/pki")
+	require.NoError(t, os.MkdirAll(sock, 0o755))
+
+	l, err := net.Listen("unix", filepath.Join(sock, "s"))
+	require.NoError(t, err)
+
+	defer l.Close() //nolint:errcheck // test cleanup
+
+	require.ErrorContains(t, h.run(isolation.ModeContainer, migrate.InPlace), "save shared configuration")
+	assert.Empty(t, h.source.Calls())
+	assert.Empty(t, h.target.Calls())
+}
+
+func TestMigrateInPlace_RestoreFailureIsReportedAndKeepsTheSnapshot(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.seedHost()
+	h.onTargetStart = func() {
+		h.targetRewritesTheHost()
+		// The drop-in the target created cannot be removed from a read-only
+		// directory.
+		require.NoError(t, os.Chmod(filepath.Join(h.hostRoot, "etc/containerd"), 0o500))
+	}
+	h.failAt["kubelet-on-host"] = errors.New("not ready")
+
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(h.hostRoot, "etc/containerd"), 0o700) }) //nolint:errcheck // cleanup
+
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+
+	err := h.run(isolation.ModeContainer, migrate.InPlace)
+	require.ErrorContains(t, err, "restore shared configuration")
+	assert.DirExists(t, inPlaceConfigSnapshotDir(), "kept so the restore can be tried again")
+}
+
+func TestMigrateInPlace_ResumeAfterACrashRestoresTheSharedConfiguration(t *testing.T) {
+	for _, step := range []migrate.Step{migrate.StepPreparing, migrate.StepStoppingSource, migrate.StepStartingTarget, migrate.StepPersisting} {
+		t.Run(string(step), func(t *testing.T) {
+			h := newMigHarness(t, isolation.ModeNSpawn)
+			h.seedHost()
+
+			// The first daemon took the snapshot and the target rewrote the files
+			// before it died.
+			require.NoError(t, confsnap.Take(inPlaceConfigSnapshotDir(), h.hostRoot, sharedTestPaths))
+			h.targetRewritesTheHost()
+
+			writeJournal(t, step)
+
+			c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
+			recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
+
+			h.assertHostIsTheSources()
+			assert.NoDirExists(t, inPlaceConfigSnapshotDir())
+			assert.Equal(t, v1alpha3.OperationPhaseFailed, getOp(t, c).Status.Phase)
+		})
+	}
+}
+
+func TestMigrateInPlace_ResumeWithoutASnapshotStillRollsBack(t *testing.T) {
+	// A migration an earlier agent started saved no snapshot.
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.seedHost()
+	writeJournal(t, migrate.StepStartingTarget)
+
+	c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
+
+	assert.Equal(t, v1alpha3.OperationPhaseFailed, getOp(t, c).Status.Phase)
+	assert.Contains(t, h.source.Calls(), "start kube1")
+}
+
+func TestMigrateInPlace_ResumeOfAFinishedMigrationDropsTheSnapshot(t *testing.T) {
+	h := newMigHarness(t, isolation.ModeNSpawn)
+	h.seedHost()
+	require.NoError(t, confsnap.Take(inPlaceConfigSnapshotDir(), h.hostRoot, sharedTestPaths))
+	h.targetRewritesTheHost()
+
+	target := h.active.Config.DeepCopy()
+	target.Isolation = string(isolation.ModeContainer)
+	h.applied["kube2"] = target
+
+	writeJournal(t, migrate.StepAwaitingReady)
+
+	c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
+
+	assert.Equal(t, "target: config\n", h.hostRead("var/lib/kubelet/config.yaml"), "a migration that held keeps the target's files")
+	assert.NoDirExists(t, inPlaceConfigSnapshotDir())
 }

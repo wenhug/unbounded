@@ -14,6 +14,7 @@ import (
 	"github.com/Azure/unbounded/cmd/agent/internal/containerops"
 	"github.com/Azure/unbounded/cmd/agent/internal/nspawnops"
 	"github.com/Azure/unbounded/internal/provision"
+	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
@@ -216,6 +217,23 @@ func newInPlaceMigration(
 		},
 		// The target's artifacts for the same configuration a repave would use.
 		Download: func(ctx context.Context) error { return stageMigrationArchives(ctx, log, archives) },
+		// The files both stacks write at the same host paths, such as the kubelet
+		// identity. A rollback restarts the source, which needs them as they were.
+		SnapshotConfig: func(context.Context) error {
+			return confsnap.Take(inPlaceConfigSnapshotDir(), migrationConfigRoot(), migrationConfigPaths())
+		},
+		RestoreConfig: func(context.Context) error {
+			err := confsnap.Restore(inPlaceConfigSnapshotDir(), migrationConfigRoot())
+			if errors.Is(err, confsnap.ErrNoSnapshot) {
+				// A migration an earlier agent started saved nothing.
+				log.Warn("no saved shared configuration to restore")
+
+				return nil
+			}
+
+			return err
+		},
+		DiscardConfig: func(context.Context) error { return confsnap.Discard(inPlaceConfigSnapshotDir()) },
 		// As a repave does, after the source is stopped.
 		CleanupNetwork: func(ctx context.Context) error { return cleanupMigrationNetwork(ctx, log) },
 		PersistTarget: func(ctx context.Context, _ isolation.NodeRoot) error {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
@@ -60,4 +61,17 @@ var (
 	reprovisionJournalOf  = func() string { return filepath.Join(reprovisionDir(), ReprovisionJournalName) }
 	inPlaceJournalStore   = func() migrate.JournalStore { return migrate.JournalStore{Path: inPlaceJournalPath()} }
 	reprovisionJournalFor = func() migrate.JournalStore { return migrate.JournalStore{Path: reprovisionJournalOf()} }
+
+	// inPlaceConfigSnapshotDir holds the saved shared configuration, next to the
+	// journal, so a restarted daemon can still restore it.
+	inPlaceConfigSnapshotDir = func() string {
+		return filepath.Join(filepath.Dir(inPlaceJournalPath()), inPlaceConfigSnapshotName)
+	}
+	// migrationConfigRoot prefixes the shared configuration paths. Empty is the
+	// real host.
+	migrationConfigRoot  = func() string { return "" }
+	migrationConfigPaths = confsnap.SharedPaths
 )
+
+// inPlaceConfigSnapshotName is the directory of the saved shared configuration.
+const inPlaceConfigSnapshotName = "isolation-migration-config"
