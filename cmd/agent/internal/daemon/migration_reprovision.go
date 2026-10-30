@@ -203,6 +203,10 @@ func stageHandoff(log *slog.Logger, dir string, cfg *provision.AgentConfig) erro
 // daemon.
 func installReprovisionUnit(ctx context.Context, log *slog.Logger, dir string) error {
 	path := reprovisionUnitPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
 	if err := renameio.WriteFile(path, []byte(renderReprovisionUnit(dir)), 0o644, renameio.WithTempDir(filepath.Dir(path))); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}

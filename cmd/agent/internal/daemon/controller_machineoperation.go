@@ -27,8 +27,8 @@ const agentUpgradeLockRetryDelay = 2 * time.Second
 type machineOperationTarget struct {
 	installation *installstate.Store
 	client.Client
-	log                  *slog.Logger
-	machineName          string
+	log         *slog.Logger
+	machineName string
 	// nodeName and nodes are the Kubernetes Node and the way to cordon, drain
 	// and watch it, for IsolationMigrate. Nil nodes refuses a migration.
 	nodeName             string

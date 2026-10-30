@@ -93,20 +93,34 @@ func TestResumeInPlace(t *testing.T) {
 		target     []string
 		hooks      []string
 	}{
-		{name: "preparing removes the partial target only", at: StepPreparing, wantErr: ErrInterrupted,
-			target: []string{"destroy kube2"}},
-		{name: "draining removes the target and leaves the source", at: StepDraining, wantErr: ErrInterrupted,
-			target: []string{"destroy kube2"}},
-		{name: "stopping source restarts it", at: StepStoppingSource, wantErr: ErrInterrupted, rolledBack: true,
-			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"}},
-		{name: "starting target stops it and restarts the source", at: StepStartingTarget, wantErr: ErrInterrupted, rolledBack: true,
-			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"}},
-		{name: "persisting also restores the source config", at: StepPersisting, wantErr: ErrInterrupted, rolledBack: true,
-			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"}, hooks: []string{"restore-source"}},
-		{name: "awaiting ready finishes when ready", at: StepAwaitingReady,
-			source: []string{"destroy kube1"}, hooks: []string{"wait-ready", "remove-source-config"}},
-		{name: "ready only cleans up the source", at: StepReady,
-			source: []string{"destroy kube1"}, hooks: []string{"remove-source-config"}},
+		{
+			name: "preparing removes the partial target only", at: StepPreparing, wantErr: ErrInterrupted,
+			target: []string{"destroy kube2"},
+		},
+		{
+			name: "draining removes the target and leaves the source", at: StepDraining, wantErr: ErrInterrupted,
+			target: []string{"destroy kube2"},
+		},
+		{
+			name: "stopping source restarts it", at: StepStoppingSource, wantErr: ErrInterrupted, rolledBack: true,
+			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"},
+		},
+		{
+			name: "starting target stops it and restarts the source", at: StepStartingTarget, wantErr: ErrInterrupted, rolledBack: true,
+			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"},
+		},
+		{
+			name: "persisting also restores the source config", at: StepPersisting, wantErr: ErrInterrupted, rolledBack: true,
+			source: []string{"start kube1"}, target: []string{"stop kube2", "destroy kube2"}, hooks: []string{"restore-source"},
+		},
+		{
+			name: "awaiting ready finishes when ready", at: StepAwaitingReady,
+			source: []string{"destroy kube1"}, hooks: []string{"wait-ready", "remove-source-config"},
+		},
+		{
+			name: "ready only cleans up the source", at: StepReady,
+			source: []string{"destroy kube1"}, hooks: []string{"remove-source-config"},
+		},
 		{name: "complete does nothing", at: StepComplete},
 	}
 
@@ -190,8 +204,10 @@ func TestJournalStoreRoundTrip(t *testing.T) {
 	_, err := s.Load()
 	require.ErrorIs(t, err, ErrNoJournal)
 
-	in := Journal{Operation: "op-1", Strategy: InPlace, From: isolation.ModeNSpawn, To: isolation.ModeContainer,
-		SourceSlot: "kube1", TargetSlot: "kube2", Step: StepDraining, Cordoned: true}
+	in := Journal{
+		Operation: "op-1", Strategy: InPlace, From: isolation.ModeNSpawn, To: isolation.ModeContainer,
+		SourceSlot: "kube1", TargetSlot: "kube2", Step: StepDraining, Cordoned: true,
+	}
 	require.NoError(t, s.Save(in))
 
 	out, err := s.Load()

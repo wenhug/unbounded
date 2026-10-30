@@ -132,6 +132,7 @@ func TestDrainRetriesWhileADisruptionBudgetBlocks(t *testing.T) {
 	c := fake.NewSimpleClientset(owned("default", "web", "ReplicaSet"))
 
 	blocks := 2
+
 	c.PrependReactor("create", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		ca := a.(k8stesting.CreateAction)
 		if ca.GetSubresource() != "eviction" {
