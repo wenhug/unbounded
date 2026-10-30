@@ -333,7 +333,7 @@ func registerMachine(ctx context.Context, log *slog.Logger, c client.Client, cfg
 			slog.String("machineID", string(machine.UID)),
 		)
 
-		return reportMachineObservations(ctx, c, cfg)
+		return reportMachineObservations(ctx, log, c, cfg)
 	} else if apimeta.IsNoMatchError(err) {
 		return fmt.Errorf("machine CRD is not installed (machina not deployed?): %w", err)
 	} else if !apierrors.IsNotFound(err) {
@@ -346,7 +346,7 @@ func registerMachine(ctx context.Context, log *slog.Logger, c client.Client, cfg
 	machine = buildMachineCR(cfg)
 	if err := c.Create(ctx, &machine); apierrors.IsAlreadyExists(err) {
 		log.Info("Machine CR was created by another client", slog.String("machine", machineName))
-		return reportMachineObservations(ctx, c, cfg)
+		return reportMachineObservations(ctx, log, c, cfg)
 	} else if err != nil {
 		return fmt.Errorf("create Machine CR %q: %w", machineName, err)
 	}
@@ -357,17 +357,25 @@ func registerMachine(ctx context.Context, log *slog.Logger, c client.Client, cfg
 		slog.String("machineID", string(machine.UID)),
 	)
 
-	return reportMachineObservations(ctx, c, cfg)
+	return reportMachineObservations(ctx, log, c, cfg)
 }
 
 // reportMachineObservations reports everything the agent observes about its own
-// installation to the Machine status.
-func reportMachineObservations(ctx context.Context, c client.Client, cfg *provision.AgentConfig) error {
+// installation to the Machine status. The observed isolation is best effort: it
+// only feeds the drift condition, so a failure to report it (an older Machine
+// CRD without the field, a missing status permission, an API error) is logged
+// and never fails registration or daemon start.
+func reportMachineObservations(ctx context.Context, log *slog.Logger, c client.Client, cfg *provision.AgentConfig) error {
 	if err := reportProvisioningFormat(ctx, c, cfg); err != nil {
 		return err
 	}
 
-	return reportObservedIsolation(ctx, c, cfg)
+	if err := reportObservedIsolation(ctx, c, cfg); err != nil {
+		log.Warn("could not report observed isolation; the drift condition will not be set until it is reported",
+			slog.String("machine", cfg.MachineName), slog.Any("error", err))
+	}
+
+	return nil
 }
 
 // reportObservedIsolation reports the isolation mode the node was applied

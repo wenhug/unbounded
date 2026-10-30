@@ -70,8 +70,24 @@ func TestReportObservedIsolationRejectsUnknownModeAndMissingMachine(t *testing.T
 func TestReportMachineObservationsReportsBoth(t *testing.T) {
 	c, m := observedIsolationClient(t)
 
-	require.NoError(t, reportMachineObservations(t.Context(), c, &provision.AgentConfig{MachineName: m.Name, ProvisioningFormat: "ignition", Isolation: "none"}))
+	require.NoError(t, reportMachineObservations(t.Context(), discardLogger(), c, &provision.AgentConfig{MachineName: m.Name, ProvisioningFormat: "ignition", Isolation: "none"}))
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(m), m))
 	require.Equal(t, api.ProvisioningFormatIgnition, m.Status.ObservedProvisioningFormat)
 	require.Equal(t, api.IsolationNone, m.Status.ObservedIsolation)
+}
+
+func TestReportMachineObservationsNeverFailsOnTheIsolationReport(t *testing.T) {
+	c, m := observedIsolationClient(t)
+
+	// A config the report rejects.
+	require.NoError(t, reportMachineObservations(t.Context(), discardLogger(), c, &provision.AgentConfig{MachineName: m.Name, Isolation: "microvm"}))
+
+	// A Machine that cannot be read.
+	require.NoError(t, reportMachineObservations(t.Context(), discardLogger(), c, &provision.AgentConfig{MachineName: "absent"}))
+}
+
+func TestReportMachineObservationsStillFailsOnTheProvisioningFormat(t *testing.T) {
+	c, m := observedIsolationClient(t)
+
+	require.Error(t, reportMachineObservations(t.Context(), discardLogger(), c, &provision.AgentConfig{MachineName: m.Name, ProvisioningFormat: "bogus"}))
 }
