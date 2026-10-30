@@ -69,6 +69,18 @@ type Options struct {
 	// succeed again. When nil the failure recovery cases are skipped.
 	Fail func(op Op, err error)
 
+	// Grants, when set, are requests the backend must honor: Prepare with them
+	// in Spec.Grants succeeds and the node starts, runs and stops. They must be
+	// satisfiable on the runner's host, for example by creating the paths they
+	// name in a temporary tree.
+	Grants []isolation.Grant
+
+	// RefusedGrants, when set, are requests the backend cannot honor. Prepare
+	// with any one of them must return an error rather than ignore the grant,
+	// and must leave the slot preparable. Backends that honor everything leave
+	// it empty.
+	RefusedGrants []isolation.Grant
+
 	// SkipLogs skips the Logs case for backends that cannot stream logs under
 	// test.
 	SkipLogs bool
@@ -88,6 +100,8 @@ func Run(t *testing.T, newBackend NewBackend) {
 		{"identity", caseIdentity},
 		{"prepare", casePrepare},
 		{"prepare is idempotent", casePrepareIdempotent},
+		{"prepare honors grants", casePrepareGrants},
+		{"prepare refuses a grant it cannot honor", casePrepareRefusedGrants},
 		{"start makes the node run", caseStart},
 		{"start is idempotent", caseStartIdempotent},
 		{"stop stops the node", caseStop},
@@ -191,6 +205,42 @@ func casePrepareIdempotent(t *testing.T, s *session) {
 
 	require.Equal(t, first.Slot(), second.Slot())
 	require.Equal(t, first.Path("/x"), second.Path("/x"))
+}
+
+func casePrepareGrants(t *testing.T, s *session) {
+	if len(s.opts.Grants) == 0 {
+		t.Skip("runner provided no grants")
+	}
+
+	spec := s.opts.Spec
+	spec.Grants = s.opts.Grants
+
+	r, err := s.b.Prepare(t.Context(), spec)
+	require.NoError(t, err, "a backend must honor the grants it is given")
+	require.Equal(t, spec.Slot, r.Slot())
+
+	require.NoError(t, s.b.Start(t.Context(), r))
+	s.requireRunning(t, r, true)
+
+	require.NoError(t, s.b.Stop(t.Context(), r))
+	s.requireRunning(t, r, false)
+}
+
+func casePrepareRefusedGrants(t *testing.T, s *session) {
+	if len(s.opts.RefusedGrants) == 0 {
+		t.Skip("runner provided no grant the backend refuses")
+	}
+
+	for _, g := range s.opts.RefusedGrants {
+		spec := s.opts.Spec
+		spec.Grants = []isolation.Grant{g}
+
+		_, err := s.b.Prepare(t.Context(), spec)
+		require.Error(t, err, "a grant the backend cannot honor must fail Prepare, not be ignored: %+v", g)
+	}
+
+	// The refusals must not have wedged the slot.
+	s.started(t)
 }
 
 func caseStart(t *testing.T, s *session) {

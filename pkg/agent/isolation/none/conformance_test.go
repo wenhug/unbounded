@@ -73,12 +73,16 @@ func TestConformance(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(bin, "journalctl"), []byte("#!/bin/sh\necho log line\n"), 0o755))
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
+		hostRoot, grants := gpuHost(t)
+
 		b := &Backend{
-			Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-			Layout:     Layout{Base: filepath.Join(t.TempDir(), "node")},
-			SystemdDir: t.TempDir(),
-			Run:        h.run,
-			Units:      UnitSpec{KubeletConfigPath: "/var/lib/kubelet/config.yaml"},
+			Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Layout:       Layout{Base: filepath.Join(t.TempDir(), "node")},
+			SystemdDir:   t.TempDir(),
+			Run:          h.run,
+			Units:        UnitSpec{KubeletConfigPath: "/var/lib/kubelet/config.yaml"},
+			HostRoot:     hostRoot,
+			GPUHostPaths: []string{"/usr/bin/nvidia-ctk", "/usr/bin/nvidia-container-runtime"},
 		}
 
 		return b, isolationtest.Options{
@@ -86,6 +90,14 @@ func TestConformance(t *testing.T) {
 			ExecArgs:     []string{"echo", "hello"},
 			ExecWant:     "hello",
 			ExecFailArgs: []string{"false"},
+			// The NVIDIA set from a tree standing in for a GPU host, which the
+			// host-native stack satisfies natively.
+			Grants: grants,
+			RefusedGrants: []isolation.Grant{
+				{Kind: isolation.GrantMount, Purpose: isolation.PurposeHostMount, Source: "/usr/bin", Target: "/elsewhere"},
+				{Kind: isolation.GrantLibraryPath, Source: "/usr/lib"},
+				{Kind: isolation.GrantDevice, Purpose: isolation.PurposeHostDevice, Source: "/dev/absent"},
+			},
 			Fail: func(op isolationtest.Op, err error) {
 				verb := map[isolationtest.Op]string{
 					isolationtest.OpPrepare: "daemon-reload",

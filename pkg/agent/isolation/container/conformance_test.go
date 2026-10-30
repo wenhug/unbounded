@@ -111,7 +111,15 @@ func TestConformance(t *testing.T) {
 			Unpack: func(_ context.Context, _ isolation.NodeSpec, d string) error {
 				return os.MkdirAll(filepath.Join(d, "etc"), 0o755)
 			},
+			StatDevice: func(p string) (DeviceInfo, error) {
+				if d, ok := nvidiaDevices[p]; ok {
+					return d, nil
+				}
+
+				return DeviceInfo{}, os.ErrNotExist
+			},
 		}
+		require.NoError(t, os.MkdirAll(filepath.Join(deps.SourceRoot, "dev/nvidia-caps"), 0o755))
 		require.NoError(t, os.WriteFile(deps.MountInfoPath, nil, 0o644))
 
 		b, err := isolation.New(isolation.ModeContainer, deps)
@@ -122,6 +130,14 @@ func TestConformance(t *testing.T) {
 			ExecArgs:     []string{"echo", "hello"},
 			ExecWant:     "hello",
 			ExecFailArgs: []string{"false"},
+			// The NVIDIA set the machine asks for, as devices, a bound device
+			// directory and read-only mounts.
+			Grants: nvidiaGrants,
+			RefusedGrants: []isolation.Grant{
+				{Kind: isolation.GrantMount, Source: "/x", Target: "/var/lib/kubelet"},
+				{Kind: isolation.GrantDevice, Purpose: isolation.PurposeHostDevice, Source: "/dev/absent"},
+				{Kind: isolation.GrantMount, Source: "relative"},
+			},
 			Fail: func(op isolationtest.Op, err error) {
 				verb := map[isolationtest.Op]string{
 					isolationtest.OpPrepare: "daemon-reload",
