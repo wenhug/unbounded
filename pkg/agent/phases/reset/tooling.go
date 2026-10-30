@@ -5,9 +5,9 @@ package reset
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"os/exec"
+
+	"github.com/Azure/unbounded/pkg/agent/isolation/nspawn"
 )
 
 // missingTool reports whether err is a host inspection tool that is not
@@ -26,17 +26,10 @@ import (
 // running, because the tools needed to start it were never there. Treating that
 // as an error leaves an installation record nothing can clear, which is the one
 // outcome reset exists to prevent.
-func missingTool(err error) bool { return errors.Is(err, exec.ErrNotFound) }
+func missingTool(err error) bool { return nspawn.MissingTool(err) }
 
 // registeredMachineForCleanup answers RegisteredMachine's question with the
 // tolerance described on missingTool. Cleanup uses this; admission must not.
 func registeredMachineForCleanup(ctx context.Context, log *slog.Logger, name string) (bool, error) {
-	exists, err := RegisteredMachine(ctx, log, name)
-	if missingTool(err) {
-		log.Warn("machine inventory tool is not installed; nothing of ours can be running", "machine", name)
-
-		return false, nil
-	}
-
-	return exists, err
+	return nspawn.RegisteredForCleanup(ctx, log, name)
 }

@@ -35,7 +35,11 @@ func RootAt(slot, dir string) isolation.DirRoot {
 // systemd-run --machine=<slot> --pipe --wait. Stdout is streamed at Debug and
 // stderr at Error, and the captured stdout is returned.
 func Exec(ctx context.Context, log *slog.Logger, slot string, args ...string) (string, error) {
-	return executil.MachineRun(ctx, log, slot, args...)
+	runArgs := make([]string, 0, 3+len(args))
+	runArgs = append(runArgs, "--machine="+slot, "--pipe", "--wait")
+	runArgs = append(runArgs, args...)
+
+	return executil.OutputCmd(ctx, log, "systemd-run", runArgs...)
 }
 
 // Logs returns the machine journal for the slot, via journalctl --machine.
