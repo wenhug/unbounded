@@ -70,6 +70,36 @@ class PlanStepTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             e2e.parse_preflight_report("no json here")
 
+    def test_preflight_report_check_accepts_the_modes_own_check(self):
+        report = {"status": "ok", "checks": [{"name": "none-backend", "severity": "ok"}]}
+        e2e.check_isolation_preflight_report("none", report)
+
+    def test_preflight_report_check_rejects_a_missing_or_foreign_check(self):
+        with self.assertRaises(SystemExit):
+            e2e.check_isolation_preflight_report("none", {"checks": [{"name": "nspawn-runtime"}]})
+        with self.assertRaises(SystemExit):
+            e2e.check_isolation_preflight_report(
+                "none", {"checks": [{"name": "none-backend"}, {"name": "container-backend"}]})
+        with self.assertRaises(SystemExit):
+            e2e.check_isolation_preflight_report(
+                "none", {"checks": [{"name": "none-backend", "severity": "error", "message": "x"}]})
+
+    def test_bootstrap_report_is_only_asserted_for_the_bootstrap_mode(self):
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory(dir=str(e2e.REPO_ROOT / "tmp")) as tmp:
+            saved = pathlib.Path(tmp) / "unbounded-agent-preflight.json"
+            saved.write_text(json.dumps({"checks": [{"name": "nspawn-runtime", "severity": "ok"}]}))
+            with patch.object(e2e, "VM_DIR", pathlib.Path(tmp)):
+                with patch.dict("os.environ", {"ISOLATION_MODE": ""}):
+                    # An nspawn bootstrap says nothing about a node now in none mode.
+                    e2e.assert_bootstrap_preflight_mode_check("none")
+                    e2e.assert_bootstrap_preflight_mode_check("nspawn")
+                with patch.dict("os.environ", {"ISOLATION_MODE": "none"}):
+                    with self.assertRaises(SystemExit):
+                        e2e.assert_bootstrap_preflight_mode_check("none")
+
     def test_every_mode_has_a_preflight_check(self):
         self.assertEqual(set(e2e.PREFLIGHT_MODE_CHECKS), set(e2e.ISOLATION_MODES))
 

@@ -6509,15 +6509,52 @@ def parse_preflight_report(text: str) -> dict[str, Any]:
 
 def validate_isolation_preflight() -> None:
     """Run the agent preflight on the installed host with --isolation set to the
-    mode under test. The report must be valid JSON and include the mode's own
-    check; other checks are recorded, not asserted, since an installed host
-    legitimately trips the existing-deployment check."""
+    mode under test.
+
+    On a host whose installation is complete and unchanged the command
+    short-circuits to an empty report (cmd preflight.go, AlreadyComplete): it
+    must still exit 0 and print a valid JSON document. The mode's own check
+    only runs before an install, so it is asserted against the report the
+    bootstrap saved, when that bootstrap ran in the mode under test. A report
+    that does carry checks is validated in full."""
     mode = isolation_mode()
     result = ssh_capture_quiet(
         f"sudo env UNBOUNDED_AGENT_CONFIG_FILE=/etc/unbounded/agent/config.json "
         f"{DAEMON_BINARY} preflight --isolation {mode} --output json"
     )
+    if result.returncode != 0 and not result.stdout.strip():
+        die(f"preflight --isolation {mode} exited {result.returncode} with no report: "
+            f"stderr {result.stderr.strip()[-600:]!r}")
     report = parse_preflight_report(result.stdout)
+    if not report.get("checks"):
+        log(f"Preflight on the installed {mode} host short-circuited to an empty report "
+            f"(installation already complete, exit {result.returncode})")
+        if result.returncode != 0:
+            die(f"preflight --isolation {mode} on an installed host exited {result.returncode}: "
+                f"{result.stderr.strip()[-600:]!r}")
+        assert_bootstrap_preflight_mode_check(mode)
+        return
+    check_isolation_preflight_report(mode, report)
+
+
+def assert_bootstrap_preflight_mode_check(mode: str) -> None:
+    """Assert the preflight report saved by the bootstrap ran the mode's own
+    check, when the bootstrap ran in the mode under test (a node that was
+    migrated here was bootstrapped in another mode, which says nothing)."""
+    saved = VM_DIR / "unbounded-agent-preflight.json"
+    if not saved.exists():
+        log("No bootstrap preflight report was saved; skipping the mode check assertion")
+        return
+    report = parse_preflight_report(saved.read_text())
+    names = {check.get("name") for check in report.get("checks", [])}
+    started_mode = os.environ.get("ISOLATION_MODE") or "nspawn"
+    if started_mode != mode:
+        log(f"The bootstrap ran in {started_mode}, not {mode}; its preflight report is not asserted")
+        return
+    check_isolation_preflight_report(mode, report)
+
+
+def check_isolation_preflight_report(mode: str, report: dict[str, Any]) -> None:
     names = {check.get("name"): check for check in report.get("checks", [])}
     want = PREFLIGHT_MODE_CHECKS[mode]
     if want not in names:
