@@ -45,23 +45,47 @@ Non-goals:
 ## 3. Verification notes
 
 Code is authoritative (`AGENTS.md`). Facts below come from an exploration pass
-whose line numbers were approximate. WP0 step 1 must re-verify every file and
-symbol cited here before editing. Verified during planning: the files named in
-section 4 exist, and `nodeOperator` is defined at
+whose line numbers were approximate; WP0 step 1 re-verified them (see
+"Citation verification" at the end of this section). Verified at the pre-change
+commit: the files named in section 4 exist, and `nodeOperator` is defined at
 `cmd/agent/internal/daemon/nodeoperator.go:37` with a single nspawn
 implementation. There are 35 `MachineRun(` references in Go sources (the
 exploration estimated about 40).
 
 Known doc and code drift to fix while touching these files:
 
-- `hack/smoke-metalman.py:68` cites `cmd/agent/internal/goalstates/constants.go`.
-  The file is `pkg/agent/goalstates/constants.go`.
-- `pkg/agent/phases/rootfs/os.go` hard-codes Ubuntu Noble apt sources, even for
-  Azure Linux rootfs images.
+- `hack/smoke-metalman.py:68` cited `cmd/agent/internal/goalstates/constants.go`.
+  The file is `pkg/agent/goalstates/constants.go`. The comment is fixed on this
+  branch.
+- `pkg/agent/phases/rootfs/os.go` hard-codes Ubuntu Noble apt sources
+  (`archSources`, `sources-amd64.list`, `sources-arm64.list`), and
+  `rootfs/provision.go:36` applies `ConfigureOS` to every rootfs, including the
+  Azure Linux 3 default images (`goalstates/constants.go:182-183`). Not changed
+  by this work.
 - Deprecated constants `DaemonBinaryPath` and `NSpawnLifecycleBinaryPath` in
-  `pkg/agent/goalstates/constants.go` are superseded by `hostroot`.
+  `pkg/agent/goalstates/constants.go` (lines 34 and 44 at the pre-change
+  commit) are superseded by `hostroot`.
+
+### Citation verification
+
+WP0 step 1 checked every file, line and symbol citation in this document
+against the pre-change commit (`design/agent-isolation-modes`, which is `main`
+plus the design documents). All file paths exist, except the deliberately wrong
+`cmd/agent/internal/goalstates/constants.go` quoted above. All symbols exist:
+`nodeOperator` (line 37), `machinectlRunner`, `NSpawnMachineKube1/Kube2`,
+`ResolveNSpawnConfig`, `resetResources`, `NSpawnLifecycleConfig`,
+`ProvisioningFormat`, and the hidden `nspawn-lifecycle` command. The `MachineRun(`
+count of 35 is exact. The reset order in section 9 matches `resetResources`.
+Corrections made: `FindActiveMachine` is a method of `nodeOperator`, not a
+function; `host/assets/99-*` also matches `99-kubernetes-sysctl.conf`, which is
+not a machined guard, so WP3 names the two guard files instead; section 4 is
+the pre-change layout, and WP0 moved the nspawn items it lists into
+`pkg/agent/isolation/nspawn`.
 
 ## 4. Current coupling (as explored)
+
+This section describes the layout at the pre-change commit. After WP0 the
+nspawn-specific items below live in `pkg/agent/isolation/nspawn`.
 
 Agent code lives in `cmd/agent/internal/{cmd,daemon,bootstrap,attest,installstate}`
 and `pkg/agent/{goalstates,phases/{host,rootfs,nodestart,nodestop,reset},nspawnlifecycle,config,hostroot,agentbinary}`.
@@ -86,8 +110,9 @@ Coupling points to abstract:
   `nspawn-lifecycle` command in `cmd/agent/internal/cmd/nspawn_lifecycle.go`.
 - Daemon seam: `nodeOperator` (`cmd/agent/internal/daemon/nodeoperator.go`),
   used by reboot, repave, reset, upgrade.
-- Active machine discovery: `FindActiveMachine`, keyed on
-  `/etc/unbounded/agent/<m>-applied-config.json`.
+- Active machine discovery: the `nodeOperator` method `FindActiveMachine`,
+  keyed on `/etc/unbounded/agent/<m>-applied-config.json`
+  (`goalstates.AppliedConfigPath`).
 - Uninstall: `internal/provision/assets/unbounded-agent-uninstall.sh`
   hard-codes `machinectl`, `/etc/systemd/nspawn`, `/var/lib/machines`.
 - Generated config and vendor data: `internal/provision/agent_config.go`,
@@ -497,7 +522,8 @@ moved from the nspawn-specific files), and edits to
 Steps:
 
 1. Re-verify section 4 against the code. Record any discrepancy in a short
-   note appended to this document before proceeding.
+   note appended to this document before proceeding. Done; see "Citation
+   verification" in section 3.
 2. Define `Backend`, `NodeRoot`, `Grant`, `Requirements`, `ExecSpec`, `Status`
    in `pkg/agent/isolation`, plus a registry and a fake backend for tests.
 3. Move all nspawn-specific code behind an `nspawn` backend: rendering
@@ -516,7 +542,23 @@ Acceptance:
   (`rootfs/testdata/**`, nodestart, reset, daemon tests).
 - `rg 'MachineDir|MachineRun|machinectl'` outside `pkg/agent/isolation/nspawn/`
   and `pkg/agent/phases/host/preflight*` returns no hits, or each remaining hit
-  is documented as intentional.
+  is documented as intentional. Remaining hits in Go sources (tests excluded),
+  all intentional:
+  - `goalstates/{rootfs,nodestart,resolve}.go`: the `MachineDir` field is the
+    nspawn backend's root directory in the goal state, kept so the nspawn
+    output is unchanged; `noderoot.go` is the adapter that turns it into a
+    `NodeRoot`.
+  - `phases/rootfs/preflight_local.go`: `nspawnMachineProvisioningChecker` is
+    nspawn-only preflight by nature (it inspects the machine directory), the
+    rootfs counterpart of the host machine checks, so it is acceptable here and
+    only runs for the nspawn mode.
+  - `phases/nodestart/preflight_api_server.go`: derives the blue/green slot name
+    from the root directory for the bootstrap preflight.
+  - `phases/host/os.go` and `isolation/isolation.go`: comments only.
+  - `nspawnlifecycle/lifecycle.go`: the `nspawn-lifecycle` hook is untouched
+    (invariant 6).
+  - `cmd/kubectl-unbounded/app/machine_soft_reboot.go`: help text that names
+    `machinectl shell kube1` for nspawn hosts.
 - `make lint` and `make test` pass.
 - The Python QEMU e2e for the default mode passes, if runnable. Otherwise
   report that it was not run.
@@ -591,7 +633,9 @@ Steps:
 6. Implement the migration orchestrator (section 10.3) on top of the
    `Backend` interface, including automatic rollback.
 7. Make nspawn-only host guards conditional: the `systemd-container` install
-   in `host/os.go`, the machined restart guards in `host/assets/99-*`, and the
+   in `host/os.go`, the machined restart guards
+   (`host/assets/99-unbounded-needrestart.conf` and
+   `99-unbounded-no-restart-systemd.conf`, applied by `host/apt.go`), and the
    `images/netboot/assets/vendor-data.tmpl` machined rules.
 
 Acceptance:
@@ -681,6 +725,6 @@ the QEMU e2e.
    Flatcar. Only the lineage, read-only `/usr` with dm-verity, weekly
    image-based updates, signed UKI with Secure Boot, and enforcing SELinux are
    confirmed from Microsoft documentation.
-5. WP0 step 1 re-verifies all code citations in this document.
+5. WP0 step 1 re-verified all code citations in this document (section 3).
 6. Approving this document is the approval required by `AGENTS.md` for the
    cross-package refactor in WP0.
