@@ -175,3 +175,29 @@ func TestUnregisterReturnsTheFactoryForRestoring(t *testing.T) {
 	_, ok = Unregister(mode)
 	require.False(t, ok)
 }
+
+func TestRegisteredChecksWithoutBuildingABackend(t *testing.T) {
+	const mode Mode = "none"
+
+	built := 0
+
+	Register(mode, func(any) (Backend, error) {
+		built++
+
+		return &FakeBackend{FakeMode: mode}, nil
+	})
+
+	t.Cleanup(func() { Unregister(mode) })
+
+	require.NoError(t, Registered(mode))
+	require.Zero(t, built, "checking a mode builds nothing")
+
+	require.ErrorContains(t, Registered("microvm"), "unsupported isolation mode")
+
+	f, ok := Unregister(mode)
+	require.True(t, ok)
+
+	require.ErrorContains(t, Registered(mode), "no registered backend")
+
+	Register(mode, f)
+}

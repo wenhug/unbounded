@@ -30,12 +30,12 @@ func Register(mode Mode, f Factory) {
 	registry[mode] = f
 }
 
-// New returns the backend for mode. The empty mode is the default mode. An
-// unknown or unregistered mode is an error.
-func New(mode Mode, deps any) (Backend, error) {
+// factory returns the registered factory for mode. The empty mode is the
+// default mode. An unknown or unregistered mode is an error.
+func factory(mode Mode) (Mode, Factory, error) {
 	m, err := ParseMode(string(mode))
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	registryMu.RLock()
@@ -45,10 +45,31 @@ func New(mode Mode, deps any) (Backend, error) {
 	registryMu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("isolation mode %q has no registered backend", m)
+		return "", nil, fmt.Errorf("isolation mode %q has no registered backend", m)
+	}
+
+	return m, f, nil
+}
+
+// New returns the backend for mode. The empty mode is the default mode. An
+// unknown or unregistered mode is an error.
+func New(mode Mode, deps any) (Backend, error) {
+	_, f, err := factory(mode)
+	if err != nil {
+		return nil, err
 	}
 
 	return f(deps)
+}
+
+// Registered returns nil when mode is a known mode with a registered backend,
+// and the error New would return otherwise. It builds nothing, so callers that
+// only need to know whether this agent can operate in a mode use it instead of
+// constructing a backend and discarding it.
+func Registered(mode Mode) error {
+	_, _, err := factory(mode)
+
+	return err
 }
 
 // Unregister removes the backend for mode and returns its factory, so a test

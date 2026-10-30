@@ -29,7 +29,7 @@ import (
 func migrateIsolation(ctx context.Context, log *slog.Logger, active *ActiveMachine, req migrate.Request, strategy migrate.Strategy, env migrationEnv) error {
 	// The target backend must exist in this agent. Failing here leaves the node
 	// untouched.
-	if _, err := isolation.New(req.Target, nil); err != nil {
+	if err := isolation.Registered(req.Target); err != nil {
 		return fmt.Errorf("cannot migrate %s to %s: %w", active.Mode, req.Target, err)
 	}
 

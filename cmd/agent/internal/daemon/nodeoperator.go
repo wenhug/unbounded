@@ -49,7 +49,7 @@ func activeMode(cfg *provision.AgentConfig) (isolation.Mode, error) {
 		return "", err
 	}
 
-	if _, err := isolation.New(mode, nil); err != nil {
+	if err := isolation.Registered(mode); err != nil {
 		return "", err
 	}
 
