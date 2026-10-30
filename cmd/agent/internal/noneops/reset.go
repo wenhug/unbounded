@@ -129,6 +129,7 @@ func (t *Teardown) RemoveConfig() phases.Task {
 		files := []string{
 			goalstates.ContainerdConfigPath,
 			goalstates.NvidiaRuntimeDropInPath,
+			goalstates.CDISpecFile,
 			goalstates.KubeletAPIServerCACertPath,
 			filepath.Join(goalstates.SystemdSystemDir, goalstates.LocalDNSSliceUnit),
 			modulesLoadPath,
@@ -149,7 +150,7 @@ func (t *Teardown) RemoveConfig() phases.Task {
 
 		// Directories the agent created and nothing else is expected in. Remove
 		// only when empty so anything an operator or a workload put there stays.
-		for _, d := range []string{goalstates.ContainerdConfDropInDir, goalstates.ContainerdDefaultHostsDir, goalstates.KubeletStaticPodManifestsDir, goalstates.KubeletPKIDir} {
+		for _, d := range []string{goalstates.ContainerdConfDropInDir, goalstates.CDISpecDir, goalstates.ContainerdDefaultHostsDir, goalstates.KubeletStaticPodManifestsDir, goalstates.KubeletPKIDir} {
 			if err := os.Remove(t.path(d)); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmpty(err) {
 				errs = append(errs, err)
 			}

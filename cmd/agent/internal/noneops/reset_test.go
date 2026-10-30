@@ -232,3 +232,20 @@ func TestLoadKernelModulesWritesListAndLoadsEach(t *testing.T) {
 
 	require.ErrorContains(t, k.Do(context.Background()), "modprobe br_netfilter")
 }
+
+func TestTeardownRemoveConfigRemovesTheCDISpecItGenerated(t *testing.T) {
+	td, _, root := newTeardown(t)
+	put(t, root, goalstates.CDISpecFile, "cdiVersion: 0.6.0\n")
+
+	require.NoError(t, td.RemoveConfig().Do(t.Context()))
+	require.NoFileExists(t, filepath.Join(root, goalstates.CDISpecFile))
+	require.NoDirExists(t, filepath.Join(root, goalstates.CDISpecDir), "the directory the agent created goes with it")
+}
+
+func TestTeardownRemoveConfigKeepsAForeignCDISpec(t *testing.T) {
+	td, _, root := newTeardown(t)
+	put(t, root, goalstates.CDISpecDir+"/vendor.yaml", "site")
+
+	require.NoError(t, td.RemoveConfig().Do(t.Context()))
+	require.FileExists(t, filepath.Join(root, goalstates.CDISpecDir, "vendor.yaml"))
+}

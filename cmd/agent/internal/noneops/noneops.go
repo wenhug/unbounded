@@ -86,6 +86,9 @@ type Params struct {
 	// directory below HostRoot.
 	ConfigSnapshotDir string
 
+
+	// SetupGPU replaces the host GPU setup that runs before the stack starts.
+	SetupGPU func(ctx context.Context) error
 	// WaitLocalDNS and WaitKubelet override the readiness waits. Nil uses the
 	// phases the nspawn mode uses.
 	WaitLocalDNS func(ctx context.Context) error
@@ -221,6 +224,16 @@ func VersionFor(r *goalstates.RootFS) string {
 	return strings.TrimPrefix(r.KubernetesVersion, "v") + "-" + hex.EncodeToString(sum[:4])
 }
 
+// setupGPU prepares the host for GPU workloads. It does nothing on a node
+// without NVIDIA GPUs.
+func (n *Node) setupGPU(ctx context.Context) error {
+	if n.p.SetupGPU != nil {
+		return n.p.SetupGPU(ctx)
+	}
+
+	return nodestart.SetupNVIDIAOnHost(n.p.Log, n.gs.NodeStart).Do(ctx)
+}
+
 func (n *Node) waitLocalDNS(ctx context.Context) error {
 	if n.p.WaitLocalDNS != nil {
 		return n.p.WaitLocalDNS(ctx)
@@ -254,6 +267,12 @@ func (n *Node) newBackend() *none.Backend {
 			LocalDNS:          n.gs.NodeStart.LocalDNS.Enabled,
 		},
 		Install: n.install,
+		// The stack is the host: GPU devices and libraries are already visible,
+		// so there is nothing to bind. What GPU workloads need is the toolkit's
+		// CDI spec, rebuilt at every start from the devices present then.
+		BeforeStart:  n.setupGPU,
+		HostRoot:     n.p.HostRoot,
+		GPUHostPaths: nodestart.NVIDIAToolkitPaths(),
 		AfterStart: map[string]func(context.Context) error{
 			none.UnitLocalDNS: n.waitLocalDNS,
 			none.UnitContainerd: func(ctx context.Context) error {
@@ -319,7 +338,11 @@ func (n *Node) Prepare(ctx context.Context) (isolation.NodeRoot, error) {
 		return nil, err
 	}
 
-	return n.backend.Prepare(ctx, isolation.NodeSpec{Slot: n.version, Version: n.gs.RootFS.KubernetesVersion})
+	return n.backend.Prepare(ctx, isolation.NodeSpec{
+		Slot:    n.version,
+		Version: n.gs.RootFS.KubernetesVersion,
+		Grants:  n.gs.RootFS.Grants(),
+	})
 }
 
 // Provision installs the version, writes the units and points the current link

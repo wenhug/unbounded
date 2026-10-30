@@ -638,3 +638,126 @@ func TestUpgradeSnapshotDirDefaultsBelowTheHostRootAndCanBeOverridden(t *testing
 	f.node.p.ConfigSnapshotDir = "/somewhere/else"
 	assert.Equal(t, "/somewhere/else", f.node.configSnapshotDir())
 }
+
+// gpuFixture is a fixture whose goal state has an NVIDIA GPU and whose host
+// tree has the devices, libraries and (optionally) the toolkit it names.
+func gpuFixture(t *testing.T, toolkit bool) *fixture {
+	t.Helper()
+
+	f := newFixture(t, false, nil)
+
+	for _, p := range []string{"/dev/nvidia0", "/dev/nvidiactl"} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(p)), 0o755))
+		require.NoError(t, os.WriteFile(f.hostPath(p), nil, 0o600))
+	}
+
+	require.NoError(t, os.MkdirAll(f.hostPath("/usr/lib/x86_64-linux-gnu"), 0o755))
+
+	if toolkit {
+		for _, p := range []string{goalstates.NvidiaCTKPath, goalstates.NvidiaContainerRuntimePath} {
+			require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(p)), 0o755))
+			require.NoError(t, os.WriteFile(f.hostPath(p), nil, 0o755))
+		}
+	}
+
+	host := goalstates.NvidiaHost{
+		Required:       true,
+		GPUDevicePaths: []string{"/dev/nvidia0", "/dev/nvidiactl"},
+		LibDirMounts:   []goalstates.NvidiaLibDirMount{{HostDir: "/usr/lib/x86_64-linux-gnu", ContainerDir: "/run/host-nvidia/0"}},
+		LibMappings:    []goalstates.NvidiaLibMapping{{HostPath: "/usr/lib/x86_64-linux-gnu/libcuda.so.1"}},
+		DriverVersion:  "580.126.09",
+	}
+
+	f.gs.RootFS.Nvidia = host
+	f.gs.NodeStart.Nvidia = host
+	f.gs.NodeStart.Containerd.NvidiaRuntime = goalstates.NvidiaRuntime{Enabled: true}
+
+	return f
+}
+
+func TestPrepareGivesTheBackendTheMachinesGrants(t *testing.T) {
+	f := gpuFixture(t, true)
+
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	// A grant the host cannot honor reaches the backend and fails Prepare,
+	// instead of being dropped on the way.
+	f2 := gpuFixture(t, true)
+	f2.gs.RootFS.AdditionalHostMounts = []config.AdditionalHostMount{{Source: "/data", Target: "/models"}}
+
+	_, err = f2.node.Prepare(t.Context())
+	require.ErrorContains(t, err, "cannot be honored in isolation mode none")
+}
+
+func TestPrepareOnAGPUHostWithoutTheToolkitFailsBeforeAnythingIsWritten(t *testing.T) {
+	f := gpuFixture(t, false)
+
+	_, err := f.node.Prepare(t.Context())
+	require.ErrorContains(t, err, "NVIDIA Container Toolkit")
+	require.NoFileExists(t, filepath.Join(f.sys, none.UnitContainerd))
+	require.Empty(t, f.h.calls, "no systemctl call, not even daemon-reload")
+}
+
+func TestStartPreparesGPUSupportBeforeAnyUnit(t *testing.T) {
+	f := gpuFixture(t, true)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(goalstates.KubeletKubeconfigPath)), 0o755))
+	require.NoError(t, os.WriteFile(f.hostPath(goalstates.KubeletKubeconfigPath), []byte("kc"), 0o600))
+
+	f.h.reset()
+	require.NoError(t, f.node.Start(t.Context(), false, false, false))
+
+	require.Equal(t, []string{
+		goalstates.NvidiaCTKPath + " config --set nvidia-container-runtime.mode=cdi --in-place",
+		goalstates.NvidiaCTKPath + " cdi generate --driver-root / --dev-root / --output " + goalstates.CDISpecFile +
+			" --disable-hook all --enable-hook create-symlinks --enable-hook update-ldcache",
+		"systemctl enable --now " + none.UnitContainerd,
+		"systemctl enable --now " + none.UnitKubelet,
+		"test -s " + goalstates.KubeletKubeconfigPath,
+	}, f.h.calls)
+	require.DirExists(t, f.hostPath(goalstates.CDISpecDir))
+}
+
+func TestRestartRebuildsTheCDISpec(t *testing.T) {
+	f := gpuFixture(t, true)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	f.h.reset()
+	require.NoError(t, f.node.Restart(t.Context()))
+
+	require.Contains(t, f.h.calls[1], "cdi generate", "a soft reboot follows the devices present now")
+	require.Equal(t, "systemctl restart "+none.UnitContainerd, f.h.calls[2])
+}
+
+func TestGPUSetupFailureStopsTheStartBeforeAnyUnit(t *testing.T) {
+	f := newFixture(t, false, nil)
+	f.node = New(Params{
+		Log: quiet(), Layout: none.Layout{Base: filepath.Join(t.TempDir(), "node")}, SystemdDir: f.sys, Run: f.h.run,
+		Proc: filepath.Join(t.TempDir(), "noproc"), HostRoot: f.root, GoalState: f.gs,
+		SetupNetwork: func(context.Context) error { return nil }, WaitLocalDNS: func(context.Context) error { return nil },
+		SetupGPU: func(context.Context) error { return errors.New("no toolkit") },
+	})
+
+	require.ErrorContains(t, f.node.Start(t.Context(), false, false, false), "no toolkit")
+	require.Empty(t, f.h.calls)
+}
+
+func TestAGPUlessNodeRunsNoNvidiaCommands(t *testing.T) {
+	f := newFixture(t, false, nil)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(goalstates.KubeletKubeconfigPath)), 0o755))
+	require.NoError(t, os.WriteFile(f.hostPath(goalstates.KubeletKubeconfigPath), []byte("kc"), 0o600))
+	require.NoError(t, f.node.Start(t.Context(), false, false, false))
+
+	for _, c := range f.h.calls {
+		require.NotContains(t, c, "nvidia")
+	}
+
+	require.NoDirExists(t, f.hostPath(goalstates.CDISpecDir))
+}
