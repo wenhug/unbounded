@@ -286,8 +286,21 @@ written by the existing nodestart phases through a goal-state `RootOverride`, an
 binaries land in `<base>/<version>/bin` through the same rootfs installers.
 Unverified: everything against a real systemd and containerd (only stubbed
 hosts were available), kubelet Ready beyond "unit active and credentials
-present", NVIDIA host setup, pods surviving a plain unit stop, and
-`IsolationMigrate` to or from `none`.
+present", pods surviving a plain unit stop, and `IsolationMigrate` to or from
+`none`.
+
+**GPU support (none).** Every grant is honored or refused by `Prepare`, never
+ignored: device nodes and identity mounts are checked for existence, NVIDIA
+library and helper directories are satisfied by the host view, and a mount at
+another path or a library-path grant is an error. On a host with NVIDIA devices
+`Prepare` also requires `/usr/bin/nvidia-ctk` and
+`/usr/bin/nvidia-container-runtime`; the agent does not install the toolkit in
+this mode. Before the units start on `Start`, `Restart` and `Upgrade` (and its
+rollback), `nodestart.SetupNVIDIAOnHost` selects CDI mode and regenerates
+`/etc/cdi/nvidia.yaml` from the host driver with the same hook selection as
+nspawn; the containerd nvidia runtime drop-in is the existing one. Reset removes
+the spec. Unverified: all of it on a real GPU host, including that the
+toolkit's CDI generation with `--driver-root /` is right on the distros in use.
 
 ### 8.3 `container` (Azure Container Linux)
 
@@ -355,8 +368,18 @@ state (pod mounts, previous kubelet credentials) and a rollback restarts the old
 slot against the new shared files; the applied config moves to the new slot only
 after it is healthy; the node-lifecycle post-start hook asks the runtime, not
 `systemctl is-active`, because the unit is still activating while
-`ExecStartPost` runs (an inference from systemd semantics, not observed). Not
-done: NVIDIA library wiring (the nspawn lifecycle hook's job), `crun`, nspawn
+`ExecStartPost` runs (an inference from systemd semantics, not observed).
+GPU support: the grants already became OCI mounts, devices and cgroup rules;
+the node-lifecycle hooks now also do the nspawn lifecycle hook's NVIDIA work.
+Pre-start rediscovers NVIDIA devices and libraries and re-renders the bundle
+(`Backend.RefreshGrants`; a node recorded without NVIDIA grants is left alone),
+and post-start (`nodelifecycle.Lifecycle.AfterStart`) waits for systemd in the
+container, stops containerd and kubelet, runs the shared `nodestart` NVIDIA
+tasks through the container exec (library links, driver root, CDI spec, CDI
+mode) and starts them again. The shared tasks now call the goal state's `Exec`
+instead of `nspawn.Exec`, which is unchanged for nspawn. Unverified on a GPU
+host and on Azure Container Linux. Not
+done: `crun`, nspawn
 lifecycle hook commands supplied through config. `IsolationMigrate` to and from
 `container` is wired; see the status note in section 10.4. Unverified, in addition to the assumptions above: everything
 against a real `runc`, systemd and Azure Container Linux; that

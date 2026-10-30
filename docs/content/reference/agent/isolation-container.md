@@ -94,7 +94,7 @@ configuration are not used by this mode.
 | Reset and delete | Stop the containers, remove the bundle, rootfs, and unit of each slot, the shared kubelet and CNI directories and the host runtime, then the host-global cleanup in the usual order. |
 | Health | The container is running, kubelet is healthy, and LocalDNS answers when enabled. |
 | Exec and logs | `unbounded-agent exec` runs through `runc exec`. `unbounded-agent logs` runs `journalctl` in the container. |
-| GPU and devices | The grants become OCI mounts and devices; the container runs with every device allowed. The NVIDIA library wiring that the `nspawn` lifecycle hook performs is not implemented for this mode, so NVIDIA GPU nodes are not supported yet. See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
+| GPU and devices | The grants become OCI mounts and devices; the container runs with every device allowed. NVIDIA libraries and the CDI spec are wired by the `node-lifecycle` hooks, as `nspawn-lifecycle` does for an `nspawn` machine (provisional, see below). See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
 | LocalDNS | CoreDNS runs in the container and the LocalDNS network unit is unchanged. |
 | Uninstall | The uninstall script reads the mode from the applied config and runs the `container` cleanup. |
 
@@ -115,7 +115,18 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
 - Both slots share the same-path directories, so a repave rewrites the kubelet
   configuration and CNI files the previous slot also sees, and a rollback
   restarts the previous slot against those new files.
-- NVIDIA GPU setup and `crun` are not implemented. `IsolationMigrate` to and
+- NVIDIA GPU wiring is implemented but has not run on a GPU host. The
+  pre-start hook rediscovers NVIDIA devices and libraries and re-renders the
+  bundle (a node recorded without NVIDIA grants is left alone, because adding a
+  GPU to a node provisioned with the CPU rootfs needs a new rootfs). The
+  post-start hook waits for systemd in the container, then stops containerd and
+  kubelet, links the host libraries, builds `/run/nvidia/driver`, generates
+  `/etc/cdi/nvidia.yaml`, selects CDI mode, and starts them again. A host that
+  reports NVIDIA devices with incomplete driver state fails the start, as in
+  `nspawn`. The `agent-*-nvidia` image supplies `nvidia-ctk`. Whether the
+  privileged container, the `/run/host-nvidia*` binds, and the CDI hooks behave
+  on Azure Container Linux is unverified.
+- `crun` is not implemented. `IsolationMigrate` to and
   from this mode is wired but has not run on a real host.
 - Whether Azure Container Linux accepts user-supplied Ignition when AKS
   provisions the node is unverified, as is whether a sysext would be a better

@@ -75,7 +75,7 @@ the other modes, so unbounded-net-node and gantry are unchanged.
 | Reset and delete | Same order as `nspawn`: stop the units, remove WireGuard keys, remove the configuration the agent wrote at shared paths, end leftover container shims, remove the units, drop-ins and `/opt/unbounded/node`, unmount and remove `/var/lib/kubelet`, `/var/lib/containerd`, `/etc/cni/net.d` and `/opt/cni/bin`, then the host-global cleanup. |
 | Health | Both units are active, kubelet is healthy, and LocalDNS answers when enabled. |
 | Exec and logs | `unbounded-agent exec` runs on the host. `unbounded-agent logs` reads the journal of the agent-owned units; `--unit kubelet` and `--unit containerd` select them. |
-| GPU and devices | Native. Nothing is bind-mounted because the stack sees the host directly. See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
+| GPU and devices | Native. Nothing is bind-mounted because the stack sees the host directly. NVIDIA GPUs need the NVIDIA Container Toolkit on the host; before each start the agent selects CDI mode and regenerates `/etc/cdi/nvidia.yaml`. Every device and mount request is either honored or refused, never ignored. See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
 | LocalDNS | CoreDNS runs as the `unbounded-localdns.service` host unit and the LocalDNS network unit is unchanged. The host's own `/etc/resolv.conf` is not rewritten; kubelet uses its dedicated resolver file. |
 | Uninstall | The uninstall script reads the mode from the applied config and runs the `none` cleanup. |
 
@@ -102,8 +102,21 @@ sudo unbounded-agent logs --unit kubelet --follow --lines 200
 - **Pods outlive the units.** containerd runs with `KillMode=process`, so a plain
   unit stop leaves pods running. Reset ends the shims; an upgrade does not need
   to because the operator drains the Node first.
-- **No NVIDIA setup.** The nspawn lifecycle hooks that wire NVIDIA libraries do
-  not run. The host driver and container toolkit must be installed on the host.
+- **NVIDIA GPUs.** The host driver and the NVIDIA Container Toolkit
+  (`/usr/bin/nvidia-ctk`, `/usr/bin/nvidia-container-runtime`) must be installed
+  on the host; the agent does not install them in this mode. When NVIDIA devices
+  are present and the toolkit is missing, Prepare fails with a message naming the
+  missing file, before any unit is written. Before containerd and kubelet start
+  (on start, soft reboot, and upgrade, including an upgrade rollback) the agent
+  selects CDI mode in the toolkit config and regenerates the CDI spec with
+  `create-symlinks` and `update-ldcache` hooks only, as `nspawn` does. This
+  changes two host-global files, the toolkit's `config.toml` and
+  `/etc/cdi/nvidia.yaml`; reset removes the spec and leaves `config.toml`.
+- **Requests the host view cannot honor.** A configured host mount at a different
+  path than its source, or a library-path request, cannot be honored when the
+  stack sees the host. Such a request fails Prepare with an error instead of
+  being ignored. Mounts at their own path and device nodes are checked for
+  existence.
 - **Migration.** Any move to or from `none` is a reprovision. In-place migration
   is not supported. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 

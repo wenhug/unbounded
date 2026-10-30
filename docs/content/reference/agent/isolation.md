@@ -85,7 +85,7 @@ Cordon and drain the node first; the agent does not.
 | Reset and delete | Stop slots, remove config, remove machine, clean bpffs, host-global cleanup | Stop units, remove versioned directories and units, host-global cleanup | Stop container, remove bundle, rootfs, and unit, host-global cleanup |
 | Health | Machine registered, kubelet healthy, LocalDNS | Units active, kubelet healthy, LocalDNS | Container running, kubelet healthy, LocalDNS |
 | Exec and logs | `systemd-run --machine`, machine journal | Host exec, `journalctl` | Runtime exec, container journal |
-| GPU and devices | Bind-mounts and `DeviceAllow=` | Native | OCI mounts and devices (NVIDIA wiring not implemented) |
+| GPU and devices | Bind-mounts and `DeviceAllow=` | Native, toolkit from the host | OCI mounts and devices, NVIDIA wired by the lifecycle hooks |
 | LocalDNS | CoreDNS in the machine | CoreDNS host unit | CoreDNS in the container |
 | Agent binary upgrade | Unchanged | Unchanged | Unchanged |
 | Uninstall | Mode read from the applied config | Same | Same |
