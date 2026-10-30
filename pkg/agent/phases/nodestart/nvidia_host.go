@@ -22,9 +22,10 @@ type setupNVIDIAOnHost struct {
 // NVIDIAToolkitPaths are the host paths the host-native node stack needs from
 // the NVIDIA Container Toolkit: containerd's nvidia runtime handler runs the
 // runtime, and the CDI spec is generated with the control tool. They are the
-// paths the nspawn rootfs images ship the same tools at.
-func NVIDIAToolkitPaths() []string {
-	return []string{goalstates.NvidiaCTKPath, goalstates.NvidiaContainerRuntimePath}
+// paths the nspawn rootfs images ship the same tools at, unless the machine's
+// configuration says the host installs them elsewhere.
+func NVIDIAToolkitPaths(toolkit goalstates.NvidiaToolkit) []string {
+	return []string{toolkit.CTK(), toolkit.ContainerRuntime()}
 }
 
 // SetupNVIDIAOnHost returns a task that prepares a host-native node stack
@@ -66,14 +67,14 @@ func (s *setupNVIDIAOnHost) Do(ctx context.Context) error {
 		return fmt.Errorf("NVIDIA is required but resolved setup state is incomplete")
 	}
 
-	for _, p := range NVIDIAToolkitPaths() {
+	for _, p := range NVIDIAToolkitPaths(gs.NvidiaToolkit) {
 		if _, err := s.stat(gs.Root().Path(p)); err != nil {
 			return fmt.Errorf("NVIDIA GPUs were found but %s is not available on the host (%w); install the NVIDIA Container Toolkit, which isolation mode none requires on GPU hosts", p, err)
 		}
 	}
 
 	if _, err := gs.Exec(ctx, s.log,
-		goalstates.NvidiaCTKPath, "config",
+		gs.NvidiaToolkit.CTK(), "config",
 		"--set", "nvidia-container-runtime.mode=cdi",
 		"--in-place",
 	); err != nil {
@@ -88,7 +89,7 @@ func (s *setupNVIDIAOnHost) Do(ctx context.Context) error {
 	s.log.Info("generating CDI spec from the host NVIDIA driver", slog.String("output", goalstates.CDISpecFile))
 
 	if _, err := gs.Exec(ctx, s.log,
-		goalstates.NvidiaCTKPath, "cdi", "generate",
+		gs.NvidiaToolkit.CTK(), "cdi", "generate",
 		"--driver-root", "/",
 		"--dev-root", "/",
 		"--output", goalstates.CDISpecFile,

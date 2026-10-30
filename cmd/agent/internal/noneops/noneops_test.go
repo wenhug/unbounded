@@ -644,6 +644,13 @@ func TestUpgradeSnapshotDirDefaultsBelowTheHostRootAndCanBeOverridden(t *testing
 func gpuFixture(t *testing.T, toolkit bool) *fixture {
 	t.Helper()
 
+	return gpuFixtureAt(t, goalstates.NvidiaToolkit{}, toolkit)
+}
+
+// gpuFixtureAt is gpuFixture with the toolkit installed at the paths tk names.
+func gpuFixtureAt(t *testing.T, tk goalstates.NvidiaToolkit, toolkit bool) *fixture {
+	t.Helper()
+
 	f := newFixture(t, false, nil)
 
 	for _, p := range []string{"/dev/nvidia0", "/dev/nvidiactl"} {
@@ -654,7 +661,7 @@ func gpuFixture(t *testing.T, toolkit bool) *fixture {
 	require.NoError(t, os.MkdirAll(f.hostPath("/usr/lib/x86_64-linux-gnu"), 0o755))
 
 	if toolkit {
-		for _, p := range []string{goalstates.NvidiaCTKPath, goalstates.NvidiaContainerRuntimePath} {
+		for _, p := range []string{tk.CTK(), tk.ContainerRuntime()} {
 			require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(p)), 0o755))
 			require.NoError(t, os.WriteFile(f.hostPath(p), nil, 0o755))
 		}
@@ -671,6 +678,7 @@ func gpuFixture(t *testing.T, toolkit bool) *fixture {
 	f.gs.RootFS.Nvidia = host
 	f.gs.NodeStart.Nvidia = host
 	f.gs.NodeStart.Containerd.NvidiaRuntime = goalstates.NvidiaRuntime{Enabled: true}
+	f.gs.NodeStart.NvidiaToolkit = tk
 
 	return f
 }
@@ -760,4 +768,48 @@ func TestAGPUlessNodeRunsNoNvidiaCommands(t *testing.T) {
 	}
 
 	require.NoDirExists(t, f.hostPath(goalstates.CDISpecDir))
+}
+
+func TestAGPUHostWithTheToolkitElsewhereUsesTheConfiguredPaths(t *testing.T) {
+	tk := goalstates.NvidiaToolkit{
+		CTKPath:              "/usr/local/nvidia/toolkit/nvidia-ctk",
+		ContainerRuntimePath: "/usr/local/nvidia/toolkit/nvidia-container-runtime",
+	}
+
+	f := gpuFixtureAt(t, tk, true)
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err, "the default /usr/bin copies are not required when the paths are configured")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(f.hostPath(goalstates.KubeletKubeconfigPath)), 0o755))
+	require.NoError(t, os.WriteFile(f.hostPath(goalstates.KubeletKubeconfigPath), []byte("kc"), 0o600))
+
+	f.h.reset()
+	require.NoError(t, f.node.Start(t.Context(), false, false, false))
+
+	require.Equal(t, []string{
+		tk.CTKPath + " config --set nvidia-container-runtime.mode=cdi --in-place",
+		tk.CTKPath + " cdi generate --driver-root / --dev-root / --output " + goalstates.CDISpecFile +
+			" --disable-hook all --enable-hook create-symlinks --enable-hook update-ldcache",
+		"systemctl enable --now " + none.UnitContainerd,
+		"systemctl enable --now " + none.UnitKubelet,
+		"test -s " + goalstates.KubeletKubeconfigPath,
+	}, f.h.calls)
+}
+
+func TestPrepareNamesAMissingConfiguredToolkit(t *testing.T) {
+	tk := goalstates.NvidiaToolkit{CTKPath: "/usr/local/nvidia/toolkit/nvidia-ctk"}
+
+	// The toolkit is at the default paths, not where the configuration says.
+	f := gpuFixtureAt(t, goalstates.NvidiaToolkit{}, true)
+	f.gs.NodeStart.NvidiaToolkit = tk
+
+	node := New(Params{
+		Log: quiet(), Layout: none.Layout{Base: filepath.Join(t.TempDir(), "node")}, SystemdDir: f.sys, Run: f.h.run,
+		Proc: filepath.Join(t.TempDir(), "noproc"), HostRoot: f.root, GoalState: f.gs,
+		SetupNetwork: func(context.Context) error { return nil }, WaitLocalDNS: func(context.Context) error { return nil },
+	})
+
+	_, err := node.Prepare(t.Context())
+	require.ErrorContains(t, err, tk.CTKPath)
+	require.Empty(t, f.h.calls, "nothing is written or started")
 }

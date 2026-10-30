@@ -88,7 +88,7 @@ func TestSetupNVIDIAOnHostSelectsCDIAndGeneratesTheSpec(t *testing.T) {
 func TestSetupNVIDIAOnHostNamesAMissingToolkit(t *testing.T) {
 	t.Parallel()
 
-	for _, missing := range NVIDIAToolkitPaths() {
+	for _, missing := range NVIDIAToolkitPaths(goalstates.NvidiaToolkit{}) {
 		var calls [][]string
 
 		gs := gpuNodeStart(t, &calls)
@@ -187,4 +187,67 @@ func TestReconcileNVIDIARoutesThroughTheGoalStateExec(t *testing.T) {
 		{"systemctl", "stop", goalstates.SystemdUnitKubelet},
 		{"systemctl", "stop", goalstates.SystemdUnitContainerd},
 	}, calls)
+}
+
+func TestSetupNVIDIAOnHostUsesTheConfiguredToolkit(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ctk     = "/usr/local/nvidia/toolkit/nvidia-ctk"
+		runtime = "/usr/local/nvidia/toolkit/nvidia-container-runtime"
+	)
+
+	var calls [][]string
+
+	gs := gpuNodeStart(t, &calls)
+	gs.NvidiaToolkit = goalstates.NvidiaToolkit{CTKPath: ctk, ContainerRuntimePath: runtime}
+
+	var statted []string
+
+	task := SetupNVIDIAOnHost(slog.New(slog.DiscardHandler), gs).(*setupNVIDIAOnHost)
+	task.stat = func(p string) (os.FileInfo, error) {
+		statted = append(statted, strings.TrimPrefix(p, strings.TrimSuffix(gs.Root().Path("/"), "/")))
+		return nil, nil //nolint:nilnil // only the error matters
+	}
+
+	require.NoError(t, task.Do(t.Context()))
+
+	require.Equal(t, []string{ctk, runtime}, statted,
+		"the install check looks at the configured paths")
+	require.Len(t, calls, 2)
+
+	for _, call := range calls {
+		require.Equal(t, ctk, call[0], "every command runs the configured nvidia-ctk")
+	}
+
+	require.NotContains(t, strings.Join(calls[0], " "), goalstates.NvidiaCTKPath)
+}
+
+func TestSetupNVIDIAOnHostNamesAMissingConfiguredToolkit(t *testing.T) {
+	t.Parallel()
+
+	var calls [][]string
+
+	gs := gpuNodeStart(t, &calls)
+	gs.NvidiaToolkit = goalstates.NvidiaToolkit{ContainerRuntimePath: "/opt/tk/nvidia-container-runtime"}
+
+	task := SetupNVIDIAOnHost(slog.New(slog.DiscardHandler), gs).(*setupNVIDIAOnHost)
+	task.stat = func(p string) (os.FileInfo, error) {
+		if strings.HasSuffix(p, "/opt/tk/nvidia-container-runtime") {
+			return nil, fs.ErrNotExist
+		}
+
+		return nil, nil //nolint:nilnil // only the error matters
+	}
+
+	err := task.Do(t.Context())
+	require.ErrorContains(t, err, "/opt/tk/nvidia-container-runtime")
+	require.Empty(t, calls, "nothing runs when the toolkit is missing")
+}
+
+func TestNVIDIAToolkitPathsDefaultAndConfigured(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, []string{goalstates.NvidiaCTKPath, goalstates.NvidiaContainerRuntimePath}, NVIDIAToolkitPaths(goalstates.NvidiaToolkit{}))
+	require.Equal(t, []string{"/a/ctk", "/a/runtime"}, NVIDIAToolkitPaths(goalstates.NvidiaToolkit{CTKPath: "/a/ctk", ContainerRuntimePath: "/a/runtime"}))
 }

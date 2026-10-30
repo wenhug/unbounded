@@ -271,7 +271,7 @@ func (n *Node) newBackend() *none.Backend {
 		// CDI spec, rebuilt at every start from the devices present then.
 		BeforeStart:  n.setupGPU,
 		HostRoot:     n.p.HostRoot,
-		GPUHostPaths: nodestart.NVIDIAToolkitPaths(),
+		GPUHostPaths: nodestart.NVIDIAToolkitPaths(n.gs.NodeStart.NvidiaToolkit),
 		AfterStart: map[string]func(context.Context) error{
 			none.UnitLocalDNS: n.waitLocalDNS,
 			none.UnitContainerd: func(ctx context.Context) error {

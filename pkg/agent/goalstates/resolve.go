@@ -205,6 +205,7 @@ func resolveMachine(
 	containerd := ResolveContainerd(ContainerdOptions{
 		SandboxImage:   sandboxImage,
 		NvidiaRequired: nspawnConfig.Nvidia.Required,
+		NvidiaToolkit:  nvidiaToolkitFor(cfg),
 	})
 
 	nodeStart := &NodeStart{
@@ -217,6 +218,7 @@ func resolveMachine(
 		Kubelet:         kubelet,
 		LocalDNS:        localDNS,
 		Nvidia:          nvidia,
+		NvidiaToolkit:   nvidiaToolkitFor(cfg),
 	}
 
 	return &MachineGoalState{

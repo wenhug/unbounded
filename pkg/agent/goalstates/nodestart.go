@@ -37,6 +37,10 @@ type NodeStart struct {
 	// bind-mounted /run/host-nvidia/ directories.
 	Nvidia NvidiaHost
 
+	// NvidiaToolkit locates the NVIDIA Container Toolkit tools on the host. It
+	// is set only for isolation mode none; the zero value is the default paths.
+	NvidiaToolkit NvidiaToolkit
+
 	// RootOverride replaces the nspawn machine root for backends that do not
 	// run the node stack in a machine, such as the none backend. Nil means the
 	// nspawn root.
