@@ -7047,6 +7047,7 @@ def validate_host_reboot() -> None:
                 log("Host reboot and fresh workload/DNS passed without component repair")
                 return
         time.sleep(5)
+    dump_node_stack_diagnostics()
     die("node did not return Ready with a fresh boot identity after host reboot")
 
 
