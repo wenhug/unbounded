@@ -390,3 +390,24 @@ func TestMountsBelowFindsMountsWithEscapedPaths(t *testing.T) {
 		`/var/lib/unbounded/containers/kube1/rootfs/c\d`,
 	}, got, "a sibling slot with a shared name prefix is not below the directory")
 }
+
+// A host reboot empties /run, and runc fails the start with "open
+// /run/containerd: no such file or directory" when the bind source is missing,
+// which e2e showed leaves the unit restarting forever.
+func TestRegenerateRecreatesTheSamePathSources(t *testing.T) {
+	b, _, _ := newBackend(t)
+	ctx := context.Background()
+
+	_, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1", Grants: testGrants})
+	require.NoError(t, err)
+
+	for _, s := range SamePathMounts {
+		require.NoError(t, os.RemoveAll(filepath.Join(b.SourceRoot, s.Path)))
+	}
+
+	require.NoError(t, b.Regenerate(ctx, "kube1"))
+
+	for _, s := range SamePathMounts {
+		require.DirExists(t, filepath.Join(b.SourceRoot, s.Path))
+	}
+}

@@ -294,6 +294,12 @@ func (b *Backend) Regenerate(ctx context.Context, slot string) error {
 		return fmt.Errorf("decode recorded node spec: %w", err)
 	}
 
+	// /run is a tmpfs, so the same-path sources under it are gone after a host
+	// reboot, and runc fails the start when a bind source does not exist.
+	if err := b.ensureSamePathDirs(); err != nil {
+		return err
+	}
+
 	if b.RefreshGrants != nil {
 		grants, err := b.RefreshGrants(ctx, n.Grants)
 		if err != nil {
@@ -317,6 +323,18 @@ func (b *Backend) Regenerate(ctx context.Context, slot string) error {
 	return b.RenderBundle(slot, n.Grants)
 }
 
+// ensureSamePathDirs creates the host directories the container binds at the
+// same path.
+func (b *Backend) ensureSamePathDirs() error {
+	for _, s := range SamePathMounts {
+		if err := os.MkdirAll(filepath.Join(b.SourceRoot, s.Path), 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", s.Path, err)
+		}
+	}
+
+	return nil
+}
+
 // Prepare materializes the slot: rootfs, same-path source directories,
 // config.json, the recorded node spec and the supervising unit. It is safe to
 // repeat.
@@ -335,10 +353,8 @@ func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.
 		return nil, fmt.Errorf("rootfs %s is not present and no unpacker is configured", rootfs)
 	}
 
-	for _, s := range SamePathMounts {
-		if err := os.MkdirAll(filepath.Join(b.SourceRoot, s.Path), 0o755); err != nil {
-			return nil, fmt.Errorf("create %s: %w", s.Path, err)
-		}
+	if err := b.ensureSamePathDirs(); err != nil {
+		return nil, err
 	}
 
 	specData, err := json.Marshal(n)
