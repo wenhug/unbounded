@@ -847,7 +847,9 @@ def validate_isolation_mode() -> None:
         slots = container_slots_from_units(units.stdout)
         if len(slots) != 1:
             die(f"container mode must run exactly one {CONTAINER_UNIT_GLOB} unit, found {slots}")
-        ssh_cmd(f"sudo test -d {CONTAINER_ROOT_BASE}/{slots[0]}/rootfs")
+        # The slot directory is the container's rootfs (container.Root), so it
+        # holds the unpacked image directly.
+        ssh_cmd(f"sudo test -f {CONTAINER_ROOT_BASE}/{slots[0]}/etc/os-release")
         ssh_cmd(f"sudo {DAEMON_BINARY} exec -- /bin/true")
     log(f"Isolation mode {mode} verified on the host")
 
