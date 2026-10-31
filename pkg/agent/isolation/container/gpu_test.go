@@ -77,7 +77,7 @@ func TestConfigNvidiaGrantsBecomeDevicesRulesAndReadOnlyMounts(t *testing.T) {
 		paths[d.Path] = true
 	}
 
-	require.Equal(t, map[string]bool{"/dev/nvidia0": true, "/dev/nvidiactl": true, "/dev/nvidia-uvm": true}, paths)
+	require.Equal(t, map[string]bool{"/dev/kmsg": true, "/dev/nvidia0": true, "/dev/nvidiactl": true, "/dev/nvidia-uvm": true}, paths)
 
 	rules := 0
 

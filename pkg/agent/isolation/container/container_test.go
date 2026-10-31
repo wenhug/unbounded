@@ -121,8 +121,9 @@ func TestConfigGrantsBecomeMountsDevicesRules(t *testing.T) {
 	require.Contains(t, byDest["/opt/nvidia/lib64"].Options, "ro")
 	require.Contains(t, s.Process.Env, "LD_LIBRARY_PATH=/opt/nvidia/lib64")
 
-	require.Len(t, s.Linux.Devices, 1)
-	require.Equal(t, device{Path: "/dev/nvidia0", Type: "c", Major: 195, Minor: 0, FileMode: 0o666}, s.Linux.Devices[0])
+	// The baseline nodes come first, then the granted ones.
+	require.Len(t, s.Linux.Devices, len(baselineDevices)+1)
+	require.Equal(t, device{Path: "/dev/nvidia0", Type: "c", Major: 195, Minor: 0, FileMode: 0o666}, s.Linux.Devices[len(baselineDevices)])
 
 	var found bool
 
@@ -614,4 +615,51 @@ func TestBackendRegistered(t *testing.T) {
 	b, err = isolation.New(isolation.ModeContainer, deps)
 	require.NoError(t, err)
 	require.Equal(t, "/custom/runc", b.(*Backend).RuntimePath)
+}
+
+// The kubelet exits with "open /dev/kmsg: no such file or directory" when the
+// node container has no /dev/kmsg, which e2e showed keeps the Node from ever
+// registering. Every bundle must carry it, with a cgroup rule.
+func TestConfigAlwaysCreatesDevKmsg(t *testing.T) {
+	t.Parallel()
+
+	b, err := RenderConfig(BundleInput{RootfsDir: "/var/lib/unbounded/containers/kube1", SELinux: SELinuxPermissive})
+	require.NoError(t, err)
+
+	var cfg struct {
+		Linux struct {
+			Devices []struct {
+				Path     string
+				Type     string
+				Major    int64
+				Minor    int64
+				FileMode uint32
+			}
+			Resources struct {
+				Devices []struct {
+					Allow bool
+					Type  string
+					Major *int64
+					Minor *int64
+				}
+			}
+		}
+	}
+
+	require.NoError(t, json.Unmarshal(b, &cfg))
+	require.Len(t, cfg.Linux.Devices, 1)
+	require.Equal(t, "/dev/kmsg", cfg.Linux.Devices[0].Path)
+	require.Equal(t, "c", cfg.Linux.Devices[0].Type)
+	require.EqualValues(t, 1, cfg.Linux.Devices[0].Major)
+	require.EqualValues(t, 11, cfg.Linux.Devices[0].Minor)
+
+	var ruled bool
+
+	for _, r := range cfg.Linux.Resources.Devices {
+		if r.Allow && r.Type == "c" && r.Major != nil && *r.Major == 1 && r.Minor != nil && *r.Minor == 11 {
+			ruled = true
+		}
+	}
+
+	require.True(t, ruled, "an explicit cgroup rule for /dev/kmsg")
 }

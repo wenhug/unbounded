@@ -387,6 +387,15 @@
     ],
     "devices": [
       {
+        "path": "/dev/kmsg",
+        "type": "c",
+        "major": 1,
+        "minor": 11,
+        "fileMode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      {
         "path": "/dev/nvidia0",
         "type": "c",
         "major": 195,
@@ -400,6 +409,13 @@
       "devices": [
         {
           "allow": true,
+          "access": "rwm"
+        },
+        {
+          "allow": true,
+          "type": "c",
+          "major": 1,
+          "minor": 11,
           "access": "rwm"
         },
         {

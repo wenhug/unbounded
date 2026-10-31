@@ -157,6 +157,12 @@ type device struct {
 	GID      int    `json:"gid"`
 }
 
+// baselineDevices are the device nodes every node container gets beyond runc's
+// defaults.
+var baselineDevices = []device{
+	{Path: "/dev/kmsg", Type: "c", Major: 1, Minor: 11, FileMode: 0o644},
+}
+
 type resources struct {
 	Devices []deviceRule `json:"devices"`
 }
@@ -245,13 +251,20 @@ func RenderConfig(in BundleInput) ([]byte, error) {
 		mounts = append(mounts, mount{Destination: e.Target, Type: "bind", Source: e.Source, Options: []string{"rbind", mode}})
 	}
 
-	var (
-		devices  []device
-		libPaths []string
-	)
+	var libPaths []string
 
-	allowAll := deviceRule{Allow: true, Access: "rwm"}
-	rules := []deviceRule{allowAll}
+	// The kubelet opens /dev/kmsg to watch for OOM kills and exits when it is
+	// missing, and runc's default /dev has no such node. It is created in every
+	// bundle, with an explicit rule so it survives a tightened baseline.
+	devices := make([]device, 0, len(baselineDevices))
+	rules := []deviceRule{{Allow: true, Access: "rwm"}}
+
+	for _, d := range baselineDevices {
+		major, minor := d.Major, d.Minor
+		devices = append(devices, d)
+		rules = append(rules, deviceRule{Allow: true, Type: d.Type, Major: &major, Minor: &minor, Access: "rwm"})
+		taken[d.Path] = true
+	}
 
 	for _, g := range in.Grants {
 		if g.Kind == isolation.GrantDevice && g.Source == "" && g.DeviceClass != "" {
