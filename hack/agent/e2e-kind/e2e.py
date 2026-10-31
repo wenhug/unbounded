@@ -3999,6 +3999,48 @@ def _run_agent_inner(agent_url: str, node_config: NodeConfig, *, reinstall: bool
 # ---------------------------------------------------------------------------
 # wait-for-node
 # ---------------------------------------------------------------------------
+def dump_node_stack_diagnostics() -> None:
+    """Print what is needed to see why a Node did not register: unit state and
+    journals on the host, and for container mode the runc state and the
+    in-container kubelet and containerd journals. Every query is best effort
+    and nothing here can fail the run."""
+    runc = "/opt/unbounded/runtime/runc"
+    queries = [
+        ("failed host units", "sudo systemctl --failed --no-legend"),
+        ("node stack units", "sudo systemctl list-units --no-legend --all "
+                             "'unbounded-*.service' 'systemd-nspawn@*.service'"),
+        ("agent and node unit journals", "sudo journalctl --no-pager -n 120 -u 'unbounded-*' -u 'systemd-nspawn@*'"),
+        ("host kubelet", "sudo systemctl status kubelet.service --no-pager -l 2>&1 | tail -30"),
+        ("cgroup controllers", "cat /sys/fs/cgroup/cgroup.controllers; stat -fc %T /sys/fs/cgroup"),
+        ("kernel messages", "sudo dmesg 2>/dev/null | tail -30"),
+    ]
+    if isolation_mode() == "container":
+        queries += [
+            ("runc list", f"sudo {runc} list"),
+            ("runc state", f"for c in $(sudo {runc} list -q); do sudo {runc} state $c; done"),
+            ("in-container unit status",
+             f"for c in $(sudo {runc} list -q); do echo == $c; "
+             f"sudo {runc} exec $c systemctl --failed --no-legend 2>&1; "
+             f"sudo {runc} exec $c systemctl status kubelet containerd --no-pager -l 2>&1 | tail -60; done"),
+            ("in-container journals",
+             f"for c in $(sudo {runc} list -q); do echo == $c; "
+             f"sudo {runc} exec $c journalctl --no-pager -n 150 -u kubelet -u containerd 2>&1; done"),
+            ("container mountinfo", f"for c in $(sudo {runc} list -q); do echo == $c; "
+                                    f"sudo {runc} exec $c cat /proc/self/mountinfo 2>&1 | tail -40; done"),
+            ("container bundle config", "sudo sh -c 'cat /var/lib/unbounded/containers/*/config.json 2>/dev/null | head -c 6000'"),
+        ]
+    for title, command in queries:
+        try:
+            result = ssh_capture_quiet(command)
+            out = (result.stdout + result.stderr).strip() or f"<no output, exit {result.returncode}>"
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never fail the run
+            out = f"<query failed: {exc}>"
+        print(f"[DIAG]  ---- {title} ----\n{out}", flush=True)
+    for title, args in (("certificate signing requests", ["get", "csr"]), ("nodes", ["get", "nodes", "-o", "wide"])):
+        subprocess.run([KUBECTL, *args], check=False)
+        print(f"[DIAG]  ---- end {title} ----", flush=True)
+
+
 def wait_for_node_registered() -> None:
     """Wait for the agent node object to appear."""
 
@@ -4021,6 +4063,7 @@ def wait_for_node_registered() -> None:
 
     log("Current nodes:")
     subprocess.run([KUBECTL, "get", "nodes", "-o", "wide"], check=False)
+    dump_node_stack_diagnostics()
     die(f"Timed out waiting for node '{AGENT_MACHINE_NAME}' after {node_timeout}s")
 
 

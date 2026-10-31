@@ -3,6 +3,7 @@
 
 import json
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 import e2e
@@ -152,6 +153,43 @@ class PlanStepTests(unittest.TestCase):
     def test_suites_that_migrate_start_in_the_default_mode(self):
         for suite in ("isolation-roundtrip", "isolation-matrix", "isolation-drift", "isolation-rollback"):
             self.assertEqual(e2e.SUITES[suite][0], "run-agent")
+
+
+class NodeStackDiagnosticsTests(unittest.TestCase):
+    def _run(self, mode, ssh):
+        with patch.object(e2e, "ISOLATION_MODE", mode), patch.object(e2e, "ssh_capture_quiet", side_effect=ssh), \
+                patch.object(e2e.subprocess, "run"):
+            e2e.dump_node_stack_diagnostics()
+
+    def test_container_mode_asks_for_the_in_container_journals(self):
+        commands = []
+
+        def ssh(command):
+            commands.append(command)
+            return unittest.mock.Mock(stdout="out", stderr="", returncode=0)
+
+        self._run("container", ssh)
+        joined = "\n".join(commands)
+        self.assertIn("/opt/unbounded/runtime/runc list", joined)
+        self.assertIn("journalctl --no-pager -n 150 -u kubelet -u containerd", joined)
+
+    def test_other_modes_do_not_query_runc(self):
+        for mode in ("nspawn", "none"):
+            commands = []
+
+            def ssh(command):
+                commands.append(command)
+                return unittest.mock.Mock(stdout="", stderr="", returncode=1)
+
+            self._run(mode, ssh)
+            self.assertTrue(commands)
+            self.assertNotIn("runc", "\n".join(commands), mode)
+
+    def test_a_failing_query_never_raises(self):
+        def ssh(_command):
+            raise OSError("ssh is gone")
+
+        self._run("container", ssh)
 
 
 if __name__ == "__main__":
