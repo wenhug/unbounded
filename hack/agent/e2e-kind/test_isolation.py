@@ -192,5 +192,34 @@ class NodeStackDiagnosticsTests(unittest.TestCase):
         self._run("container", ssh)
 
 
+class UninstallSuiteTests(unittest.TestCase):
+    def test_a_reset_returns_the_host_to_clean_before_the_reinstall(self):
+        """The uninstall script is not a reset. `unbounded-agent reset` is the
+        only way back to a clean host, so it sits between the script and the
+        reinstall."""
+        steps = e2e.SUITES["isolation-uninstall"]
+        script = steps.index("validate-isolation-uninstall")
+        reset = steps.index("reset-host")
+        reinstall = steps.index("reinstall-agent")
+        self.assertLess(script, reset)
+        self.assertLess(reset, reinstall)
+        self.assertIn("reset-host", e2e.COMMANDS)
+
+    def test_the_uninstall_check_only_asks_for_what_the_script_owns(self):
+        for mode, leftover in (("container", ["/var/lib/unbounded/containers/kube1"]),
+                               ("none", [e2e.NONE_NODE_BASE])):
+            with self.subTest(mode=mode), patch.object(e2e, "ISOLATION_MODE", mode), \
+                    patch.object(e2e, "present_on_host", return_value=leftover):
+                with self.assertRaises(SystemExit):
+                    e2e.validate_uninstall_removed_node_stack("kube1")
+
+    def test_layout_directories_are_not_the_scripts_business(self):
+        with patch.object(e2e, "ISOLATION_MODE", "container"), \
+                patch.object(e2e, "present_on_host", return_value=[]) as present:
+            e2e.validate_uninstall_removed_node_stack("kube1")
+        asked = present.call_args.args[0]
+        self.assertNotIn(e2e.CONTAINER_ROOT_BASE, asked)
+
+
 if __name__ == "__main__":
     unittest.main()

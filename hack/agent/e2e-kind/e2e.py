@@ -54,6 +54,7 @@ Subcommands (called as individual workflow steps):
     reconcile-machine-isolation-spec   Set spec.isolation to the applied mode and verify drift clears.
     validate-isolation-preflight       Run preflight with --isolation and verify the mode's own check ran.
     validate-isolation-uninstall       Run the uninstall script and verify the node stack is gone.
+    reset-host                         Run unbounded-agent reset on the host and verify the node stack is gone.
     validate-migration-rollback-config Fail a migration and verify shared host config is restored.
     collect-isolation-evidence         Print the mode state of the VM and Machine as one JSON line.
     validate-migration-rollback-to-container
@@ -6673,6 +6674,39 @@ def validate_migration_rollback_config(node_config: NodeConfig) -> None:
     log(f"Rollback restored all {len(before)} shared configuration files")
 
 
+def validate_uninstall_removed_node_stack(slot: str) -> None:
+    """Assert the uninstall script removed what it owns: the stack of the active
+    slot. Layout directories and install state are left for `agent reset`."""
+    mode = isolation_mode()
+    if mode == "nspawn":
+        result = ssh_capture_quiet(f"sudo machinectl show {slot}")
+        if result.returncode == 0:
+            die(f"nspawn machine '{slot}' is still running after the uninstall script")
+    elif mode == "none":
+        leftovers = present_on_host([
+            NONE_NODE_BASE,
+            *[f"/etc/systemd/system/{unit}" for unit in NONE_UNITS],
+        ])
+        if leftovers:
+            die(f"the uninstall script left none node stack artifacts on the host: {leftovers}")
+    else:
+        leftovers = present_on_host([
+            f"{CONTAINER_ROOT_BASE}/{slot}",
+            f"/etc/systemd/system/unbounded-node-{slot}.service",
+        ])
+        if leftovers:
+            die(f"the uninstall script left container node stack artifacts on the host: {leftovers}")
+    log(f"The uninstall script removed the {mode} node stack of {slot}")
+
+
+def reset_host() -> None:
+    """Return the host to a clean state with `unbounded-agent reset`, the only
+    supported way to do so, and assert the node stack of the mode is gone."""
+    ssh_capture(f"sudo {DAEMON_BINARY} reset")
+    validate_node_stack_removed()
+    log("unbounded-agent reset left the host clean")
+
+
 def validate_isolation_uninstall() -> None:
     """Run the generated uninstall script on the host and assert the node stack
     of the mode under test is gone. The harness renders the script from the
@@ -6687,10 +6721,15 @@ def validate_isolation_uninstall() -> None:
     local.write_text(script)
     remote = "/var/tmp/unbounded-agent-uninstall.sh"
     scp_cmd(str(local), f"{SSH_TARGET}:{remote}")
+    # The script removes the node stack; it is not a reset. A running daemon
+    # keeps reconciling the stack it is asked to remove, so it is stopped first,
+    # as the agent's own reset stops it. Getting back to a clean host is
+    # `unbounded-agent reset` (the reset-host step), never this script.
+    ssh_capture_quiet("sudo systemctl stop unbounded-agent-daemon.service unbounded-agent-daemon-recovery.service")
     out = ssh_capture(f"sudo bash {remote}")
     if f"Isolation mode: {mode}" not in out:
         die(f"uninstall did not detect isolation mode {mode}: {out[-400:]!r}")
-    validate_node_stack_removed()
+    validate_uninstall_removed_node_stack(slot)
     run_quiet([KUBECTL, "delete", "node", AGENT_MACHINE_NAME, "--ignore-not-found"], check=False)
     delete_machine_cr()
     log(f"Uninstall removed the {mode} node stack")
@@ -7161,11 +7200,12 @@ SUITES: dict[str, list[str]] = {
         "reset-agent", "delete-machine-cr", "ensure-kind-bridge", "reinstall-agent", "wait-for-node",
         "validate-isolation-mode", "validate-isolation-exec-logs", "validate-workload",
     ],
-    # The uninstall script removes the node stack of the mode, then the host
-    # is bootstrapped again.
+    # The uninstall script removes the node stack of the mode. It is not a
+    # reset: `unbounded-agent reset` returns the host to a clean state, and
+    # then the host is bootstrapped again.
     "isolation-uninstall": [
         "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
-        "validate-isolation-uninstall", "ensure-kind-bridge", "reinstall-agent", "wait-for-node",
+        "validate-isolation-uninstall", "reset-host", "ensure-kind-bridge", "reinstall-agent", "wait-for-node",
         "validate-isolation-mode", "validate-workload",
     ],
     # Start in the default mode (ISOLATION_MODE unset), move to none and back
@@ -7317,6 +7357,7 @@ COMMANDS: dict[str, Command] = {
     "reconcile-machine-isolation-spec": _without_node_config(reconcile_machine_isolation_spec),
     "validate-isolation-preflight": _without_node_config(validate_isolation_preflight),
     "validate-isolation-uninstall": _without_node_config(validate_isolation_uninstall),
+    "reset-host": _without_node_config(reset_host),
     "collect-isolation-evidence": _without_node_config(collect_isolation_evidence),
     "cleanup": _without_node_config(cleanup),
 }
