@@ -146,8 +146,10 @@ remove_node_container() {
     unit="$(basename "${unit_path}")"
     remove_unit "${unit}"
   done
-  echo "Removing ${ROOT}/var/lib/unbounded/containers/${SLOT}..."
-  rm -rf "${ROOT}/var/lib/unbounded/containers/${SLOT}"
+  # The whole layout, as the agent's own reset does: both slots' root
+  # filesystems and the bundles directory.
+  echo "Removing ${ROOT}/var/lib/unbounded/containers..."
+  rm -rf "${ROOT}/var/lib/unbounded/containers"
 }
 
 # -----------------------------------------------------------------

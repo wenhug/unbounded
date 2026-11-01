@@ -227,6 +227,7 @@ func TestUninstallScriptContainer(t *testing.T) {
 	h.touch("etc/systemd/system/" + container.UnitName("kube2"))
 	h.touch("var/lib/unbounded/containers/kube2/rootfs/x")
 	h.touch("var/lib/unbounded/containers/kube1/rootfs/x")
+	h.touch("var/lib/unbounded/containers/bundles/kube2/config.json")
 	h.touch("etc/systemd/system/unrelated.service")
 
 	out, calls := h.run()
@@ -237,9 +238,14 @@ func TestUninstallScriptContainer(t *testing.T) {
 	h.requireGone(
 		"etc/systemd/system/"+container.UnitName("kube2"),
 		"var/lib/unbounded/containers/kube2",
+		// The inactive slot and the bundles go too: the layout is removed as the
+		// agent's own reset removes it, so nothing is left to confuse a reinstall.
+		"var/lib/unbounded/containers/kube1",
+		"var/lib/unbounded/containers/bundles",
+		"var/lib/unbounded/containers",
 		"etc/unbounded/agent",
 	)
-	h.requireExists("etc/systemd/system/unrelated.service", "var/lib/unbounded/containers/kube1/rootfs/x")
+	h.requireExists("etc/systemd/system/unrelated.service")
 }
 
 func TestUninstallScriptUnknownModeFails(t *testing.T) {
