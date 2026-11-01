@@ -1299,6 +1299,7 @@ def wait_for_machine_operation_complete(name: str, timeout_secs: int = 180) -> d
         elapsed += 5
 
     subprocess.run([KUBECTL, "get", resource, name, "-o", "yaml"], check=False)
+    dump_node_stack_diagnostics()
     die(f"Timed out waiting for MachineOperation '{name}' to complete after {timeout_secs}s")
 
 
@@ -4013,6 +4014,11 @@ def dump_node_stack_diagnostics() -> None:
                              "'unbounded-*.service' 'systemd-nspawn@*.service'"),
         ("agent and node unit journals", "sudo journalctl --no-pager -n 120 -u 'unbounded-*' -u 'systemd-nspawn@*'"),
         ("host kubelet", "sudo systemctl status kubelet.service --no-pager -l 2>&1 | tail -30"),
+        ("isolation migration journals and reprovision handoff",
+         "sudo sh -c 'for f in /etc/unbounded/agent/isolation-migration.json "
+         "/var/lib/unbounded-agent-reprovision/journal.json; do echo == $f; cat $f 2>&1; echo; done; "
+         "ls -la /var/lib/unbounded-agent-reprovision 2>&1; "
+         "systemctl status unbounded-agent-reprovision.service --no-pager -l 2>&1 | tail -30'"),
         ("cgroup controllers", "cat /sys/fs/cgroup/cgroup.controllers; stat -fc %T /sys/fs/cgroup"),
         ("kernel messages", "sudo dmesg 2>/dev/null | tail -30"),
     ]
@@ -7191,6 +7197,12 @@ SUITES: dict[str, list[str]] = {
     ],
     # The drift condition in both directions: set spec.isolation to the
     # applied mode, migrate away (drift appears), then set spec again.
+    # nspawn to container by reprovision alone, the pair the matrix reaches last.
+    "isolation-container-reprovision": [
+        "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
+        "migrate-to-container-reprovision", "validate-isolation-status", "validate-isolation-exec-logs",
+        "validate-workload", "reset-agent",
+    ],
     "isolation-drift": [
         "run-agent", "wait-for-node", "validate-isolation-status", "migrate-to-none-reprovision",
         "validate-isolation-status", "reconcile-machine-isolation-spec", "migrate-to-nspawn-reprovision",
