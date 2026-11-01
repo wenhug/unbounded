@@ -527,6 +527,13 @@ func (b *Backend) Destroy(ctx context.Context, r isolation.NodeRoot) error {
 		errs = append(errs, err)
 	}
 
+	// With the last slot gone the layout directories are empty. Leaving them
+	// makes the next bootstrap's existing-deployment check refuse the host.
+	// os.Remove fails harmlessly while another slot or file remains.
+	for _, dir := range []string{b.Layout.BundleDir(""), b.Layout.RootfsDir("")} {
+		_ = os.Remove(dir) //nolint:errcheck // best effort; a non-empty directory is expected
+	}
+
 	return errors.Join(errs...)
 }
 

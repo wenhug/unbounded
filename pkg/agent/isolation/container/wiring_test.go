@@ -411,3 +411,26 @@ func TestRegenerateRecreatesTheSamePathSources(t *testing.T) {
 		require.DirExists(t, filepath.Join(b.SourceRoot, s.Path))
 	}
 }
+
+// An empty /var/lib/unbounded/containers left by a destroyed slot makes the
+// next bootstrap refuse the host as an existing deployment, which e2e showed
+// leaves a reprovision to container failing until it gives up.
+func TestDestroyOfTheLastSlotLeavesNoLayoutDirectories(t *testing.T) {
+	b, _, _ := newBackend(t)
+	ctx := context.Background()
+
+	r1, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1", Grants: testGrants})
+	require.NoError(t, err)
+
+	r2, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube2", Grants: testGrants})
+	require.NoError(t, err)
+
+	require.NoError(t, b.Destroy(ctx, r2))
+	require.DirExists(t, b.Layout.RootfsDir("kube1"), "the other slot is untouched")
+	require.DirExists(t, b.Layout.BundleDir("kube1"))
+	require.NoDirExists(t, b.Layout.RootfsDir("kube2"))
+
+	require.NoError(t, b.Destroy(ctx, r1))
+	require.NoDirExists(t, b.Layout.BundleDir(""))
+	require.NoDirExists(t, b.Layout.RootfsDir(""))
+}
