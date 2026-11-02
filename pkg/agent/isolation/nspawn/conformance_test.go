@@ -205,9 +205,9 @@ func TestPrepareRefusesGrantsBecauseTheMachineDerivesItsOwn(t *testing.T) {
 	require.True(t, prepared)
 }
 
-// A cancelled probe says nothing about the machine: it must not read as a node
+// A canceled probe says nothing about the machine: it must not read as a node
 // that is down.
-func TestStatusOfACancelledProbeIsAnErrorNotAStoppedNode(t *testing.T) {
+func TestStatusOfACanceledProbeIsAnErrorNotAStoppedNode(t *testing.T) {
 	bin := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "systemd-run"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

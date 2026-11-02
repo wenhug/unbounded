@@ -159,7 +159,7 @@ func TestLogsReportsAStreamThatEndedInFailure(t *testing.T) {
 	require.ErrorContains(t, err, "No journal files were found.")
 }
 
-func TestLogsCancelledByTheUserIsNotAFailure(t *testing.T) {
+func TestLogsCanceledByTheUserIsNotAFailure(t *testing.T) {
 	t.Parallel()
 
 	lb := &logsBackend{FakeBackend: &isolation.FakeBackend{}, closeErr: errors.New("signal: killed")}
