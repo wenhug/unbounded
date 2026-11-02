@@ -6663,10 +6663,14 @@ def digest_differences(before: dict[str, str], after: dict[str, str]) -> list[st
 def validate_migration_rollback_config(node_config: NodeConfig) -> None:
     """Fail an in-place migration, then assert the shared host configuration is
     byte for byte what it was before the migration started."""
+    source = applied_isolation()
     before = shared_config_digest()
     if not before:
-        die("no shared configuration files found on the host before the migration")
-    validate_migration_rollback(node_config, "container")
+        die(f"no shared configuration files found on the host before the migration; a {source} host "
+            "may keep none at these paths (nspawn keeps its configuration inside the machine), so run "
+            "this step with ISOLATION_MODE=container")
+    # In place is nspawn <-> container only; fail the move to the other one.
+    validate_migration_rollback(node_config, "nspawn" if source == "container" else "container")
     changes = digest_differences(before, shared_config_digest())
     if changes:
         die("rollback left the shared configuration different: " + "; ".join(changes[:20]))
@@ -7258,6 +7262,8 @@ SUITES: dict[str, list[str]] = {
     ],
     # A failed in-place migration restores the source and the shared host
     # configuration; an unsupported pair is rejected without touching the node.
+    # Run with ISOLATION_MODE=container: only a container host keeps its
+    # configuration at the shared host paths the step compares.
     "isolation-rollback": [
         "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
         "validate-migration-unsupported-pair", "validate-migration-rollback-config",
