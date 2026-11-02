@@ -4,6 +4,7 @@
 package containerops
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -151,4 +152,25 @@ func TestTeardownRemoveConfigLeavesOtherFiles(t *testing.T) {
 	require.NoError(t, td.RemoveConfig().Do(t.Context()), "an absent file is fine")
 	require.FileExists(t, other)
 	require.Equal(t, "/etc/modules-load.d/unbounded-kubernetes.conf", noneops.ModulesLoadPath)
+}
+
+// A pod volume that stays mounted below /var/lib/kubelet would be followed by
+// RemoveAll, which deletes the volume's data. The shared data is kept, the
+// failure is reported, and the slots (which the mounts do not reach) are still
+// removed.
+func TestTeardownDestroyKeepsSharedDataWhenAPodMountCannotBeUnmounted(t *testing.T) {
+	f, td, _ := teardownFixture(t)
+
+	require.NoError(t, os.WriteFile(f.mountInfo(), []byte("100 1 0:50 / /var/lib/kubelet/pods/x/volumes/v rw - nfs srv:/x rw\n"), 0o644))
+	f.h.failAll["umount -l /var/lib/kubelet/pods/x/volumes/v"] = errors.New("busy")
+
+	require.NoError(t, td.Stop().Do(t.Context()))
+
+	err := td.Destroy().Do(t.Context())
+	require.ErrorContains(t, err, "unmount /var/lib/kubelet/pods/x/volumes/v")
+
+	require.FileExists(t, f.hostPath("/var/lib/kubelet/config.yaml"), "kubelet state may sit on the mounted volume")
+	require.NoFileExists(t, f.hostPath("/opt/cni/bin/bridge"), "nothing is mounted below the CNI directories")
+	require.NoFileExists(t, f.hostPath("/etc/cni/net.d/10.conf"))
+	require.NoDirExists(t, td.Layout.RootfsDir("kube2"), "the slots are unaffected by the mount")
 }

@@ -127,9 +127,14 @@ func (t *Teardown) Destroy() phases.Task {
 		var errs []error
 
 		// Pod volumes propagate to the host under /var/lib/kubelet, so unmount
-		// before any removal that could follow a bind mount.
+		// before any removal that could follow a bind mount. When a mount stays,
+		// RemoveAll would delete the volume's data through it, so the kubelet
+		// directory is kept and the failure reported.
+		keepKubelet := false
+
 		if err := t.unmountShared(ctx); err != nil {
 			errs = append(errs, err)
+			keepKubelet = true
 		}
 
 		for _, slot := range slots {
@@ -143,6 +148,12 @@ func (t *Teardown) Destroy() phases.Task {
 		}
 
 		for _, d := range []string{"/var/lib/kubelet", goalstates.CNIConfigDir, goalstates.CNIBinDir, "/var/lib/unbounded/container-images"} {
+			if keepKubelet && d == "/var/lib/kubelet" {
+				t.logger().Warn("keeping the kubelet directory because mounts below it could not be unmounted", "dir", d)
+
+				continue
+			}
+
 			if err := os.RemoveAll(t.path(d)); err != nil {
 				errs = append(errs, err)
 			}
