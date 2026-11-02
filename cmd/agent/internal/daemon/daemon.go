@@ -459,6 +459,7 @@ func buildMachineCR(cfg *provision.AgentConfig) v1alpha3.Machine {
 				NodeLabels:         cfg.Kubelet.Labels,
 				RegisterWithTaints: cfg.Kubelet.RegisterWithTaints,
 			},
+			Isolation: v1alpha3.IsolationMode(cfg.Isolation),
 		},
 	}
 
