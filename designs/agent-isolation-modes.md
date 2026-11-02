@@ -193,7 +193,10 @@ drift. Nothing moves until an `IsolationMigrate` MachineOperation (section 9).
   version before setting a non-default mode.
 - 6.5: implemented. The controller sets `IsolationDrift` from `spec.isolation`
   (empty means `nspawn`) and `status.observedIsolation`, which the agent daemon
-  writes at startup and after a migration. It never moves the node.
+  writes at startup and after a migration. It never moves the node. After a
+  successful `IsolationMigrate` the agent patches `spec.isolation` to the new
+  mode (the daemon ClusterRole has `patch` on `machines` for this), so drift
+  clears. Outside a migration the agent never writes `spec`.
 
 ## 7. Backend interface
 

@@ -124,8 +124,11 @@ The agent records the mode it applied in `status.observedIsolation` on the
 means `nspawn`), Machina sets the `IsolationDrift` condition to `True` with
 reason `AppliedModeDiffers`; it is `False` with reason `AppliedModeMatches` when
 they agree, and absent until the agent has reported a mode. Nothing moves on
-drift. The node changes mode only when an `IsolationMigrate` operation runs. See
-[Machina CRDs]({{< relref "reference/machina-crd" >}}).
+drift. The node changes mode only when an `IsolationMigrate` operation runs. After
+a migration succeeds, the agent sets `spec.isolation` to the new mode, so the
+Machine declares what runs and the condition clears. The agent writes nothing
+else to `spec` and never changes it outside a migration, so a mismatch you
+create stays visible. See [Machina CRDs]({{< relref "reference/machina-crd" >}}).
 
 Machina does not check the agent version. Pin an agent version that supports the
 mode you set with `spec.agent.version`. An agent that predates isolation modes

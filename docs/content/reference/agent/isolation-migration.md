@@ -7,7 +7,12 @@ description: "Move a live node to another isolation mode with an IsolationMigrat
 Changing `spec.isolation` on a running Machine does not move the node. It marks
 the Machine as drifted from the mode recorded on the host. The node moves only
 when an `IsolationMigrate` [MachineOperation]({{< relref "guides/operations" >}})
-runs.
+runs. When a migration succeeds, the agent sets `spec.isolation` to the new
+mode, so the drift condition clears. This is the only change the agent makes to
+the spec of an existing Machine. It needs the `patch` verb on `machines`, which
+the `unbounded-daemon-controller-machine` ClusterRole grants. If the patch
+fails, the migration still succeeds and the agent logs a warning; set
+`spec.isolation` to match to clear the drift.
 
 {{< callout type="important" >}}
 Migration is experimental and has not yet been validated on real hosts. Any move

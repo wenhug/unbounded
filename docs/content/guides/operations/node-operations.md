@@ -54,7 +54,7 @@ with the API server.
 
 Moves the node stack to another isolation mode with the parameters `targetMode`
 and `strategy` (`inPlace` or `reprovision`). A change to `spec.isolation` alone
-only reports drift. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
+only reports drift; a successful migration then sets it to the new mode. See [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
 
 ## Inspecting the node stack
 
