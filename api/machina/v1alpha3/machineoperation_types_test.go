@@ -59,6 +59,7 @@ func TestMachineOperationKindSchemaEnum(t *testing.T) {
 		string(OperationHostPowerOff),
 		string(OperationHostPowerOn),
 		string(OperationHostReplace),
+		string(OperationIsolationMigrate),
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("operationKind enum = %v, want %v", got, want)
