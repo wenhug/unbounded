@@ -236,7 +236,14 @@ func (r *MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Machine, including agent-registered ones without SSH config.
 	if syncIsolationConditions(&machine) {
 		if err := r.Status().Update(ctx, &machine); err != nil {
+			if errors.IsConflict(err) {
+				// The agent writes status.observedIsolation at the same time.
+				// Losing the race is expected; reconcile again on the new object.
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+
 			logger.Error(err, "Failed to update isolation conditions")
+
 			return ctrl.Result{}, err
 		}
 	}

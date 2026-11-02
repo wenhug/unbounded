@@ -8,11 +8,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	unboundedv1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
 )
@@ -102,4 +106,47 @@ func TestMachineReconciler_IsolationConditionsPersisted(t *testing.T) {
 	require.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{Name: "iso"}, &got))
 	require.Equal(t, unboundedv1alpha3.IsolationNone, got.Spec.Isolation)
 	require.Equal(t, metav1.ConditionTrue, cond(&got, unboundedv1alpha3.MachineConditionIsolationDrift).Status)
+}
+
+// The agent patches status.observedIsolation at the same time. Losing that race
+// is expected, not an error: the reconcile runs again on the fresh object.
+func TestMachineReconciler_AStatusConflictRequeuesInsteadOfFailing(t *testing.T) {
+	t.Parallel()
+
+	s := newTestScheme(t)
+
+	machine := isolationMachine(unboundedv1alpha3.IsolationNone)
+	machine.Status.ObservedIsolation = unboundedv1alpha3.IsolationNSpawn
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(machine).WithStatusSubresource(machine).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+				return apierrors.NewConflict(schema.GroupResource{Group: "unbounded-cloud.io", Resource: "machines"}, "iso", nil)
+			},
+		}).Build()
+	reconciler := &MachineReconciler{Client: c, Scheme: s}
+
+	res, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "iso"}})
+	require.NoError(t, err)
+	require.Positive(t, res.RequeueAfter, "the reconcile is retried")
+}
+
+func TestMachineReconciler_AnotherStatusErrorIsStillReturned(t *testing.T) {
+	t.Parallel()
+
+	s := newTestScheme(t)
+
+	machine := isolationMachine(unboundedv1alpha3.IsolationNone)
+	machine.Status.ObservedIsolation = unboundedv1alpha3.IsolationNSpawn
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(machine).WithStatusSubresource(machine).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+				return apierrors.NewInternalError(context.DeadlineExceeded)
+			},
+		}).Build()
+	reconciler := &MachineReconciler{Client: c, Scheme: s}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "iso"}})
+	require.Error(t, err)
 }
