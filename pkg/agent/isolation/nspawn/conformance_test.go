@@ -6,6 +6,7 @@ package nspawn
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -114,7 +115,9 @@ func TestConformance(t *testing.T) {
 shift 3
 exec "$@"
 `), 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(bin, "journalctl"), []byte("#!/bin/sh\necho log line\n"), 0o755))
+		// The stub echoes its arguments, so the suite can check which journal the
+		// backend asked for.
+		require.NoError(t, os.WriteFile(filepath.Join(bin, "journalctl"), []byte("#!/bin/sh\necho \"journalctl $*\"\n"), 0o755))
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 		return &Backend{Ops: m.ops()}, isolationtest.Options{
@@ -122,6 +125,15 @@ exec "$@"
 			ExecArgs:     []string{"echo", "hello"},
 			ExecWant:     "hello",
 			ExecFailArgs: []string{"false"},
+			// systemd-run fails while the machine is not up.
+			ExecStoppedFails: true,
+			LogsWant:         "journalctl --machine=kube1 --no-pager --lines=10",
+			// nspawn derives its devices, mounts and libraries from the host when
+			// the machine is built, so a request for one must fail, not be dropped.
+			RefusedGrants: []isolation.Grant{
+				{Kind: isolation.GrantDevice, Purpose: isolation.PurposeHostDevice, Source: "/dev/kvm", Target: "/dev/kvm"},
+				{Kind: isolation.GrantMount, Purpose: isolation.PurposeHostMount, Source: "/data", Target: "/data"},
+			},
 			Fail: func(op isolationtest.Op, err error) {
 				m.mu.Lock()
 				m.fail[op] = err
@@ -140,4 +152,55 @@ func TestUnwiredBackendFailsConformanceOperations(t *testing.T) {
 	require.ErrorIs(t, b.Stop(t.Context(), Root("kube1")), ErrNotWired)
 	require.ErrorIs(t, b.Restart(t.Context(), Root("kube1")), ErrNotWired)
 	require.ErrorIs(t, b.Destroy(t.Context(), Root("kube1")), ErrNotWired)
+}
+
+// Exec and Logs run the commands the rest of the agent depends on: a command in
+// the machine for the slot, and the machine's journal. The conformance suite
+// checks that they return what the stubs print; this checks what they asked for.
+func TestExecAndLogsAskForTheMachineOfTheSlot(t *testing.T) {
+	bin := t.TempDir()
+	record := filepath.Join(bin, "args")
+
+	for _, name := range []string{"systemd-run", "journalctl"} {
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(
+			"#!/bin/sh\necho \""+name+" $*\" >> "+record+"\n"), 0o755))
+	}
+
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	b := &Backend{}
+
+	_, err := b.Exec(t.Context(), Root("kube2"), isolation.ExecSpec{Args: []string{"crictl", "ps", "-a"}})
+	require.NoError(t, err)
+
+	rc, err := b.Logs(t.Context(), Root("kube2"), isolation.LogOptions{Unit: "kubelet", Follow: true, Lines: 5})
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, rc)
+	require.NoError(t, err)
+	require.NoError(t, rc.Close())
+
+	got, err := os.ReadFile(record)
+	require.NoError(t, err)
+	require.Equal(t,
+		"systemd-run --machine=kube2 --pipe --wait crictl ps -a\n"+
+			"journalctl --machine=kube2 --no-pager --unit=kubelet --follow --lines=5\n",
+		string(got))
+}
+
+func TestPrepareRefusesGrantsBecauseTheMachineDerivesItsOwn(t *testing.T) {
+	prepared := false
+	b := &Backend{Ops: Ops{Prepare: func(context.Context, isolation.NodeSpec) (isolation.NodeRoot, error) {
+		prepared = true
+		return Root("kube1"), nil
+	}}}
+
+	_, err := b.Prepare(t.Context(), isolation.NodeSpec{Slot: "kube1", Grants: []isolation.Grant{
+		{Kind: isolation.GrantDevice, Source: "/dev/kvm", Target: "/dev/kvm"},
+	}})
+	require.ErrorContains(t, err, "grants")
+	require.False(t, prepared, "nothing is built for a request that is dropped")
+
+	_, err = b.Prepare(t.Context(), isolation.NodeSpec{Slot: "kube1"})
+	require.NoError(t, err)
+	require.True(t, prepared)
 }

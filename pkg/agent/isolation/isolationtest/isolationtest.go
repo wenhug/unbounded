@@ -82,6 +82,16 @@ type Options struct {
 	// SkipLogs skips the Logs case for backends that cannot stream logs under
 	// test.
 	SkipLogs bool
+
+	// LogsWant, when set, must appear in the output of Logs for a started node.
+	// A runner whose log command echoes its arguments uses it to check the
+	// backend asked for the right journal.
+	LogsWant string
+
+	// ExecStoppedFails says Exec on a stopped node must return an error, as for
+	// a machine that is not up. Backends whose node stack is the host leave it
+	// false, and either outcome is accepted.
+	ExecStoppedFails bool
 }
 
 // NewBackend builds a fresh backend and the Options to drive it.
@@ -304,7 +314,11 @@ func caseExecStopped(t *testing.T, s *session) {
 	r := s.started(t)
 	require.NoError(t, s.b.Stop(t.Context(), r))
 
-	_, _ = s.b.Exec(t.Context(), r, isolation.ExecSpec{Args: s.opts.ExecArgs}) //nolint:errcheck // either outcome is valid; the call must return
+	_, err := s.b.Exec(t.Context(), r, isolation.ExecSpec{Args: s.opts.ExecArgs})
+	if s.opts.ExecStoppedFails {
+		require.Error(t, err, "exec in a stopped node must fail")
+	}
+
 	s.requireRunning(t, r, false)
 }
 
@@ -319,9 +333,13 @@ func caseLogs(t *testing.T, s *session) {
 	require.NoError(t, err)
 	require.NotNil(t, rc)
 
-	_, err = io.ReadAll(rc)
+	data, err := io.ReadAll(rc)
 	require.NoError(t, err)
 	require.NoError(t, rc.Close())
+
+	if s.opts.LogsWant != "" {
+		require.Contains(t, string(data), s.opts.LogsWant)
+	}
 }
 
 func caseDestroy(t *testing.T, s *session) {

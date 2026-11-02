@@ -101,7 +101,8 @@ func (o *ops) goalState(slot string) (*goalstates.MachineGoalState, error) {
 }
 
 // prepare provisions the rootfs for the slot. Grants are derived from the host
-// when the goal state is resolved, so n.Grants is not consulted.
+// when the goal state is resolved, so n.Grants is not consulted: the backend
+// refuses a NodeSpec that carries any, so none reaches here.
 func (o *ops) prepare(ctx context.Context, n isolation.NodeSpec) (isolation.NodeRoot, error) {
 	gs, err := o.goalState(n.Slot)
 	if err != nil {

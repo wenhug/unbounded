@@ -59,8 +59,14 @@ func (*Backend) Requirements() isolation.Requirements {
 	}
 }
 
-// Prepare implements isolation.Backend.
+// Prepare implements isolation.Backend. nspawn derives the machine's devices,
+// mounts and libraries from the host when the machine is built, not from
+// NodeSpec.Grants, so a request for grants fails rather than being dropped.
 func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.NodeRoot, error) {
+	if len(n.Grants) > 0 {
+		return nil, errors.New("nspawn derives the machine's device, mount and library grants from the host when it is built; NodeSpec.Grants are not honored")
+	}
+
 	if b.Ops.Prepare == nil {
 		return nil, ErrNotWired
 	}
