@@ -4,9 +4,11 @@
 package none
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -134,6 +136,10 @@ func TestPrepareRefusesGrantsItCannotHonor(t *testing.T) {
 			grant: isolation.Grant{Kind: isolation.GrantLibraryPath, Source: "/opt/lib"},
 			want:  "library-path grant",
 		},
+		"device at another path": {
+			grant: isolation.Grant{Kind: isolation.GrantDevice, Purpose: isolation.PurposeHostDevice, Source: "/dev/null", Target: "/dev/gpu0"},
+			want:  "cannot be honored in isolation mode none",
+		},
 		"missing device": {
 			grant: isolation.Grant{Kind: isolation.GrantDevice, Purpose: isolation.PurposeHostDevice, Source: "/dev/absent"},
 			want:  "/dev/absent",
@@ -253,4 +259,37 @@ func TestBeforeStartRunsOnUpgradeAndItsRollback(t *testing.T) {
 	err := b.Upgrade(context.Background(), root("v1"), func(context.Context) error { return errors.New("not ready") })
 	require.ErrorContains(t, err, "rolled back")
 	require.Equal(t, 2, starts, "the new version and the version restored by rollback each prepared the host")
+}
+
+// The stack runs on the host and nothing mounts the path, so ReadOnly cannot be
+// enforced. The grant is accepted (refusing would reject configs that follow
+// the documented advice to set ReadOnly) but the limit is logged, not silent.
+func TestPrepareLogsThatReadOnlyIsNotEnforced(t *testing.T) {
+	var buf bytes.Buffer
+
+	b, _ := newBackend(t)
+	b.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	b.HostRoot = t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(b.HostRoot, "data"), 0o755))
+
+	_, err := b.Prepare(context.Background(), isolation.NodeSpec{Slot: "v1", Grants: []isolation.Grant{
+		{Kind: isolation.GrantMount, Purpose: isolation.PurposeHostMount, Source: "/data", ReadOnly: true},
+	}})
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "read-only is not enforced")
+	require.Contains(t, buf.String(), "/data")
+}
+
+// The NVIDIA library and helper directories are read-only on every mode and the
+// host's own are never writable by the stack's workloads, so there is nothing
+// to warn about.
+func TestPrepareDoesNotWarnForTheNativeNvidiaDirectories(t *testing.T) {
+	var buf bytes.Buffer
+
+	b, grants := gpuBackend(t)
+	b.Log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	_, err := b.Prepare(context.Background(), isolation.NodeSpec{Slot: "v1", Grants: grants})
+	require.NoError(t, err)
+	require.NotContains(t, buf.String(), "read-only is not enforced")
 }

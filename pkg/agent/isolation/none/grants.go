@@ -20,7 +20,9 @@ import (
 // checking that the source exists, so a missing device or directory fails
 // Prepare instead of surfacing as a confusing runtime error. A grant that would
 // need the host to look different to the stack (a bind mount at another path, a
-// library path to add) cannot be honored and is refused. Nothing is ignored.
+// library path to add, a device at another path) cannot be honored and is
+// refused. Nothing is ignored, with one exception it states aloud: ReadOnly
+// cannot be enforced on the host, so it is accepted with a logged warning.
 //
 // NVIDIA library directories and the helper binary directory are the one place
 // a different target is asked for: nspawn and container bind them at
@@ -66,6 +68,11 @@ func (b *Backend) checkGrant(g isolation.Grant) error {
 			return nil
 		}
 
+		if g.Target != "" && g.Target != g.Source {
+			return fmt.Errorf("device grant %s at %s cannot be honored in isolation mode %s: the node stack sees the host's device nodes, so a device cannot appear at another path; use it at its own path or use isolation mode nspawn or container",
+				g.Source, g.Target, isolation.ModeNone)
+		}
+
 		if err := b.requireSource(g); err != nil {
 			return fmt.Errorf("device grant: %w", err)
 		}
@@ -85,6 +92,16 @@ func (b *Backend) checkGrant(g isolation.Grant) error {
 			return fmt.Errorf("mount grant: %w", err)
 		}
 
+		// The stack runs on the host and nothing mounts the path, so there is no
+		// bind to make read-only. The grant is accepted, because refusing would
+		// reject configs that follow the advice to set ReadOnly, and the limit
+		// is logged so it is not silent. The grants that exist only so a tool can
+		// read the path are exempt: the host's own copy is what the stack uses.
+		if g.ReadOnly && !onlyRead(g.Purpose) {
+			b.logger().Warn("read-only is not enforced in isolation mode none: the node stack runs on the host and sees "+g.Source+" with the host's own permissions",
+				"source", g.Source, "mode", isolation.ModeNone)
+		}
+
 		return nil
 	case isolation.GrantLibraryPath:
 		return fmt.Errorf("library-path grant %s cannot be honored in isolation mode %s: the node stack uses the host's library configuration", g.Source, isolation.ModeNone)
@@ -102,6 +119,12 @@ func nativeRemap(p isolation.GrantPurpose) bool {
 	default:
 		return false
 	}
+}
+
+// onlyRead reports whether a read-only mount of this purpose only exists so a
+// tool can read the path, which the host view satisfies without any mount.
+func onlyRead(p isolation.GrantPurpose) bool {
+	return nativeRemap(p) || p == isolation.PurposeAMDSysFS
 }
 
 func (b *Backend) requireSource(g isolation.Grant) error {
