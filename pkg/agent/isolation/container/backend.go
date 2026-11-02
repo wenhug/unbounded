@@ -498,10 +498,12 @@ func (b *Backend) Destroy(ctx context.Context, r isolation.NodeRoot) error {
 	// already gone has nothing for systemd to stop; asking would fail with
 	// "not loaded" and hide the cleanup that follows.
 	unitPath := filepath.Join(b.unitDir(), UnitName(slot))
+	stopFailed := false
 
 	if _, err := os.Lstat(unitPath); err == nil {
 		if err := b.Stop(ctx, r); err != nil {
 			errs = append(errs, err)
+			stopFailed = true
 		}
 
 		if err := b.systemctl(ctx, "disable", UnitName(slot)); err != nil {
@@ -517,6 +519,16 @@ func (b *Backend) Destroy(ctx context.Context, r isolation.NodeRoot) error {
 		}
 	} else {
 		b.deleteContainer(ctx, slot)
+	}
+
+	// A container that survived a failed stop owns its rootfs, and the binds
+	// inside its private mount namespace are not in the host mount table that
+	// removeRootfs checks. Keep the files; a later destroy removes them once the
+	// container is gone. A stopped or absent container is no reason to keep them.
+	if stopFailed && b.containerAlive(ctx, slot) {
+		errs = append(errs, fmt.Errorf("container %s is still alive after the failed stop; its bundle and rootfs are kept", ContainerID(slot)))
+
+		return errors.Join(errs...)
 	}
 
 	if err := b.removeTree(b.Layout.BundleDir(slot)); err != nil {
@@ -535,6 +547,24 @@ func (b *Backend) Destroy(ctx context.Context, r isolation.NodeRoot) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// containerAlive reports whether the runtime still has a container for the
+// slot that has not stopped. A runtime that does not know the container means
+// it is gone. Output that cannot be parsed is treated as alive, because the
+// answer is used to decide whether files may be deleted.
+func (b *Backend) containerAlive(ctx context.Context, slot string) bool {
+	out, err := b.run(ctx, b.runtimePath(), "state", ContainerID(slot))
+	if err != nil {
+		return false
+	}
+
+	var st runtimeState
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		return true
+	}
+
+	return st.Status != "stopped"
 }
 
 func (b *Backend) removeTree(dir string) error {

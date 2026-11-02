@@ -434,3 +434,46 @@ func TestDestroyOfTheLastSlotLeavesNoLayoutDirectories(t *testing.T) {
 	require.NoDirExists(t, b.Layout.BundleDir(""))
 	require.NoDirExists(t, b.Layout.RootfsDir(""))
 }
+
+// A container that is still running after a failed stop owns its rootfs; the
+// host mount table cannot show the binds inside its mount namespace, so the
+// rootfs and bundle are kept and the stop error is returned.
+func TestDestroyKeepsTheRootfsWhileAFailedStopLeavesTheContainerAlive(t *testing.T) {
+	for _, state := range []string{`{"status":"running"}`, `{"status":"paused"}`, `{"status":"created"}`, "not json"} {
+		b, st, _ := newBackend(t)
+		ctx := context.Background()
+
+		r, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1"})
+		require.NoError(t, err)
+
+		st.fail["systemctl stop"] = errors.New("stuck")
+		st.out[rt+" state"] = state
+
+		err = b.Destroy(ctx, r)
+		require.ErrorContains(t, err, "stuck", state)
+		require.ErrorContains(t, err, "still", state)
+		require.DirExists(t, b.Layout.RootfsDir("kube1"), state)
+		require.DirExists(t, b.Layout.BundleDir("kube1"), state)
+	}
+}
+
+// A stopped container, or none at all, is no reason to keep the files even
+// when the stop request itself failed.
+func TestDestroyRemovesTheRootfsWhenTheContainerIsGoneAfterAFailedStop(t *testing.T) {
+	for name, set := range map[string]func(*stub){
+		"stopped":   func(st *stub) { st.out[rt+" state"] = `{"status":"stopped"}` },
+		"not found": func(st *stub) { st.fail[rt+" state"] = errors.New("container does not exist") },
+	} {
+		b, st, _ := newBackend(t)
+		ctx := context.Background()
+
+		r, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1"})
+		require.NoError(t, err)
+
+		st.fail["systemctl stop"] = errors.New("stuck")
+		set(st)
+
+		require.ErrorContains(t, b.Destroy(ctx, r), "stuck", name)
+		require.NoDirExists(t, b.Layout.RootfsDir("kube1"), name)
+	}
+}

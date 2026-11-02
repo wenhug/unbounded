@@ -508,6 +508,8 @@ func TestDestroyAttemptsEverythingOnFailure(t *testing.T) {
 
 	st.fail["systemctl stop"] = errors.New("stuck")
 	st.fail["systemctl disable"] = errors.New("cannot disable")
+	// The runtime knows no container, so the failed stop leaves nothing alive.
+	st.fail[rt+" state"] = errors.New("container does not exist")
 
 	err = b.Destroy(ctx, r)
 	require.ErrorContains(t, err, "stuck")
