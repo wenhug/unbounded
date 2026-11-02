@@ -6679,7 +6679,14 @@ def validate_uninstall_removed_node_stack(slot: str, script_output: str = "") ->
     slot. Layout directories and install state are left for `agent reset`."""
     mode = isolation_mode()
     if mode == "nspawn":
+        # The script returns once its own bounded wait is over; a node container
+        # with running pods can still be in State=closing then. Wait for the
+        # machine to go, as the agent's reset does before it reports.
+        deadline = time.monotonic() + 180
         result = ssh_capture_quiet(f"sudo machinectl show {slot}")
+        while result.returncode == 0 and time.monotonic() < deadline:
+            time.sleep(5)
+            result = ssh_capture_quiet(f"sudo machinectl show {slot}")
         if result.returncode == 0:
             print(f"[DIAG]  ---- uninstall script output (tail) ----\n{script_output[-3000:]}", flush=True)
             for title, command in (

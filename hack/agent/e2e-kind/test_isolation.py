@@ -220,6 +220,25 @@ class UninstallSuiteTests(unittest.TestCase):
         asked = present.call_args.args[0]
         self.assertNotIn(e2e.CONTAINER_ROOT_BASE, asked)
 
+    def test_an_nspawn_machine_that_is_still_closing_is_waited_for(self):
+        """The script returns after its own bounded wait; a node container with
+        running pods can still be State=closing. e2e showed the check failing
+        on that, so the machine is given time to go."""
+        answers = [unittest.mock.Mock(returncode=0), unittest.mock.Mock(returncode=0),
+                   unittest.mock.Mock(returncode=1)]
+        with patch.object(e2e, "ISOLATION_MODE", "nspawn"), patch.object(e2e.time, "sleep") as slept, \
+                patch.object(e2e, "ssh_capture_quiet", side_effect=answers):
+            e2e.validate_uninstall_removed_node_stack("kube1")
+        self.assertEqual(slept.call_count, 2)
+
+    def test_an_nspawn_machine_that_never_goes_fails(self):
+        clock = iter(range(0, 10000, 100))
+        with patch.object(e2e, "ISOLATION_MODE", "nspawn"), patch.object(e2e.time, "sleep"), \
+                patch.object(e2e.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(e2e, "ssh_capture_quiet", return_value=unittest.mock.Mock(returncode=0, stdout="", stderr="")):
+            with self.assertRaises(SystemExit):
+                e2e.validate_uninstall_removed_node_stack("kube1", "script output")
+
 
 if __name__ == "__main__":
     unittest.main()
