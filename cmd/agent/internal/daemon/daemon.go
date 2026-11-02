@@ -27,6 +27,7 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/daemoncred"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 )
 
 const (
@@ -404,6 +405,28 @@ func reportObservedIsolation(ctx context.Context, c client.Client, cfg *provisio
 
 		return c.Status().Patch(ctx, &machine, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	})
+}
+
+// declareIsolation sets spec.isolation to mode after a migration the operator
+// asked for, so the Machine's declaration matches what runs and the
+// IsolationDrift condition clears. It patches only that field, which needs the
+// "patch" verb on machines. It is not called at startup: outside a migration
+// the spec belongs to the operator and a drift must stay visible.
+func declareIsolation(ctx context.Context, c client.Client, machineName string, mode isolation.Mode) error {
+	var machine v1alpha3.Machine
+	if err := c.Get(ctx, client.ObjectKey{Name: machineName}, &machine); err != nil {
+		return err
+	}
+
+	want := v1alpha3.IsolationMode(mode)
+	if machine.Spec.Isolation == want {
+		return nil
+	}
+
+	before := machine.DeepCopy()
+	machine.Spec.Isolation = want
+
+	return c.Patch(ctx, &machine, client.MergeFrom(before))
 }
 
 // Report only explicit installation observations, using existing status

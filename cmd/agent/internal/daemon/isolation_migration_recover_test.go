@@ -262,6 +262,88 @@ func TestReconcileIsolationMigrate_ReportsObservedIsolationAfterSuccess(t *testi
 		"observedIsolation is read from the applied config the operator left")
 }
 
+// The operator asked for the new mode, so the Machine declares it afterwards and
+// the IsolationDrift condition clears instead of staying True.
+func TestReconcileIsolationMigrate_DeclaresTheMigratedModeInTheSpec(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Isolation = string(isolation.ModeContainer)
+	op := &fakeNodeOperator{active: &ActiveMachine{Name: "kube1", Config: cfg, Mode: isolation.ModeNSpawn}}
+
+	machine := &v1alpha3.Machine{ObjectMeta: metav1.ObjectMeta{Name: "test-machine", Generation: 3, Labels: map[string]string{"keep": "me"}}}
+	opObj := &v1alpha3.MachineOperation{
+		ObjectMeta: metav1.ObjectMeta{Name: "op-1"},
+		Spec: v1alpha3.MachineOperationSpec{
+			MachineRef: "test-machine", OperationKind: v1alpha3.OperationIsolationMigrate,
+			Parameters: map[string]string{"targetMode": "container"},
+		},
+	}
+	c := fakeStatusClient(machine, opObj)
+
+	_, err := newTestMachinaMachineOperationReconciler(t, c, op).ReconcileMachineOperation(context.Background(), "op-1")
+	require.NoError(t, err)
+
+	var got v1alpha3.Machine
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: "test-machine"}, &got))
+	assert.Equal(t, v1alpha3.IsolationContainer, got.Spec.Isolation)
+	assert.Equal(t, map[string]string{"keep": "me"}, got.Labels, "only spec.isolation is written")
+}
+
+func TestReconcileIsolationMigrate_ASpecPatchFailureDoesNotFailTheMigration(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Isolation = string(isolation.ModeContainer)
+	op := &fakeNodeOperator{active: &ActiveMachine{Name: "kube1", Config: cfg, Mode: isolation.ModeNSpawn}}
+
+	machine := &v1alpha3.Machine{ObjectMeta: metav1.ObjectMeta{Name: "test-machine", Generation: 3}}
+	opObj := &v1alpha3.MachineOperation{
+		ObjectMeta: metav1.ObjectMeta{Name: "op-1"},
+		Spec: v1alpha3.MachineOperationSpec{
+			MachineRef: "test-machine", OperationKind: v1alpha3.OperationIsolationMigrate,
+			Parameters: map[string]string{"targetMode": "container"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(fakeScheme()).
+		WithStatusSubresource(&v1alpha3.Machine{}, &v1alpha3.MachineOperation{}).
+		WithObjects(machine, opObj).
+		WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if _, ok := obj.(*v1alpha3.Machine); ok {
+				return errors.New("machines is forbidden: cannot patch")
+			}
+
+			return cl.Patch(ctx, obj, patch, opts...)
+		}}).Build()
+
+	_, err := newTestMachinaMachineOperationReconciler(t, c, op).ReconcileMachineOperation(context.Background(), "op-1")
+	require.NoError(t, err)
+
+	var done v1alpha3.MachineOperation
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: "op-1"}, &done))
+	assert.Equal(t, v1alpha3.OperationPhaseComplete, done.Status.Phase, "the node did move, so the operation succeeded")
+}
+
+func TestRecoverIsolationMigration_DeclaresTheModeOnlyOnSuccess(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		step migrate.Step
+		want v1alpha3.IsolationMode
+	}{
+		{"completed", migrate.StepComplete, v1alpha3.IsolationContainer},
+		{"rolled back", migrate.StepRolledBack, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			newMigHarness(t, isolation.ModeNSpawn)
+			writeJournal(t, tt.step, func(j *migrate.Journal) { j.Message = "readiness timed out" })
+
+			c := recoveryClient(t, v1alpha3.OperationPhaseInProgress)
+
+			recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
+
+			var got v1alpha3.Machine
+			require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: "test-machine"}, &got))
+			assert.Equal(t, tt.want, got.Spec.Isolation)
+		})
+	}
+}
+
 func TestNewMigrationBackendKnowsInPlaceModesOnly(t *testing.T) {
 	cfg := baseConfig()
 

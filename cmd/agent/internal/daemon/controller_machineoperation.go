@@ -19,6 +19,7 @@ import (
 	"github.com/Azure/unbounded/pkg/agent/agentbinary"
 	daemon "github.com/Azure/unbounded/pkg/agent/daemon"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 	"github.com/Azure/unbounded/pkg/agent/isolation/migrate"
 )
 
@@ -300,7 +301,7 @@ func (t *machineOperationTarget) reconcileIsolationMigrate(ctx context.Context, 
 		return res, finishErr
 	}
 
-	t.reportMigratedIsolation(ctx)
+	t.reportMigratedIsolation(ctx, req.Target)
 
 	if err := store.Finish(ctx, op, daemon.MachineOperationResult[int64]{
 		Phase:                     v1alpha3.OperationPhaseComplete,
@@ -317,9 +318,10 @@ func (t *machineOperationTarget) reconcileIsolationMigrate(ctx context.Context, 
 }
 
 // reportMigratedIsolation updates status.observedIsolation from the applied
-// config the migration left. A failure is logged and not returned: the
-// migration succeeded, and the daemon reports it again when it next starts.
-func (t *machineOperationTarget) reportMigratedIsolation(ctx context.Context) {
+// config the migration left, and declares the new mode in spec.isolation. A
+// failure is logged and not returned: the migration succeeded, and the daemon
+// reports the observed mode again when it next starts.
+func (t *machineOperationTarget) reportMigratedIsolation(ctx context.Context, target isolation.Mode) {
 	active, err := t.nodeOperator.FindActiveMachine(t.log)
 	if err != nil {
 		t.log.Warn("could not read the applied config to report observed isolation", "error", err)
@@ -329,6 +331,10 @@ func (t *machineOperationTarget) reportMigratedIsolation(ctx context.Context) {
 
 	if err := reportObservedIsolation(ctx, t.Client, active.Config); err != nil {
 		t.log.Warn("could not report observed isolation", "error", err)
+	}
+
+	if err := declareIsolation(ctx, t.Client, t.machineName, target); err != nil {
+		t.log.Warn("could not set spec.isolation to the migrated mode; set it to match so the drift clears", "mode", target, "error", err)
 	}
 }
 

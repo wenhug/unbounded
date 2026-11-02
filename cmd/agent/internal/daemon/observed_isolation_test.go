@@ -13,6 +13,7 @@ import (
 
 	api "github.com/Azure/unbounded/api/machina/v1alpha3"
 	"github.com/Azure/unbounded/internal/provision"
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 )
 
 func observedIsolationClient(t *testing.T) (client.Client, *api.Machine) {
@@ -90,4 +91,31 @@ func TestReportMachineObservationsStillFailsOnTheProvisioningFormat(t *testing.T
 	c, m := observedIsolationClient(t)
 
 	require.Error(t, reportMachineObservations(t.Context(), discardLogger(), c, &provision.AgentConfig{MachineName: m.Name, ProvisioningFormat: "bogus"}))
+}
+
+func TestDeclareIsolation(t *testing.T) {
+	c, m := observedIsolationClient(t)
+
+	require.NoError(t, declareIsolation(t.Context(), c, m.Name, isolation.ModeNone))
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(m), m))
+	require.Equal(t, api.IsolationNone, m.Spec.Isolation)
+
+	// Declaring the same mode again is a no-op, and a later one replaces it.
+	require.NoError(t, declareIsolation(t.Context(), c, m.Name, isolation.ModeNone))
+	require.NoError(t, declareIsolation(t.Context(), c, m.Name, isolation.ModeNSpawn))
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(m), m))
+	require.Equal(t, api.IsolationNSpawn, m.Spec.Isolation)
+
+	require.Error(t, declareIsolation(t.Context(), c, "missing", isolation.ModeNone))
+}
+
+// Outside a migration the spec belongs to the operator: reporting the observed
+// mode at startup must not write spec.isolation, so a drift stays visible.
+func TestReportObservedIsolationNeverWritesTheSpec(t *testing.T) {
+	c, m := observedIsolationClient(t)
+
+	require.NoError(t, reportMachineObservations(t.Context(), discardLogger(), c, &provision.AgentConfig{MachineName: m.Name, Isolation: "container"}))
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(m), m))
+	require.Equal(t, api.IsolationContainer, m.Status.ObservedIsolation)
+	require.Empty(t, m.Spec.Isolation)
 }

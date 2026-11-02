@@ -69,6 +69,12 @@ func recoverIsolationMigration(
 			continue
 		}
 
+		if outcome == nil {
+			if err := declareIsolation(ctx, c, machineName, j.To); err != nil {
+				log.Warn("could not set spec.isolation to the migrated mode; set it to match so the drift clears", "mode", j.To, "error", err)
+			}
+		}
+
 		if err := publishMigrationOutcome(ctx, c, machineName, j, outcome); err != nil {
 			log.Warn("could not report the isolation migration outcome; trying again at the next start", "operation", j.Operation, "error", err)
 
