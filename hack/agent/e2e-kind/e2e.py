@@ -6719,7 +6719,12 @@ def validate_uninstall_removed_node_stack(slot: str, script_output: str = "") ->
 def reset_host() -> None:
     """Return the host to a clean state with `unbounded-agent reset`, the only
     supported way to do so, and assert the node stack of the mode is gone."""
-    ssh_capture(f"sudo {DAEMON_BINARY} reset")
+    result = ssh_capture_quiet(f"sudo {DAEMON_BINARY} reset")
+    if result.returncode != 0:
+        print(f"[DIAG]  ---- unbounded-agent reset (exit {result.returncode}) ----\n"
+              f"{(result.stdout + result.stderr)[-4000:]}", flush=True)
+        dump_node_stack_diagnostics()
+        die(f"unbounded-agent reset failed with exit {result.returncode}")
     validate_node_stack_removed()
     log("unbounded-agent reset left the host clean")
 
