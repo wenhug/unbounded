@@ -39,6 +39,17 @@ func TestNvidiaHostBinDirPrefersFirstDiscovered(t *testing.T) {
 	require.Equal(t, "/b", NvidiaHost{NvidiaIMEXPath: "/b/nvidia-imex", NvidiaIMEXCtlPath: "/c/x"}.HostBinDir())
 }
 
+// Restores TestNvidiaHostBinDirFallsBackToIMEX, which tested the nspawn render
+// wrapper nvidiaHostBinDir. That wrapper is gone; HostBinDir replaces it.
+func TestNvidiaHostBinDirFallsBackToIMEX(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "/usr/bin", NvidiaHost{
+		NvidiaIMEXPath:    "/usr/bin/nvidia-imex",
+		NvidiaIMEXCtlPath: "/usr/bin/nvidia-imex-ctl",
+	}.HostBinDir())
+}
+
 func TestAMDHostGrantsSkipExcludedDevices(t *testing.T) {
 	t.Parallel()
 

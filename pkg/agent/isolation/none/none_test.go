@@ -492,7 +492,7 @@ func TestUpgradeFirstInstallHasNothingToRollBackTo(t *testing.T) {
 	require.NotContains(t, err.Error(), "rolled back")
 }
 
-func TestUpgradeRollbackSurvivesCancelledContext(t *testing.T) {
+func TestUpgradeRollbackSurvivesCanceledContext(t *testing.T) {
 	b, _ := newBackend(t)
 	installVersions(t, b, "v1", "v2")
 
