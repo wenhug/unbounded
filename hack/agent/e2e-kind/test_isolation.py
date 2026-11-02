@@ -89,17 +89,35 @@ class PlanStepTests(unittest.TestCase):
         import pathlib
         import tempfile
 
+        (e2e.REPO_ROOT / "tmp").mkdir(exist_ok=True)
+
         with tempfile.TemporaryDirectory(dir=str(e2e.REPO_ROOT / "tmp")) as tmp:
             saved = pathlib.Path(tmp) / "unbounded-agent-preflight.json"
             saved.write_text(json.dumps({"checks": [{"name": "nspawn-runtime", "severity": "ok"}]}))
             with patch.object(e2e, "VM_DIR", pathlib.Path(tmp)):
                 with patch.dict("os.environ", {"ISOLATION_MODE": ""}):
                     # An nspawn bootstrap says nothing about a node now in none mode.
-                    e2e.assert_bootstrap_preflight_mode_check("none")
-                    e2e.assert_bootstrap_preflight_mode_check("nspawn")
+                    with patch.object(e2e, "warn") as warned:
+                        skipped = e2e.assert_bootstrap_preflight_mode_check("none")
+                    self.assertIn("bootstrap ran in nspawn", skipped)
+                    self.assertIn("SKIPPED", warned.call_args.args[0])
+                    # The bootstrap mode itself is asserted, so nothing is skipped.
+                    self.assertEqual(e2e.assert_bootstrap_preflight_mode_check("nspawn"), "")
                 with patch.dict("os.environ", {"ISOLATION_MODE": "none"}):
                     with self.assertRaises(SystemExit):
                         e2e.assert_bootstrap_preflight_mode_check("none")
+
+    def test_a_missing_bootstrap_report_is_reported_as_skipped(self):
+        import pathlib
+        import tempfile
+
+        (e2e.REPO_ROOT / "tmp").mkdir(exist_ok=True)
+
+        with tempfile.TemporaryDirectory(dir=str(e2e.REPO_ROOT / "tmp")) as tmp:
+            with patch.object(e2e, "VM_DIR", pathlib.Path(tmp)), patch.object(e2e, "warn") as warned:
+                reason = e2e.assert_bootstrap_preflight_mode_check("none")
+        self.assertEqual(reason, "no bootstrap preflight report was saved")
+        self.assertIn("SKIPPED", warned.call_args.args[0])
 
     def test_daemon_unit_check_has_no_machine_override_outside_nspawn(self):
         seen = []
@@ -248,6 +266,158 @@ class ActiveSlotTests(unittest.TestCase):
         with patch.object(e2e, "ISOLATION_MODE", "none"):
             self.assertEqual(e2e.active_node_slot(), "kube1")
             self.assertEqual(e2e.alternate_nspawn_slot(), "kube2")
+
+
+class SoftRebootTests(unittest.TestCase):
+    def _run(self, mode, markers):
+        """Run the soft reboot check with the kubelet start marker answering from
+        markers, one value per read."""
+        answers = iter(markers)
+        quiet = unittest.mock.Mock(side_effect=lambda command: unittest.mock.Mock(
+            returncode=0, stdout=next(answers), stderr=""))
+        clock = iter(range(0, 100000, 40))
+        with patch.object(e2e, "ISOLATION_MODE", mode), patch.object(e2e, "ssh_capture_quiet", quiet), \
+                patch.object(e2e, "ssh_capture", return_value="boot-1\n"), patch.object(e2e, "ssh_cmd"), \
+                patch.object(e2e, "run_quiet"), patch.object(e2e, "create_machine_operation"), \
+                patch.object(e2e, "wait_for_machine_operation_complete"), patch.object(e2e, "wait_for_node_ready"), \
+                patch.object(e2e, "applied_isolation", return_value=mode), patch.object(e2e.time, "sleep"), \
+                patch.object(e2e.time, "monotonic", side_effect=lambda: next(clock)):
+            e2e.validate_isolation_soft_reboot()
+
+    def test_a_restarted_kubelet_passes_in_every_mode(self):
+        for mode in ("nspawn", "none", "container"):
+            with self.subTest(mode=mode):
+                self._run(mode, ["100\n", "250\n"])
+
+    def test_a_node_reboot_that_did_nothing_fails_even_though_the_node_is_ready(self):
+        with self.assertRaises(SystemExit):
+            self._run("container", ["100\n"] * 8)
+
+    def test_an_unreadable_marker_before_the_reboot_fails(self):
+        with self.assertRaises(SystemExit):
+            self._run("nspawn", [""])
+
+    def test_the_marker_reads_the_kubelet_unit_of_the_mode(self):
+        for mode, unit in (("none", "unbounded-kubelet.service"), ("nspawn", "kubelet.service"),
+                           ("container", "kubelet.service")):
+            seen = []
+
+            def ssh(command, seen=seen):
+                seen.append(command)
+                return unittest.mock.Mock(returncode=0, stdout="7\n", stderr="")
+
+            with self.subTest(mode=mode), patch.object(e2e, "ISOLATION_MODE", mode), \
+                    patch.object(e2e, "ssh_capture_quiet", ssh):
+                self.assertEqual(e2e.node_stack_start_marker(), "7")
+            self.assertIn(f"exec -- systemctl show -p ActiveEnterTimestampMonotonic --value {unit}", seen[0])
+
+
+class RollbackCheckTests(unittest.TestCase):
+    def test_a_none_source_is_refused_because_the_rollback_would_never_run(self):
+        with patch.object(e2e, "applied_isolation", return_value="none"), \
+                patch.object(e2e, "shared_config_digest") as digest:
+            with self.assertRaises(SystemExit):
+                e2e.validate_migration_rollback_config(None)
+        digest.assert_not_called()
+
+    def test_a_rollback_message_must_name_the_rollback_and_the_injected_fault(self):
+        good = "persist applied config: x (rolled back to container)"
+        e2e.assert_rollback_ran(good, "container")
+        for bad in ("", "preflight nspawn: no (the container node was not changed)",
+                    "start nspawn: boom (rolled back to container)"):
+            with self.subTest(message=bad), self.assertRaises(SystemExit):
+                e2e.assert_rollback_ran(bad, "container")
+
+    def test_a_custom_fault_only_needs_the_rollback(self):
+        e2e.assert_rollback_ran("boom (rolled back to nspawn)", "nspawn", custom_fault=True)
+        with self.assertRaises(SystemExit):
+            e2e.assert_rollback_ran("boom (the nspawn node was not changed)", "nspawn", custom_fault=True)
+
+
+class DigestTests(unittest.TestCase):
+    def test_a_kubelet_client_certificate_rotation_is_not_a_change(self):
+        import pathlib
+        import subprocess
+        import tempfile
+
+        (e2e.REPO_ROOT / "tmp").mkdir(exist_ok=True)
+
+        with tempfile.TemporaryDirectory(dir=str(e2e.REPO_ROOT / "tmp")) as tmp:
+            pki = pathlib.Path(tmp) / "pki"
+            pki.mkdir()
+            (pki / "ca.crt").write_text("ca")
+            (pki / "kubelet-client-2026-01-01-00-00-00.pem").write_text("old")
+            (pki / "kubelet-client-current.pem").symlink_to("kubelet-client-2026-01-01-00-00-00.pem")
+            (pathlib.Path(tmp) / "config.yaml").write_text("cfg")
+
+            def digest():
+                with patch.object(e2e, "SHARED_CONFIG_PATHS", (str(pki), str(pathlib.Path(tmp) / "config.yaml"))):
+                    script = e2e.shared_config_digest_script()
+
+                return e2e.parse_digest(subprocess.run(["sh", "-c", script], capture_output=True, text=True,
+                                                       check=True).stdout)
+
+            before = digest()
+            self.assertIn(str(pki / "ca.crt"), before)
+            self.assertIn(str(pathlib.Path(tmp) / "config.yaml"), before)
+            self.assertFalse([p for p in before if "kubelet-client-" in p], before)
+
+            # The kubelet rotates its certificate.
+            (pki / "kubelet-client-current.pem").unlink()
+            (pki / "kubelet-client-2026-02-01-00-00-00.pem").write_text("new")
+            (pki / "kubelet-client-current.pem").symlink_to("kubelet-client-2026-02-01-00-00-00.pem")
+            self.assertEqual(e2e.digest_differences(before, digest()), [])
+
+            # A real configuration change is still seen.
+            (pki / "ca.crt").write_text("changed")
+            self.assertEqual(e2e.digest_differences(before, digest()), [f"changed {pki / 'ca.crt'}"])
+
+
+class DiagnosticsRedactionTests(unittest.TestCase):
+    def test_tokens_and_kubeconfig_credentials_are_removed(self):
+        text = ("kubelet: token abcdef.0123456789abcdef\n"
+                "users:\n- user:\n    token: s3cr3t\n    client-key-data: QUJD\n"
+                '{"BootstrapToken": "zzzzzz.yyyyyyyyyyyyyyyy"}\nplain line\n')
+        out = e2e.redact_diagnostics(text)
+        for secret in ("abcdef.0123456789abcdef", "s3cr3t", "QUJD", "zzzzzz.yyyyyyyyyyyyyyyy"):
+            self.assertNotIn(secret, out)
+        self.assertIn("plain line", out)
+
+    def test_the_dump_prints_redacted_output_and_reads_the_bundle_directory(self):
+        import contextlib
+        import io
+
+        commands = []
+
+        def ssh(command):
+            commands.append(command)
+            return unittest.mock.Mock(stdout="token abcdef.0123456789abcdef", stderr="", returncode=0)
+
+        out = io.StringIO()
+        with patch.object(e2e, "ISOLATION_MODE", "container"), patch.object(e2e, "ssh_capture_quiet", ssh), \
+                patch.object(e2e.subprocess, "run"), contextlib.redirect_stdout(out):
+            e2e.dump_node_stack_diagnostics()
+        self.assertNotIn("abcdef.0123456789abcdef", out.getvalue())
+        self.assertIn("<redacted-token>", out.getvalue())
+        self.assertTrue(any("containers/bundles/*/config.json" in c for c in commands))
+
+
+class UninstallSlotTests(unittest.TestCase):
+    def test_the_uninstall_validation_uses_the_active_slot(self):
+        seen = {}
+
+        def validate(slot, output=""):
+            seen["slot"] = slot
+
+        with patch.object(e2e, "ISOLATION_MODE", "container"), patch.object(e2e, "active_node_slot", return_value="kube2"), \
+                patch.object(e2e, "ssh_capture", return_value="Isolation mode: container\n"), \
+                patch.object(e2e, "ssh_capture_quiet"), patch.object(e2e, "scp_cmd"), \
+                patch.object(e2e, "validate_uninstall_removed_node_stack", validate), \
+                patch.object(e2e, "run_quiet"), patch.object(e2e, "delete_machine_cr"), \
+                patch.object(e2e, "VM_DIR", e2e.REPO_ROOT / "tmp"):
+            (e2e.REPO_ROOT / "tmp").mkdir(exist_ok=True)
+            e2e.validate_isolation_uninstall()
+        self.assertEqual(seen["slot"], "kube2")
 
 
 if __name__ == "__main__":

@@ -54,6 +54,7 @@ Subcommands (called as individual workflow steps):
     reconcile-machine-isolation-spec   Set spec.isolation to the applied mode and verify drift clears.
     validate-isolation-preflight       Run preflight with --isolation and verify the mode's own check ran.
     validate-isolation-uninstall       Run the uninstall script and verify the node stack is gone.
+    validate-migration-unsupported-pair Request an unsupported in-place migration and verify it is rejected.
     validate-migration-rollback-config Fail a migration and verify shared host config is restored.
     collect-isolation-evidence         Print the mode state of the VM and Machine as one JSON line.
     validate-migration-rollback-to-container
@@ -96,6 +97,7 @@ from threading import Thread
 from typing import Any, Callable
 from xml.etree import ElementTree
 
+import isolation_report
 import ukiboot
 
 # ---------------------------------------------------------------------------
@@ -866,16 +868,37 @@ def validate_isolation_exec_logs() -> None:
     log("unbounded-agent exec and logs work")
 
 
+def node_stack_start_marker() -> str:
+    """Return a value that changes when the kubelet of the node stack is
+    restarted: its ActiveEnterTimestampMonotonic, read through
+    `unbounded-agent exec` so the same command works in every mode. Empty when
+    it cannot be read."""
+    unit = "unbounded-kubelet.service" if isolation_mode() == "none" else "kubelet.service"
+    result = ssh_capture_quiet(
+        f"sudo {DAEMON_BINARY} exec -- systemctl show -p ActiveEnterTimestampMonotonic --value {unit}")
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def validate_isolation_soft_reboot() -> None:
-    """Assert NodeReboot restarts the node stack only: the Node returns Ready
-    and the mode is unchanged. In none mode the host boot ID must not change."""
+    """Assert NodeReboot restarts the node stack only: the kubelet of the node
+    stack was restarted, the Node returns Ready and the mode is unchanged. In
+    none mode the host boot ID must not change. A NodeReboot that did nothing
+    leaves the Node Ready, so readiness alone proves nothing; the kubelet start
+    marker must change."""
     mode = isolation_mode()
     host_boot_before = ssh_capture("cat /proc/sys/kernel/random/boot_id").strip()
+    marker_before = node_stack_start_marker()
+    if not marker_before:
+        die("cannot read the kubelet start marker of the node stack before NodeReboot")
     name = f"e2e-isolation-reboot-{int(time.time())}"
     run_quiet([KUBECTL, "delete", _machine_operation_resource(), name, "--ignore-not-found"], check=False)
     create_machine_operation(name, AGENT_MACHINE_NAME, "NodeReboot")
     wait_for_machine_operation_complete(name)
     wait_for_node_ready(AGENT_MACHINE_NAME)
+    _wait_until(
+        lambda: "" if (marker := node_stack_start_marker()) and marker != marker_before
+        else f"NodeReboot did not restart the kubelet of the node stack: start marker still {marker!r}",
+        120)
     if mode == "none":
         for unit in NONE_UNITS:
             ssh_cmd(f"sudo systemctl is-active {unit}")
@@ -4002,6 +4025,17 @@ def _run_agent_inner(agent_url: str, node_config: NodeConfig, *, reinstall: bool
 # ---------------------------------------------------------------------------
 # wait-for-node
 # ---------------------------------------------------------------------------
+# Credential fields that appear in kubeconfigs and unit environments, on top of
+# the bootstrap tokens and JSON token fields isolation_report.redact removes.
+_YAML_SECRET = re.compile(r"(?m)^(\s*(?:token|client-key-data|password):\s*)\S+")
+
+
+def redact_diagnostics(text: str) -> str:
+    """Remove bootstrap tokens and kubeconfig credentials from remote output
+    before it is printed: the journals of the agent can include them."""
+    return _YAML_SECRET.sub(r"\1<redacted>", isolation_report.redact(text))
+
+
 def dump_node_stack_diagnostics() -> None:
     """Print what is needed to see why a Node did not register: unit state and
     journals on the host, and for container mode the runc state and the
@@ -4035,7 +4069,8 @@ def dump_node_stack_diagnostics() -> None:
              f"sudo {runc} exec $c journalctl --no-pager -n 150 -u kubelet -u containerd 2>&1; done"),
             ("container mountinfo", f"for c in $(sudo {runc} list -q); do echo == $c; "
                                     f"sudo {runc} exec $c cat /proc/self/mountinfo 2>&1 | tail -40; done"),
-            ("container bundle config", "sudo sh -c 'cat /var/lib/unbounded/containers/*/config.json 2>/dev/null | head -c 6000'"),
+            ("container bundle config",
+             "sudo sh -c 'cat /var/lib/unbounded/containers/bundles/*/config.json 2>/dev/null | head -c 6000'"),
         ]
     for title, command in queries:
         try:
@@ -4043,7 +4078,7 @@ def dump_node_stack_diagnostics() -> None:
             out = (result.stdout + result.stderr).strip() or f"<no output, exit {result.returncode}>"
         except Exception as exc:  # noqa: BLE001 - diagnostics must never fail the run
             out = f"<query failed: {exc}>"
-        print(f"[DIAG]  ---- {title} ----\n{out}", flush=True)
+        print(f"[DIAG]  ---- {title} ----\n{redact_diagnostics(out)}", flush=True)
     for title, args in (("certificate signing requests", ["get", "csr"]), ("nodes", ["get", "nodes", "-o", "wide"])):
         subprocess.run([KUBECTL, *args], check=False)
         print(f"[DIAG]  ---- end {title} ----", flush=True)
@@ -6442,6 +6477,20 @@ def migrate_isolation(node_config: NodeConfig, target: str, strategy: str) -> No
     log(f"Isolation migration {source} -> {target} ({strategy}) PASSED")
 
 
+def assert_rollback_ran(message: str, source: str, custom_fault: bool = False) -> None:
+    """Assert a failed IsolationMigrate failed the way the test meant it to: the
+    source was stopped, the failure happened, and the source was started again
+    ("rolled back to <source>"). A failure before any change (preflight, an
+    unsupported pair) says "was not changed" and proves nothing about rollback.
+    With the default injected fault the failure is the persist step."""
+    if not message:
+        die("failed IsolationMigrate carries no message")
+    if f"rolled back to {source}" not in message:
+        die(f"the IsolationMigrate failed without a rollback to {source}: {message!r}")
+    if not custom_fault and "persist applied config" not in message:
+        die(f"the IsolationMigrate did not fail at the injected fault (persisting the target): {message!r}")
+
+
 def validate_migration_rollback(node_config: NodeConfig, target: str) -> None:
     """Fail an in-place migration after the source stopped and assert the
     source is running again, the recorded mode is the source's, and the
@@ -6457,8 +6506,7 @@ def validate_migration_rollback(node_config: NodeConfig, target: str) -> None:
     finally:
         clear_migration_target_fault(fault)
     status = operation.get("status", {})
-    if not status.get("message"):
-        die("failed IsolationMigrate carries no message")
+    assert_rollback_ran(status.get("message", ""), source, custom_fault=bool(os.environ.get("MIGRATION_FAULT_CMD")))
     set_effective_isolation(source)
     if applied_isolation() != source:
         die(f"rollback left the applied mode at {applied_isolation()!r}, expected {source!r}")
@@ -6612,21 +6660,27 @@ def validate_isolation_preflight() -> None:
     check_isolation_preflight_report(mode, report)
 
 
-def assert_bootstrap_preflight_mode_check(mode: str) -> None:
+def assert_bootstrap_preflight_mode_check(mode: str) -> str:
     """Assert the preflight report saved by the bootstrap ran the mode's own
     check, when the bootstrap ran in the mode under test (a node that was
-    migrated here was bootstrapped in another mode, which says nothing)."""
+    migrated here was bootstrapped in another mode, which says nothing).
+
+    Returns "" when the assertion ran, and otherwise the reason it was skipped,
+    which is also reported as a SKIPPED warning so a skipped check never reads
+    as a passed one."""
     saved = VM_DIR / "unbounded-agent-preflight.json"
     if not saved.exists():
-        log("No bootstrap preflight report was saved; skipping the mode check assertion")
-        return
+        reason = "no bootstrap preflight report was saved"
+        warn(f"SKIPPED the {mode} preflight mode check: {reason}")
+        return reason
     report = parse_preflight_report(saved.read_text())
-    names = {check.get("name") for check in report.get("checks", [])}
     started_mode = os.environ.get("ISOLATION_MODE") or "nspawn"
     if started_mode != mode:
-        log(f"The bootstrap ran in {started_mode}, not {mode}; its preflight report is not asserted")
-        return
+        reason = f"the bootstrap ran in {started_mode}, not {mode}, so its report says nothing about {mode}"
+        warn(f"SKIPPED the {mode} preflight mode check: {reason}")
+        return reason
     check_isolation_preflight_report(mode, report)
+    return ""
 
 
 def check_isolation_preflight_report(mode: str, report: dict[str, Any]) -> None:
@@ -6645,21 +6699,34 @@ def check_isolation_preflight_report(mode: str, report: dict[str, Any]) -> None:
     log(f"Preflight ran the {want} check for {mode} (status {report.get('status')})")
 
 
-def shared_config_digest() -> dict[str, str]:
-    """Return a sha256 for every file under the shared configuration paths on
-    the VM, plus link targets, keyed by path."""
-    script = ("for p in " + " ".join(SHARED_CONFIG_PATHS) + "; do "
-              "[ -e \"$p\" ] || [ -L \"$p\" ] || continue; "
-              "find \"$p\" -xdev \\( -type f -o -type l \\) | sort | while read -r f; do "
-              "if [ -L \"$f\" ]; then echo \"link $(readlink \"$f\") $f\"; "
-              "else echo \"$(sha256sum \"$f\" | cut -d' ' -f1) $f\"; fi; done; done")
-    out = ssh_capture(f"sudo sh -c {shlex.quote(script)}")
+def shared_config_digest_script() -> str:
+    """Return the shell script that prints a sha256 (or a link target) for every
+    file under the shared configuration paths. The kubelet rotates its client
+    certificate on its own schedule (kubelet-client-<timestamp>.pem and the
+    kubelet-client-current.pem link), so those are left out; a rotation during
+    a test is not a configuration change."""
+    return ("for p in " + " ".join(SHARED_CONFIG_PATHS) + "; do "
+            "[ -e \"$p\" ] || [ -L \"$p\" ] || continue; "
+            "find \"$p\" -xdev \\( -type f -o -type l \\) ! -name 'kubelet-client-*.pem' | sort | "
+            "while read -r f; do "
+            "if [ -L \"$f\" ]; then echo \"link $(readlink \"$f\") $f\"; "
+            "else echo \"$(sha256sum \"$f\" | cut -d' ' -f1) $f\"; fi; done; done")
+
+
+def parse_digest(out: str) -> dict[str, str]:
+    """Parse the output of the digest script into {path: value}."""
     digest: dict[str, str] = {}
     for line in out.splitlines():
         value, _, path = line.rpartition(" ")
         if path:
             digest[path] = value
     return digest
+
+
+def shared_config_digest() -> dict[str, str]:
+    """Return a sha256 for every file under the shared configuration paths on
+    the VM, plus link targets, keyed by path."""
+    return parse_digest(ssh_capture(f"sudo sh -c {shlex.quote(shared_config_digest_script())}"))
 
 
 def digest_differences(before: dict[str, str], after: dict[str, str]) -> list[str]:
@@ -6679,6 +6746,12 @@ def validate_migration_rollback_config(node_config: NodeConfig) -> None:
     """Fail an in-place migration, then assert the shared host configuration is
     byte for byte what it was before the migration started."""
     source = applied_isolation()
+    if source not in ("nspawn", "container"):
+        # In place is nspawn <-> container only (migrate.Plan). From any other
+        # mode the operation is rejected before it changes anything, the
+        # rollback never runs and the comparison below would pass trivially.
+        die(f"the shared-configuration rollback check needs an nspawn or container source, not {source}; "
+            "run it with ISOLATION_MODE=container")
     before = shared_config_digest()
     if not before:
         die(f"no shared configuration files found on the host before the migration; a {source} host "
@@ -6741,7 +6814,7 @@ def validate_isolation_uninstall() -> None:
     does. The Node and Machine are then removed so the host can be bootstrapped
     again."""
     mode = isolation_mode()
-    slot = active_nspawn_machine() if mode == "nspawn" else "kube1"
+    slot = active_node_slot()
     script = UNINSTALL_SCRIPT_ASSET.read_text().replace(UNINSTALL_SCRIPT_PLACEHOLDER, slot)
     local = VM_DIR / "unbounded-agent-uninstall.sh"
     VM_DIR.mkdir(parents=True, exist_ok=True)
