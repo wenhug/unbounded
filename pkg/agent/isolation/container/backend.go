@@ -27,9 +27,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -61,6 +63,10 @@ type Backend struct {
 	// started, so a missing runtime is a clear error instead of a unit systemd
 	// quietly skips. Nil skips the check; the agent sets it.
 	CheckRuntime func(path string) error
+	// KernelRelease reports the running kernel's release string, for choosing
+	// recursive read-only binds. Nil reads <SourceRoot>/proc/sys/kernel/osrelease;
+	// an unknown kernel keeps plain "ro".
+	KernelRelease func() string
 	// HelperPath is the agent binary providing node-lifecycle hooks.
 	HelperPath string
 	// SystemdDir is where the unit is written. Empty means SystemdDir.
@@ -248,6 +254,7 @@ func (b *Backend) RenderBundle(slot string, grants []isolation.Grant) error {
 	}
 
 	in.ExtraBinds = b.extraBinds()
+	in.RecursiveReadOnly = b.recursiveReadOnly()
 
 	data, err := RenderConfig(in)
 	if err != nil {
@@ -255,6 +262,63 @@ func (b *Backend) RenderBundle(slot string, grants []isolation.Grant) error {
 	}
 
 	return fsutil.WriteFileAtomic(b.Layout.ConfigPath(slot), data, 0o644)
+}
+
+// recursiveReadOnly reports whether read-only binds can be "rro": the installed
+// runtime and the kernel must both support it. Anything unknown, such as a
+// runtime that is not installed yet, keeps "ro"; the pre-start hook renders the
+// bundle again, so the answer follows the host.
+func (b *Backend) recursiveReadOnly() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := b.run(ctx, b.runtimePath(), "--version")
+	if err != nil {
+		b.logger().Debug("runtime version unknown; keeping plain read-only binds", "error", err)
+
+		return false
+	}
+
+	kernel := ""
+
+	if b.KernelRelease != nil {
+		kernel = b.KernelRelease()
+	} else if data, err := os.ReadFile(filepath.Join(b.SourceRoot, "/proc/sys/kernel/osrelease")); err == nil {
+		kernel = strings.TrimSpace(string(data))
+	}
+
+	return supportsRecursiveReadOnly(out, kernel)
+}
+
+var (
+	runtimeVersionRE = regexp.MustCompile(`version\s+(\d+)\.(\d+)`)
+	kernelReleaseRE  = regexp.MustCompile(`^(\d+)\.(\d+)`)
+)
+
+// supportsRecursiveReadOnly reports whether "rro" is available: runc 1.1 or
+// newer, which understands the option, on Linux 5.12 or newer, which has the
+// mount_setattr call it uses. runcVersion is `runc --version` output.
+func supportsRecursiveReadOnly(runcVersion, kernelRelease string) bool {
+	rm := runtimeVersionRE.FindStringSubmatch(runcVersion)
+	km := kernelReleaseRE.FindStringSubmatch(strings.TrimSpace(kernelRelease))
+
+	if rm == nil || km == nil {
+		return false
+	}
+
+	return atLeast(rm[1], rm[2], 1, 1) && atLeast(km[1], km[2], 5, 12)
+}
+
+// atLeast reports whether major.minor is at least wantMajor.wantMinor.
+func atLeast(major, minor string, wantMajor, wantMinor int) bool {
+	ma, err1 := strconv.Atoi(major)
+	mi, err2 := strconv.Atoi(minor)
+
+	if err1 != nil || err2 != nil {
+		return false
+	}
+
+	return ma > wantMajor || ma == wantMajor && mi >= wantMinor
 }
 
 // extraBinds are the nspawn machine's other host binds. A bind whose source is

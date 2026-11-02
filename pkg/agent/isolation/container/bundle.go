@@ -85,6 +85,40 @@ type BundleInput struct {
 	Devices map[string]DeviceInfo
 	// ExtraBinds are bound after the same-path mounts and before grants.
 	ExtraBinds []ExtraBind
+	// RecursiveReadOnly makes read-only binds "rro" instead of "ro". With "ro"
+	// a recursive bind keeps its submounts writable. The runtime (runc 1.1) and
+	// the kernel (5.12, mount_setattr) must both support it, so the backend sets
+	// this only after checking them.
+	RecursiveReadOnly bool
+}
+
+// readOnlyOption is the mount option for a read-only bind.
+func (in BundleInput) readOnlyOption() string {
+	if in.RecursiveReadOnly {
+		return "rro"
+	}
+
+	return "ro"
+}
+
+// cleanTarget returns the cleaned in-container path of a bind or device target
+// and refuses the pseudo filesystems the container gets its own copy of: a
+// bind over /proc or /sys would replace the container's view of the kernel.
+// Cleaning first means "/run/containerd/../containerd" is the same path the
+// conflict check sees.
+func cleanTarget(what, p string) (string, error) {
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("%s target %q must be an absolute path", what, p)
+	}
+
+	c := filepath.Clean(p)
+	for _, pseudo := range []string{"/proc", "/sys"} {
+		if c == pseudo || strings.HasPrefix(c, pseudo+"/") {
+			return "", fmt.Errorf("%s target %s is under /proc or /sys, which the container mounts itself", what, c)
+		}
+	}
+
+	return c, nil
 }
 
 // The types below are the subset of the OCI runtime spec the backend emits.
@@ -237,18 +271,23 @@ func RenderConfig(in BundleInput) ([]byte, error) {
 			return nil, fmt.Errorf("extra bind %q to %q must use absolute paths", e.Source, e.Target)
 		}
 
-		if taken[e.Target] {
-			return nil, fmt.Errorf("extra bind target %s conflicts with an existing mount", e.Target)
+		target, err := cleanTarget("extra bind", e.Target)
+		if err != nil {
+			return nil, err
 		}
 
-		taken[e.Target] = true
+		if taken[target] {
+			return nil, fmt.Errorf("extra bind target %s conflicts with an existing mount", target)
+		}
+
+		taken[target] = true
 
 		mode := "rw"
 		if e.ReadOnly {
-			mode = "ro"
+			mode = in.readOnlyOption()
 		}
 
-		mounts = append(mounts, mount{Destination: e.Target, Type: "bind", Source: e.Source, Options: []string{"rbind", mode}})
+		mounts = append(mounts, mount{Destination: target, Type: "bind", Source: e.Source, Options: []string{"rbind", mode}})
 	}
 
 	var libPaths []string
@@ -283,8 +322,9 @@ func RenderConfig(in BundleInput) ([]byte, error) {
 			target = g.Source
 		}
 
-		if !filepath.IsAbs(target) {
-			return nil, fmt.Errorf("grant %q target %q must be an absolute path", g.Kind, target)
+		target, err := cleanTarget(fmt.Sprintf("grant %q", g.Kind), target)
+		if err != nil {
+			return nil, err
 		}
 
 		switch g.Kind {
@@ -297,7 +337,7 @@ func RenderConfig(in BundleInput) ([]byte, error) {
 
 			mode := "rw"
 			if g.ReadOnly || g.Kind == isolation.GrantLibraryPath {
-				mode = "ro"
+				mode = in.readOnlyOption()
 			}
 
 			mounts = append(mounts, mount{Destination: target, Type: "bind", Source: g.Source, Options: []string{"rbind", mode}})
