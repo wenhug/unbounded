@@ -63,7 +63,8 @@ func newNodeOperator() nodeOperator {
 // Operations that are not about one active machine, or that act on host-global
 // state that does not depend on the mode (invariant 2 of the isolation design),
 // are handled by the default mode's operator: discovery of the applied config,
-// reset, stopping the daemon and staging an agent upgrade.
+// reset, stopping the daemon, staging an agent upgrade, reading the boot ID
+// and rebooting the host.
 type dispatchOperator struct {
 	ops map[isolation.Mode]nodeOperator
 }
@@ -144,6 +145,24 @@ func (d *dispatchOperator) StopDaemon(ctx context.Context, log *slog.Logger) err
 	}
 
 	return op.StopDaemon(ctx, log)
+}
+
+func (d *dispatchOperator) BootID() (string, error) {
+	op, err := d.hostOperator()
+	if err != nil {
+		return "", err
+	}
+
+	return op.BootID()
+}
+
+func (d *dispatchOperator) RebootHost(ctx context.Context, log *slog.Logger) error {
+	op, err := d.hostOperator()
+	if err != nil {
+		return err
+	}
+
+	return op.RebootHost(ctx, log)
 }
 
 func (d *dispatchOperator) RepaveNode(ctx context.Context, log *slog.Logger, active *ActiveMachine, newCfg *provision.UnboundedAgentConfig) error {

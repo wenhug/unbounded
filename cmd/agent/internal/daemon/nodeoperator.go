@@ -56,6 +56,16 @@ func activeMode(cfg *provision.AgentConfig) (isolation.Mode, error) {
 	return mode, nil
 }
 
+// hostRebooter is the part of a nodeOperator about the host operating system
+// rather than a node stack, so it does not depend on the isolation mode.
+type hostRebooter interface {
+	// BootID returns the kernel boot ID of the current host boot.
+	BootID() (string, error)
+	// RebootHost asks systemd to reboot the host operating system. It returns
+	// once the reboot is queued; systemd then stops this daemon.
+	RebootHost(context.Context, *slog.Logger) error
+}
+
 // nodeOperator performs host-local node operations for the daemon, for the
 // isolation mode the host runs in (nspawn, none or container). Reconcile code
 // depends on this interface so tests can substitute the host-mutating
@@ -74,11 +84,7 @@ type nodeOperator interface {
 	ResetAgentResources(context.Context, *slog.Logger) error
 	// StopDaemon stops, disables, and removes the unbounded-agent-daemon unit.
 	StopDaemon(context.Context, *slog.Logger) error
-	// BootID returns the kernel boot ID of the current host boot.
-	BootID() (string, error)
-	// RebootHost asks systemd to reboot the host operating system. It returns
-	// once the reboot is queued; systemd then stops this daemon.
-	RebootHost(context.Context, *slog.Logger) error
+	hostRebooter
 	// RepaveNode performs the nspawn machine update:
 	//  1. Provision a new rootfs on the alternate machine
 	//  2. Stop the old machine (graceful service shutdown + nspawn teardown)

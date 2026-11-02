@@ -69,7 +69,18 @@ func TestDispatchOperator_HostGlobalOperationsUseDefaultMode(t *testing.T) {
 	require.NoError(t, d.StageAgentUpgrade(t.Context(), log, agentUpgradeRequest{}))
 	assert.True(t, nspawnOp.stageUpgradeCalled)
 
+	// The boot ID and the host reboot belong to the host, not to one mode.
+	nspawnOp.bootID = "boot-1"
+
+	id, err := d.BootID()
+	require.NoError(t, err)
+	assert.Equal(t, "boot-1", id)
+
+	require.NoError(t, d.RebootHost(t.Context(), log))
+	assert.Equal(t, 1, nspawnOp.rebootCalls)
+
 	assert.False(t, noneOp.resetCalled || noneOp.stopCalled || noneOp.stageUpgradeCalled)
+	assert.Zero(t, noneOp.rebootCalls)
 }
 
 func TestDispatchOperator_PropagatesOperatorErrors(t *testing.T) {
@@ -102,6 +113,10 @@ func TestDispatchOperator_UnregisteredModeAndNilActive(t *testing.T) {
 	require.Error(t, empty.ResetAgentResources(t.Context(), log))
 	require.Error(t, empty.StopDaemon(t.Context(), log))
 	require.Error(t, empty.StageAgentUpgrade(t.Context(), log, agentUpgradeRequest{}))
+	require.Error(t, empty.RebootHost(t.Context(), log))
+
+	_, err = empty.BootID()
+	require.Error(t, err)
 }
 
 func TestNewNodeOperator_DefaultsToNSpawn(t *testing.T) {
