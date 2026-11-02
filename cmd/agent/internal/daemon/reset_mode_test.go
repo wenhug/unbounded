@@ -5,9 +5,11 @@ package daemon
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Azure/unbounded/pkg/agent/appliedconfig"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
@@ -54,11 +56,14 @@ func TestDetectResetMode(t *testing.T) {
 		{name: "readable container ignores none traces", applied: isolation.ModeContainer, noneTraces: true, want: isolation.ModeContainer},
 		{name: "gone with none traces", readErr: appliedconfig.ErrNotFound, noneTraces: true, want: isolation.ModeNone},
 		{name: "gone with container traces", readErr: appliedconfig.ErrNotFound, containerTraces: true, want: isolation.ModeContainer},
-		{name: "unreadable with none traces", readErr: unreadable, noneTraces: true, want: isolation.ModeNone},
-		{name: "unreadable with container traces", readErr: unreadable, containerTraces: true, want: isolation.ModeContainer},
-		{name: "none traces win over container traces when unreadable", readErr: unreadable, noneTraces: true, containerTraces: true, want: isolation.ModeNone},
+		// A config that exists but cannot be read says nothing about the mode, and
+		// a leftover of another mode is no evidence of it either, so every mode's
+		// teardown runs.
+		{name: "unreadable with none traces", readErr: unreadable, noneTraces: true, want: resetUnknown},
+		{name: "unreadable with container traces", readErr: unreadable, containerTraces: true, want: resetUnknown},
+		{name: "unreadable with both traces", readErr: unreadable, noneTraces: true, containerTraces: true, want: resetUnknown},
 		{name: "gone and nothing else is nspawn", readErr: appliedconfig.ErrNotFound, want: isolation.ModeNSpawn},
-		{name: "unreadable and nothing else is nspawn", readErr: unreadable, want: isolation.ModeNSpawn},
+		{name: "unreadable and nothing else", readErr: unreadable, want: resetUnknown},
 	}
 
 	for _, tt := range tests {
@@ -69,6 +74,49 @@ func TestDetectResetMode(t *testing.T) {
 			assert.Equal(t, 1, *reads, "the applied config is read once")
 		})
 	}
+}
+
+// The scenario the union is for: an nspawn host whose applied config is
+// corrupt and that has a stray none directory. Guessing none would leave the
+// machines running.
+func TestAnUnreadableAppliedConfigTearsDownEveryMode(t *testing.T) {
+	stubResetHost(t, "", errors.New("checksum mismatch"), true, false)
+
+	name := resetNodeResources(discardLogger()).Name()
+
+	for _, step := range []string{
+		"parallel(stop-machine, stop-machine)", "stop-none-node", "stop-container-node",
+		"parallel(remove-nspawn-config, remove-nspawn-config)", "remove-none-config", "remove-container-config",
+		"parallel(remove-machine, remove-machine)", "remove-none-node", "remove-container-node",
+		"parallel(remove-bpffs-mount, remove-bpffs-mount)",
+	} {
+		assert.Contains(t, name, step)
+	}
+
+	// The same order as every single-mode reset: stop, then config, then the
+	// node, around the host-global cleanup.
+	last := -1
+
+	for _, step := range []string{
+		"remove-daemon-unit", "stop-machine", "stop-none-node", "stop-container-node", "remove-wireguard-keys",
+		"remove-nspawn-config", "remove-none-config", "remove-container-config",
+		"remove-machine", "remove-none-node", "remove-container-node", "remove-bpffs-mount",
+		"cleanup-routes", "remove-first-boot-unit", "remove-agent-artifacts", "reload-systemd",
+	} {
+		idx := strings.Index(name, step)
+		require.GreaterOrEqual(t, idx, 0, "%s missing from %s", step, name)
+		require.Greater(t, idx, last, "%s out of order in %s", step, name)
+
+		last = idx
+	}
+}
+
+func TestAConfigThatIsGoneStillFollowsTheTraces(t *testing.T) {
+	stubResetHost(t, "", appliedconfig.ErrNotFound, true, false)
+
+	name := resetNodeResources(discardLogger()).Name()
+	assert.Contains(t, name, "stop-none-node")
+	assert.NotContains(t, name, "stop-machine", "a reset that is retried after the config went is not a reset of everything")
 }
 
 func TestResetNodeResourcesFollowTheAppliedModeNotTheTraces(t *testing.T) {

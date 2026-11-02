@@ -108,6 +108,8 @@ func resetUnderLock(ctx context.Context, log *slog.Logger, store *installstate.S
 		paths = append(paths, none.DefaultBase)
 	case isolation.ModeContainer:
 		paths = append(paths, container.DefaultBase)
+	case resetUnknown:
+		paths = append(paths, none.DefaultBase, container.DefaultBase)
 	}
 
 	return durableReset(ctx, store, inner, paths, unix.Syncfs)
@@ -203,16 +205,29 @@ var (
 	hostIsContainer = containerops.Present
 )
 
+// resetUnknown is not an isolation mode. detectResetMode returns it when the
+// applied config exists but cannot be read: the host could be in any mode, and
+// the traces of one mode are no evidence that it is the one, because an nspawn
+// host can have a stray none directory. Every mode's node teardown then runs.
+const resetUnknown isolation.Mode = "unknown"
+
 // detectResetMode decides which teardown a reset runs. When the applied config
 // is readable its mode is trusted, so an nspawn host that has stray none or
-// container leftovers still gets the nspawn teardown. Reading it can fail on a
-// damaged host, or the config may already be gone when a reset is retried; reset
-// must still proceed, so then the node's traces decide. It is called once per
-// reset.
+// container leftovers still gets the nspawn teardown. When it is gone, as when
+// a reset is retried, the node's traces decide. When it exists but cannot be
+// read, which reset must survive on a damaged host, the answer is resetUnknown
+// and every mode is torn down; the teardowns skip what is not there. It is
+// called once per reset.
 func detectResetMode(log *slog.Logger) isolation.Mode {
 	mode, err := readAppliedMode()
 	if err == nil {
 		return mode
+	}
+
+	if !errors.Is(err, appliedconfig.ErrNotFound) {
+		log.Warn("applied config is unreadable; tearing the host down as every isolation mode", "error", err)
+
+		return resetUnknown
 	}
 
 	switch {
@@ -222,10 +237,6 @@ func detectResetMode(log *slog.Logger) isolation.Mode {
 		mode = isolation.ModeContainer
 	default:
 		mode = isolation.ModeNSpawn
-	}
-
-	if !errors.Is(err, appliedconfig.ErrNotFound) {
-		log.Warn("applied config is unreadable; choosing the reset from the node's traces", "mode", mode, "error", err)
 	}
 
 	return mode
@@ -257,6 +268,8 @@ func resetNodeResourcesFor(log *slog.Logger, mode isolation.Mode) phases.Task {
 		return resetResourcesHostNode(log, noneTeardown(log))
 	case isolation.ModeContainer:
 		return resetResourcesHostNode(log, containerTeardown(log))
+	case resetUnknown:
+		return resetResourcesEveryMode(log)
 	default:
 		return resetResourcesNSpawn(log)
 	}
@@ -276,6 +289,44 @@ func resetResourcesHostNode(log *slog.Logger, td hostNodeTeardown) phases.Task {
 		reset.CleanupNetwork(log),
 		// Before the artifacts, so a failure stops the reset while the host is
 		// still recognizably installed.
+		RemoveFirstBootBootstrapUnit(log),
+		RemoveAgentArtifacts(log),
+		reset.ReloadSystemd(log),
+	)
+}
+
+// resetResourcesEveryMode is the reset of a host whose mode is not known: the
+// same order as the single-mode resets, with every mode's node tasks in the
+// position of the one they replace.
+func resetResourcesEveryMode(log *slog.Logger) phases.Task {
+	noneNode, containerNode := noneTeardown(log), containerTeardown(log)
+
+	return phases.Serial(log,
+		RemoveDaemonUnit(log),
+		phases.Parallel(log,
+			reset.StopMachine(log, goalstates.NSpawnMachineKube1),
+			reset.StopMachine(log, goalstates.NSpawnMachineKube2),
+		),
+		noneNode.Stop(),
+		containerNode.Stop(),
+		reset.RemoveWireGuardKeys(log),
+		phases.Parallel(log,
+			reset.RemoveNSpawnConfig(log, goalstates.NSpawnMachineKube1),
+			reset.RemoveNSpawnConfig(log, goalstates.NSpawnMachineKube2),
+		),
+		noneNode.RemoveConfig(),
+		containerNode.RemoveConfig(),
+		phases.Parallel(log,
+			reset.RemoveMachine(log, goalstates.NSpawnMachineKube1),
+			reset.RemoveMachine(log, goalstates.NSpawnMachineKube2),
+		),
+		noneNode.Destroy(),
+		containerNode.Destroy(),
+		phases.Parallel(log,
+			reset.RemoveBPFFSMount(log, goalstates.NSpawnMachineKube1),
+			reset.RemoveBPFFSMount(log, goalstates.NSpawnMachineKube2),
+		),
+		reset.CleanupNetwork(log),
 		RemoveFirstBootBootstrapUnit(log),
 		RemoveAgentArtifacts(log),
 		reset.ReloadSystemd(log),
