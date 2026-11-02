@@ -6674,13 +6674,23 @@ def validate_migration_rollback_config(node_config: NodeConfig) -> None:
     log(f"Rollback restored all {len(before)} shared configuration files")
 
 
-def validate_uninstall_removed_node_stack(slot: str) -> None:
+def validate_uninstall_removed_node_stack(slot: str, script_output: str = "") -> None:
     """Assert the uninstall script removed what it owns: the stack of the active
     slot. Layout directories and install state are left for `agent reset`."""
     mode = isolation_mode()
     if mode == "nspawn":
         result = ssh_capture_quiet(f"sudo machinectl show {slot}")
         if result.returncode == 0:
+            print(f"[DIAG]  ---- uninstall script output (tail) ----\n{script_output[-3000:]}", flush=True)
+            for title, command in (
+                ("machinectl show", f"sudo machinectl show {slot}"),
+                ("machinectl list", "sudo machinectl list --no-legend"),
+                ("nspawn unit", f"sudo systemctl status systemd-nspawn@{slot}.service --no-pager -l 2>&1 | tail -25"),
+                ("daemon", "sudo systemctl is-active unbounded-agent-daemon.service"),
+                ("journal", f"sudo journalctl --no-pager -n 60 -u systemd-nspawn@{slot} -u systemd-machined"),
+            ):
+                out = ssh_capture_quiet(command)
+                print(f"[DIAG]  ---- {title} ----\n{(out.stdout + out.stderr).strip()}", flush=True)
             die(f"nspawn machine '{slot}' is still running after the uninstall script")
     elif mode == "none":
         leftovers = present_on_host([
@@ -6729,7 +6739,7 @@ def validate_isolation_uninstall() -> None:
     out = ssh_capture(f"sudo bash {remote}")
     if f"Isolation mode: {mode}" not in out:
         die(f"uninstall did not detect isolation mode {mode}: {out[-400:]!r}")
-    validate_uninstall_removed_node_stack(slot)
+    validate_uninstall_removed_node_stack(slot, out)
     run_quiet([KUBECTL, "delete", "node", AGENT_MACHINE_NAME, "--ignore-not-found"], check=False)
     delete_machine_cr()
     log(f"Uninstall removed the {mode} node stack")
