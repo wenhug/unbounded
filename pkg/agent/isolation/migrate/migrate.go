@@ -206,12 +206,18 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 	// restore and a crash after the next record finds it.
 	if s.SnapshotConfig != nil {
 		if err := s.SnapshotConfig(ctx); err != nil {
+			// A partial snapshot is not worth keeping, and it may hold keys.
+			(&state{spec: s}).discardConfig(ctx)
+
 			return Result{}, fmt.Errorf("save shared configuration: %w", err)
 		}
 	}
 
 	// 3: prepare beside the source.
 	if err := s.record(ctx, StepPreparing); err != nil {
+		// Nothing was changed and no journal exists to remove the snapshot later.
+		(&state{spec: s}).discardConfig(ctx)
+
 		return Result{}, err
 	}
 
@@ -219,15 +225,24 @@ func RunInPlace(ctx context.Context, s InPlaceSpec) (Result, error) {
 	if err != nil {
 		// Prepare may have left a partial slot. The source was not touched.
 		st := &state{spec: s, targetRoot: s.TargetRoot}
+
+		var rbErr error
+
 		if s.TargetRoot != nil {
-			_, rbErr := st.rollback(ctx)
-			err = errors.Join(err, rbErr)
+			_, rbErr = st.rollback(ctx)
 		} else {
 			// Prepare may have written shared files before it failed.
-			err = errors.Join(err, st.restoreConfig(context.WithoutCancel(ctx)))
+			rbErr = st.restoreConfig(context.WithoutCancel(ctx))
 		}
 
-		return Result{}, fmt.Errorf("prepare %s: %w", s.Target.Mode(), err)
+		err = fmt.Errorf("prepare %s: %w", s.Target.Mode(), err)
+		if rbErr != nil {
+			// The caller must not record this as a clean rollback: shared files
+			// or the partial target may remain.
+			err = errors.Join(err, fmt.Errorf("%w: %w", ErrRollbackFailed, rbErr))
+		}
+
+		return Result{}, err
 	}
 
 	st := &state{spec: s, targetRoot: targetRoot}
@@ -443,6 +458,16 @@ func (st *state) rollback(ctx context.Context) (bool, error) {
 	}
 
 	return restarted, errors.Join(errs...)
+}
+
+// discardConfig drops the configuration snapshot, ignoring a failure: it is
+// called where the migration is already ending with a more important error.
+func (st *state) discardConfig(ctx context.Context) {
+	if st.spec.DiscardConfig == nil {
+		return
+	}
+
+	_ = st.spec.DiscardConfig(context.WithoutCancel(ctx)) //nolint:errcheck // best effort
 }
 
 // restoreConfig puts the shared configuration back and, when that worked,

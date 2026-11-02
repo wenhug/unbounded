@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/Azure/unbounded/pkg/agent/isolation"
 )
 
 // configProbe captures what the backends had done when the restore ran.
@@ -209,4 +211,68 @@ func TestResumeInPlaceAwaitingReadyFailureRestoresSharedConfig(t *testing.T) {
 	_, err := ResumeInPlace(context.Background(), h.spec, StepAwaitingReady)
 	require.ErrorIs(t, err, ErrInterrupted)
 	require.Contains(t, h.hooks(), "restore-config")
+}
+
+// Prepare fails and so does the rollback that follows: the node needs attention
+// and the failure must say so, or the caller records a clean rollback and
+// nothing retries it.
+func TestRunInPlacePrepareFailureWithAFailedRollbackIsMarked(t *testing.T) {
+	t.Parallel()
+
+	t.Run("target destroy fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newHarness()
+		withConfigHooks(h)
+		h.spec.TargetRoot = isolation.DirRoot{SlotName: "kube2"}
+		h.target.PrepareErr = errors.New("unpack failed")
+		h.target.DestroyErr = errors.New("destroy failed")
+
+		_, err := RunInPlace(context.Background(), h.spec)
+		require.ErrorIs(t, err, ErrRollbackFailed)
+		require.ErrorContains(t, err, "unpack failed")
+		require.ErrorContains(t, err, "destroy failed")
+	})
+
+	t.Run("restore of the shared configuration fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newHarness()
+		withConfigHooks(h)
+		h.target.PrepareErr = errors.New("unpack failed")
+		h.fail["restore-config"] = errors.New("restore failed")
+
+		_, err := RunInPlace(context.Background(), h.spec)
+		require.ErrorIs(t, err, ErrRollbackFailed)
+		require.ErrorContains(t, err, "restore failed")
+		require.NotContains(t, h.hooks(), "discard-config", "a snapshot that was not restored is kept")
+	})
+}
+
+// The snapshot holds kubelet keys. An exit between taking it and the first
+// recorded step must not leave it on disk with no journal to remove it.
+func TestRunInPlaceDiscardsTheSnapshotWhenTheFirstStepCannotBeRecorded(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness()
+	withConfigHooks(h)
+	h.spec.Record = func(context.Context, Step) error { return errors.New("journal is read-only") }
+
+	_, err := RunInPlace(context.Background(), h.spec)
+	require.ErrorContains(t, err, "journal is read-only")
+	require.Contains(t, h.hooks(), "discard-config")
+	require.Empty(t, h.source.Calls())
+	require.Empty(t, h.target.Calls())
+}
+
+func TestRunInPlaceDiscardsAPartialSnapshotWhenTakingItFails(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness()
+	withConfigHooks(h)
+	h.fail["snapshot-config"] = errors.New("disk full")
+
+	_, err := RunInPlace(context.Background(), h.spec)
+	require.ErrorContains(t, err, "disk full")
+	require.Contains(t, h.hooks(), "discard-config")
 }

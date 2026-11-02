@@ -174,6 +174,21 @@ func TestTakeRefusesWhatCannotBePutBack(t *testing.T) {
 	require.ErrorContains(t, Take(snap, root, treePaths), "unsupported file type")
 }
 
+// A Take that fails after it copied some files must not leave their copies
+// (kubelet keys among them) behind: nothing records them, so nothing would
+// ever remove them.
+func TestTakeThatFailsRemovesWhatItCopied(t *testing.T) {
+	root, snap := newTree(t)
+
+	l, err := net.Listen("unix", filepath.Join(root, "var/lib/kubelet/pki/s"))
+	require.NoError(t, err)
+
+	defer l.Close() //nolint:errcheck // test cleanup
+
+	require.Error(t, Take(snap, root, treePaths))
+	assert.NoDirExists(t, snap)
+}
+
 func TestDiscard(t *testing.T) {
 	root, snap := newTree(t)
 	require.NoError(t, Take(snap, root, treePaths))

@@ -69,7 +69,7 @@ type manifest struct {
 // links are recorded, not followed. A path that does not exist is recorded as
 // absent. Sockets, devices and other special files are an error, since they
 // cannot be put back.
-func Take(dir, root string, paths []string) error {
+func Take(dir, root string, paths []string) (err error) {
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("clear snapshot directory: %w", err)
 	}
@@ -77,6 +77,15 @@ func Take(dir, root string, paths []string) error {
 	if err := os.MkdirAll(filepath.Join(dir, blobDir), 0o700); err != nil {
 		return fmt.Errorf("create snapshot directory: %w", err)
 	}
+
+	// A snapshot that is not complete is not a snapshot, and its copies of
+	// kubelet keys must not outlive the failure: nothing records them, so
+	// nothing would remove them.
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir) //nolint:errcheck // best effort; the error being returned is the cause
+		}
+	}()
 
 	m := manifest{Version: manifestVersion}
 	seen := map[string]bool{}
