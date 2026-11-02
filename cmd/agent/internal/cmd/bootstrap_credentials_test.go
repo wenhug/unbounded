@@ -110,18 +110,43 @@ func TestPrepareCredentialsPassesNoSettingsForAHostThatDoesNotAttest(t *testing.
 	assert.True(t, s.credentialsReady)
 }
 
-// A record that cannot be written fails the stage, so a host never reaches the
-// node work believing a reprovision can attest again when it cannot.
+// A record that cannot be written fails the stage of the modes that were built
+// with the record, so a host never reaches the node work believing a
+// reprovision can attest again when it cannot.
 func TestPrepareCredentialsFailsWhenTheRecordCannotBeWritten(t *testing.T) {
-	seams := &credentialSeams{persistErr: errors.New("read-only file system")}
-	useCredentialSeams(t, seams)
+	for _, mode := range []string{"none", "container"} {
+		t.Run(mode, func(t *testing.T) {
+			seams := &credentialSeams{persistErr: errors.New("read-only file system")}
+			useCredentialSeams(t, seams)
 
-	s := newCredentialStages()
-	s.cfg.Attest = &provision.AgentAttestConfig{URL: "http://10.0.0.1:8880"}
+			s := newCredentialStages()
+			s.cfg.Isolation = mode
+			s.cfg.Attest = &provision.AgentAttestConfig{URL: "http://10.0.0.1:8880"}
 
-	err := s.prepareCredentials(t.Context())
-	require.ErrorContains(t, err, "read-only file system")
-	assert.False(t, s.credentialsReady, "the stage is retried on the next attempt")
+			err := s.prepareCredentials(t.Context())
+			require.ErrorContains(t, err, "read-only file system")
+			assert.False(t, s.credentialsReady, "the stage is retried on the next attempt")
+		})
+	}
+}
+
+// An nspawn host was bootstrapped before this record existed. A record that
+// cannot be written there must not stop the bootstrap; a later reprovision
+// falls back to the stored bootstrap token.
+func TestPrepareCredentialsOnNSpawnToleratesARecordThatCannotBeWritten(t *testing.T) {
+	for _, mode := range []string{"", "nspawn"} {
+		t.Run("isolation "+mode, func(t *testing.T) {
+			seams := &credentialSeams{persistErr: errors.New("read-only file system")}
+			useCredentialSeams(t, seams)
+
+			s := newCredentialStages()
+			s.cfg.Isolation = mode
+			s.cfg.Attest = &provision.AgentAttestConfig{URL: "http://10.0.0.1:8880"}
+
+			require.NoError(t, s.prepareCredentials(t.Context()))
+			assert.True(t, s.credentialsReady)
+		})
+	}
 }
 
 // A failed attestation records nothing: there is no token to refresh and the

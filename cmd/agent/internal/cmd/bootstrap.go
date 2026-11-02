@@ -127,8 +127,17 @@ func (s *agentStages) prepareCredentials(ctx context.Context) error {
 	// reprovision can start from any of them, but only for a host that
 	// attests: with no attestation URL nothing is written, so a host that does
 	// not attest, nspawn included, is bootstrapped exactly as before.
+	//
+	// An nspawn host is bootstrapped as it was before the record existed, so a
+	// record it cannot write is a warning there: a later reprovision from it
+	// reuses the stored bootstrap token. The other modes fail, since a host
+	// must not go on believing a reprovision can attest again when it cannot.
 	if err := persistAttestConfig(s.log, s.cfg.Attest).Do(ctx); err != nil {
-		return err
+		if mode, modeErr := s.cfg.IsolationMode(); modeErr != nil || mode != isolation.ModeNSpawn {
+			return err
+		}
+
+		s.log.Warn("could not record the attestation settings; a later reprovision will reuse the bootstrap token", "error", err)
 	}
 
 	// The reporter is built here rather than in the constructor because it
