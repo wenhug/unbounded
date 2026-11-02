@@ -195,31 +195,48 @@ mode under test and adds `--isolation <mode>` to `kubectl unbounded machine
 manual-bootstrap`. Left unset, no flag is passed and the existing suites behave
 exactly as before.
 
-| Suite | Run with | Covers |
+Every isolation suite is listed here. "Mode" is the value of `ISOLATION_MODE` to
+run it with; the suites that migrate start in the default mode and move the
+node themselves.
+
+| Suite | Mode | Covers |
 |---|---|---|
-| `isolation-lifecycle` | `ISOLATION_MODE=none` or `container` | Bootstrap, `unbounded-agent exec` and `logs`, soft reboot (`NodeReboot`), repave upgrade, host reboot, reset. |
-| `isolation-migration` | `ISOLATION_MODE` unset | `IsolationMigrate`: unsupported pair rejected, in-place rollback, `nspawn` to `container` and back (in place), `nspawn` to `none` and back (reprovision). |
+| `isolation-operations` | `nspawn`, `none`, `container` or unset | The full operation set in one mode: join, status, preflight, `unbounded-agent exec` and `logs`, soft reboot (`NodeReboot`, which must restart the kubelet of the node stack), host-driven and operation-driven `AgentUpgrade` with rollback, repave, host reboot, `AgentReset`, and reinstall on the same disk. |
+| `isolation-lifecycle` | `none` or `container` | A shorter path: bootstrap, `exec` and `logs`, soft reboot, repave upgrade, host reboot, reset. |
+| `isolation-uninstall` | `nspawn`, `none` or `container` | The generated uninstall script removes the node stack of the active slot. It stops there: the script is not a reset, and `unbounded-agent reset` (covered by `isolation-operations`) is the only way back to a clean host. |
+| `isolation-migration` | unset | `IsolationMigrate`: an unsupported pair is rejected, an injected failure rolls back, `nspawn` to `container` and back (in place), `nspawn` to `none` and back (reprovision). |
+| `isolation-matrix` | unset | Every ordered pair of modes, in place where supported and by reprovision otherwise. |
+| `isolation-roundtrip` | unset | `nspawn` to `none` and back by reprovision, checking mode, status, `exec` and `logs`, a workload and a soft reboot at each stop. |
+| `isolation-container-reprovision` | unset | `nspawn` to `container` by reprovision alone, the pair the matrix reaches last. |
+| `isolation-drift` | unset | The `IsolationDrift` condition in both directions. |
+| `isolation-rollback` | `container` | A failed in-place migration restores the source and the shared host configuration byte for byte. It must start in `container` mode: an `nspawn` host keeps its configuration inside the machine, so there is nothing at the shared host paths to compare. |
 
 ```sh
-HOST_BASE_OS=ubuntu2404 ISOLATION_MODE=none E2E_SUITE=isolation-lifecycle KEEP_ENV=1 \
+HOST_BASE_OS=ubuntu2404 ISOLATION_MODE=none E2E_SUITE=isolation-operations KEEP_ENV=1 \
   bash hack/agent/e2e-kind/run-local.sh
 HOST_BASE_OS=ubuntu2404 E2E_SUITE=isolation-migration KEEP_ENV=1 \
   bash hack/agent/e2e-kind/run-local.sh
+HOST_BASE_OS=ubuntu2404 ISOLATION_MODE=container E2E_SUITE=isolation-rollback KEEP_ENV=1 \
+  bash hack/agent/e2e-kind/run-local.sh
 ```
 
-These suites were written against the design and the `none` backend and
-migration orchestrator on the branch. They have not been run: they need QEMU, KVM
-and a Kind cluster. They also depend on pieces that may not be wired when you
-read this: the `exec` and `logs` subcommands, daemon host operations for
-`IsolationMigrate`, and the `container` backend. Expect to adjust assertions that
-name backend internals (the `container` root `/var/lib/unbounded/containers`,
-the `none` units `unbounded-containerd.service` and `unbounded-kubelet.service`).
+The suites need QEMU with KVM, Docker and a Kind cluster, and they run one at a
+time: the bridge, tap and veth names, the Kind cluster, the VM and the subnet are
+fixed. If your shell predates your membership of the `kvm` group, wrap the
+command with `sg kvm -c '...'`. They are not part of CI.
+
+When a step fails, the harness prints the unit state, the journals of the agent
+and the node stack and, in `container` mode, the `runc` state and the
+in-container kubelet and containerd journals. Bootstrap tokens and kubeconfig
+credentials are redacted from that output.
 
 The rollback case needs a fault that fails the migration target after the
 source stopped. The default fault places a directory where the alternate slot's
-applied config belongs, which makes persisting the target fail. Replace it with
-`MIGRATION_FAULT_CMD` and `MIGRATION_FAULT_CLEANUP_CMD`, shell commands run on
-the VM.
+applied config belongs, which makes persisting the target fail, and the check
+requires the operation to report that persist failure followed by a rollback to
+the source. Replace it with `MIGRATION_FAULT_CMD` and
+`MIGRATION_FAULT_CLEANUP_CMD`, shell commands run on the VM; the check then
+requires only the rollback.
 
 `MIGRATION_TIMEOUT` (seconds, default 900) bounds each migration operation.
 NodeConfig variants that check nspawn files (`additional-host-mounts.json`) are
@@ -260,8 +277,6 @@ detail of each scenario. Scenarios that need other hardware (GPU) or an
 Azure Container Linux host (`HOST_BASE_OS=acl`) are reported as skipped with the
 reason.
 
-The new suites (`isolation-operations`, `isolation-uninstall`,
-`isolation-roundtrip`, `isolation-matrix`, `isolation-drift`,
-`isolation-rollback`) can also be run directly with `E2E_SUITE` through
-`run-local.sh`, with `ISOLATION_MODE` set for the mode-neutral ones.
+Every suite in the table above can also be run directly with `E2E_SUITE` through
+`run-local.sh`, with `ISOLATION_MODE` set as the table says.
 
