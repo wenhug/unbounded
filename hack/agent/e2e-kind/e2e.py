@@ -1369,6 +1369,7 @@ def wait_for_machine_operation_failed(
         elapsed += 5
 
     subprocess.run([KUBECTL, "get", resource, name, "-o", "yaml"], check=False)
+    dump_node_stack_diagnostics()
     die(f"Timed out waiting for MachineOperation '{name}' to fail after {timeout_secs}s")
 
 
