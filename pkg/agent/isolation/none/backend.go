@@ -78,6 +78,10 @@ type Backend struct {
 	// the stopped units. Empty skips the scan, so tests and tools that build a
 	// Backend never signal processes by accident; the agent sets it to /proc.
 	Proc string
+	// CgroupRoot is the cgroup v2 mount Destroy kills the pods' cgroups under:
+	// ending a containerd shim leaves the pod's processes running. Empty skips
+	// it for the same reason as Proc; the agent sets it to /sys/fs/cgroup.
+	CgroupRoot string
 }
 
 var _ isolation.Backend = (*Backend)(nil)
@@ -87,7 +91,7 @@ func init() {
 	// Without it the registry returns a backend with production defaults, which
 	// is what a caller that only needs Status, Exec or Logs wants.
 	isolation.Register(isolation.ModeNone, func(deps any) (isolation.Backend, error) {
-		b := &Backend{Log: slog.Default(), Proc: "/proc"}
+		b := &Backend{Log: slog.Default(), Proc: "/proc", CgroupRoot: "/sys/fs/cgroup"}
 		if d, ok := deps.(*Backend); ok && d != nil {
 			*b = *d
 		}
@@ -367,6 +371,12 @@ func (b *Backend) Destroy(ctx context.Context, _ isolation.NodeRoot) error {
 
 	if b.Proc != "" {
 		if err := killShims(b.Proc); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if b.CgroupRoot != "" {
+		if err := killPodCgroups(b.CgroupRoot); err != nil {
 			errs = append(errs, err)
 		}
 	}

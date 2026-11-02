@@ -62,3 +62,99 @@ var killProcess = func(pid int) error {
 
 	return nil
 }
+
+// podCgroupNames are the top-level cgroups kubelet puts every pod in: the
+// systemd driver names it kubepods.slice, the cgroupfs driver kubepods.
+var podCgroupNames = []string{"kubepods.slice", "kubepods"}
+
+// killPodCgroups ends every process in the pods' cgroups under root (the
+// cgroup v2 mount). SIGKILL on a containerd shim does not do it: the pod's
+// processes are reparented and keep running, holding their mounts and files
+// while the node's data is removed. cgroup.kill (Linux 5.14) kills the whole
+// subtree at once; without it each process listed in the subtree is signaled.
+// An absent cgroup is nothing to kill.
+func killPodCgroups(root string) error {
+	var errs []error
+
+	for _, name := range podCgroupNames {
+		dir := filepath.Join(root, name)
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+
+		err := writeExisting(filepath.Join(dir, "cgroup.kill"), "1")
+		if err == nil {
+			continue
+		}
+
+		if !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("kill cgroup %s: %w", dir, err))
+
+			continue
+		}
+
+		if err := killCgroupProcesses(dir); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// killCgroupProcesses signals every process in dir and its descendants, for
+// kernels without cgroup.kill.
+func killCgroupProcesses(dir string) error {
+	var errs []error
+
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if d.IsDir() || d.Name() != "cgroup.procs" {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			errs = append(errs, err)
+
+			return nil
+		}
+
+		for _, f := range strings.Fields(string(data)) {
+			pid, err := strconv.Atoi(f)
+			if err != nil {
+				continue
+			}
+
+			if err := killProcess(pid); err != nil {
+				errs = append(errs, fmt.Errorf("kill pod process %d: %w", pid, err))
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		errs = append(errs, fmt.Errorf("scan cgroup %s: %w", dir, err))
+	}
+
+	return errors.Join(errs...)
+}
+
+// writeExisting writes to a file that must already exist: a control file, never
+// created by the write, so a kernel without it is reported as ErrNotExist.
+func writeExisting(path, content string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close() //nolint:errcheck // the write error is the one to report
+
+		return err
+	}
+
+	return f.Close()
+}

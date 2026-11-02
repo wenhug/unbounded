@@ -41,6 +41,9 @@ type Teardown struct {
 	MountInfo string
 	// Proc is the procfs scanned for container shims. Empty means /proc.
 	Proc string
+	// CgroupRoot is the cgroup v2 mount the pods' cgroups are killed under.
+	// Empty means /sys/fs/cgroup when Proc is also empty, and none otherwise.
+	CgroupRoot string
 }
 
 func (t *Teardown) logger() *slog.Logger { return hostnode.Logger(t.Log) }
@@ -48,12 +51,18 @@ func (t *Teardown) logger() *slog.Logger { return hostnode.Logger(t.Log) }
 func (t *Teardown) path(p string) string { return filepath.Join(t.Root, p) }
 
 func (t *Teardown) backend() *none.Backend {
-	proc := t.Proc
+	proc, cgroups := t.Proc, t.CgroupRoot
 	if proc == "" {
 		proc = "/proc"
+
+		// The real cgroup tree only together with the real procfs, so a test
+		// that points Proc at a temporary tree never signals the host's pods.
+		if cgroups == "" {
+			cgroups = "/sys/fs/cgroup"
+		}
 	}
 
-	return &none.Backend{Log: t.logger(), Layout: t.Layout, SystemdDir: t.SystemdDir, Run: t.Run, Proc: proc}
+	return &none.Backend{Log: t.logger(), Layout: t.Layout, SystemdDir: t.SystemdDir, Run: t.Run, Proc: proc, CgroupRoot: cgroups}
 }
 
 // Present reports whether the host has any trace of a none node: the layout

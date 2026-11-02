@@ -72,6 +72,9 @@ type Overrides struct {
 	Run none.Runner
 	// Proc is the procfs Destroy scans for container shims. Empty means /proc.
 	Proc string
+	// CgroupRoot is the cgroup v2 mount Destroy kills the pods' cgroups under.
+	// Empty means /sys/fs/cgroup when Proc is also empty, and none otherwise.
+	CgroupRoot string
 
 	// Download replaces the artifact installers. Nil downloads for real.
 	Download func(ctx context.Context) error
@@ -216,9 +219,13 @@ func (n *Node) waitKubelet(ctx context.Context) error {
 }
 
 func (n *Node) newBackend() *none.Backend {
-	proc := n.p.Proc
+	proc, cgroups := n.p.Proc, n.p.CgroupRoot
 	if proc == "" {
 		proc = "/proc"
+
+		if cgroups == "" {
+			cgroups = "/sys/fs/cgroup"
+		}
 	}
 
 	return &none.Backend{
@@ -227,6 +234,7 @@ func (n *Node) newBackend() *none.Backend {
 		SystemdDir: n.p.SystemdDir,
 		Run:        n.p.Run,
 		Proc:       proc,
+		CgroupRoot: cgroups,
 		Units: none.UnitSpec{
 			KubeletConfigPath: goalstates.KubeletConfigurationPath,
 			LocalDNS:          n.gs.NodeStart.LocalDNS.Enabled,
