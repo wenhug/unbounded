@@ -54,7 +54,6 @@ Subcommands (called as individual workflow steps):
     reconcile-machine-isolation-spec   Set spec.isolation to the applied mode and verify drift clears.
     validate-isolation-preflight       Run preflight with --isolation and verify the mode's own check ran.
     validate-isolation-uninstall       Run the uninstall script and verify the node stack is gone.
-    reset-host                         Run unbounded-agent reset on the host and verify the node stack is gone.
     validate-migration-rollback-config Fail a migration and verify shared host config is restored.
     collect-isolation-evidence         Print the mode state of the VM and Machine as one JSON line.
     validate-migration-rollback-to-container
@@ -6716,19 +6715,6 @@ def validate_uninstall_removed_node_stack(slot: str, script_output: str = "") ->
     log(f"The uninstall script removed the {mode} node stack of {slot}")
 
 
-def reset_host() -> None:
-    """Return the host to a clean state with `unbounded-agent reset`, the only
-    supported way to do so, and assert the node stack of the mode is gone."""
-    result = ssh_capture_quiet(f"sudo {DAEMON_BINARY} reset")
-    if result.returncode != 0:
-        print(f"[DIAG]  ---- unbounded-agent reset (exit {result.returncode}) ----\n"
-              f"{(result.stdout + result.stderr)[-4000:]}", flush=True)
-        dump_node_stack_diagnostics()
-        die(f"unbounded-agent reset failed with exit {result.returncode}")
-    validate_node_stack_removed()
-    log("unbounded-agent reset left the host clean")
-
-
 def validate_isolation_uninstall() -> None:
     """Run the generated uninstall script on the host and assert the node stack
     of the mode under test is gone. The harness renders the script from the
@@ -6746,7 +6732,8 @@ def validate_isolation_uninstall() -> None:
     # The script removes the node stack; it is not a reset. A running daemon
     # keeps reconciling the stack it is asked to remove, so it is stopped first,
     # as the agent's own reset stops it. Getting back to a clean host is
-    # `unbounded-agent reset` (the reset-host step), never this script.
+    # `unbounded-agent reset`, never this script; the operations suites cover
+    # reset and reinstall.
     ssh_capture_quiet("sudo systemctl stop unbounded-agent-daemon.service unbounded-agent-daemon-recovery.service")
     out = ssh_capture(f"sudo bash {remote}")
     if f"Isolation mode: {mode}" not in out:
@@ -7223,12 +7210,11 @@ SUITES: dict[str, list[str]] = {
         "validate-isolation-mode", "validate-isolation-exec-logs", "validate-workload",
     ],
     # The uninstall script removes the node stack of the mode. It is not a
-    # reset: `unbounded-agent reset` returns the host to a clean state, and
-    # then the host is bootstrapped again.
+    # reset: `unbounded-agent reset` is the only way back to a clean host, and
+    # the operations suites cover that.
     "isolation-uninstall": [
         "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
-        "validate-isolation-uninstall", "reset-host", "ensure-kind-bridge", "reinstall-agent", "wait-for-node",
-        "validate-isolation-mode", "validate-workload",
+        "validate-isolation-uninstall",
     ],
     # Start in the default mode (ISOLATION_MODE unset), move to none and back
     # by reprovision, checking mode, status, exec/logs, a workload and a soft
@@ -7379,7 +7365,6 @@ COMMANDS: dict[str, Command] = {
     "reconcile-machine-isolation-spec": _without_node_config(reconcile_machine_isolation_spec),
     "validate-isolation-preflight": _without_node_config(validate_isolation_preflight),
     "validate-isolation-uninstall": _without_node_config(validate_isolation_uninstall),
-    "reset-host": _without_node_config(reset_host),
     "collect-isolation-evidence": _without_node_config(collect_isolation_evidence),
     "cleanup": _without_node_config(cleanup),
 }

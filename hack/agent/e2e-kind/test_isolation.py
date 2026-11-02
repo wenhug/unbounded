@@ -193,17 +193,14 @@ class NodeStackDiagnosticsTests(unittest.TestCase):
 
 
 class UninstallSuiteTests(unittest.TestCase):
-    def test_a_reset_returns_the_host_to_clean_before_the_reinstall(self):
-        """The uninstall script is not a reset. `unbounded-agent reset` is the
-        only way back to a clean host, so it sits between the script and the
-        reinstall."""
+    def test_the_suite_stops_at_the_script_because_reset_is_the_way_back(self):
+        """The uninstall script is not a reset; `unbounded-agent reset` is the
+        only way back to a clean host, and the operations suites cover reset and
+        reinstall. This suite only checks what the script removes."""
         steps = e2e.SUITES["isolation-uninstall"]
-        script = steps.index("validate-isolation-uninstall")
-        reset = steps.index("reset-host")
-        reinstall = steps.index("reinstall-agent")
-        self.assertLess(script, reset)
-        self.assertLess(reset, reinstall)
-        self.assertIn("reset-host", e2e.COMMANDS)
+        self.assertEqual(steps[-1], "validate-isolation-uninstall")
+        self.assertNotIn("reinstall-agent", steps)
+        self.assertNotIn("reset-host", e2e.COMMANDS)
 
     def test_the_uninstall_check_only_asks_for_what_the_script_owns(self):
         for mode, leftover in (("container", ["/var/lib/unbounded/containers/kube1"]),
