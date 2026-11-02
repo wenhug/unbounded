@@ -180,14 +180,42 @@ func (t *Teardown) Destroy() phases.Task {
 // mode they live in the machine rootfs and disappear with it.
 var dataDirs = []string{"/var/lib/kubelet", "/var/lib/containerd", goalstates.CNIConfigDir, goalstates.CNIBinDir}
 
+// unmountedDataDirs are the data directories pods can leave mounts below.
+var unmountedDataDirs = []string{hostnode.KubeletDir, "/var/lib/containerd"}
+
+// removeData unmounts what pods left mounted below the data directories, then
+// removes them. A directory with a mount that could not be unmounted is kept
+// and the failure is reported: RemoveAll would follow the remaining mount and
+// delete the volume's data (a CSI, NFS or subPath volume). A mount at the
+// directory itself is detached too; detaching never deletes data, and the
+// removal then only touches the empty directory underneath. An unreadable
+// mount table keeps every directory that could hold mounts.
 func (t *Teardown) removeData(ctx context.Context) error {
 	var errs []error
 
-	if err := hostnode.UnmountBelow(ctx, t.logger(), t.Run, t.MountInfo, hostnode.KubeletDir, "/var/lib/containerd"); err != nil {
+	failed, err := hostnode.UnmountBelowByPrefix(ctx, t.logger(), t.Run, t.MountInfo, unmountedDataDirs...)
+	if err != nil {
 		errs = append(errs, err)
+
+		failed = map[string]error{}
+		for _, d := range unmountedDataDirs {
+			failed[d] = err
+		}
+	}
+
+	for _, d := range unmountedDataDirs {
+		if failed[d] != nil && err == nil {
+			errs = append(errs, failed[d])
+		}
 	}
 
 	for _, d := range dataDirs {
+		if failed[d] != nil {
+			t.logger().Warn("keeping a data directory because mounts below it could not be unmounted", "dir", d)
+
+			continue
+		}
+
 		if err := os.RemoveAll(t.path(d)); err != nil {
 			errs = append(errs, err)
 		}

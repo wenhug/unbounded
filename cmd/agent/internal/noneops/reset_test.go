@@ -249,3 +249,53 @@ func TestTeardownRemoveConfigKeepsAForeignCDISpec(t *testing.T) {
 	require.NoError(t, td.RemoveConfig().Do(t.Context()))
 	require.FileExists(t, filepath.Join(root, goalstates.CDISpecDir, "vendor.yaml"))
 }
+
+// A pod volume that could not be unmounted still holds live data. RemoveAll
+// would follow the mount and delete it, so the directory is kept and the
+// failure is reported. Directories with no failed unmount are still removed.
+func TestTeardownDestroyKeepsADirectoryWhoseMountsCouldNotBeUnmounted(t *testing.T) {
+	td, h, root := newTeardown(t)
+	put(t, root, "/var/lib/kubelet/pods/p1/volumes/data/precious", "x")
+	put(t, root, "/var/lib/containerd/x", "x")
+	put(t, root, "/etc/cni/net.d/10-net.conflist", "x")
+	require.NoError(t, os.WriteFile(td.MountInfo, []byte("2 1 0:30 / /var/lib/kubelet/pods/p1/volumes/data rw - nfs srv:/x rw\n"), 0o644))
+
+	h.fail["umount -l /var/lib/kubelet/pods/p1/volumes/data"] = errors.New("busy")
+
+	err := td.Destroy().Do(t.Context())
+	require.ErrorContains(t, err, "unmount /var/lib/kubelet/pods/p1/volumes/data")
+	require.FileExists(t, filepath.Join(root, "/var/lib/kubelet/pods/p1/volumes/data/precious"))
+	require.NoDirExists(t, filepath.Join(root, "/var/lib/containerd"))
+	require.NoDirExists(t, filepath.Join(root, "/etc/cni/net.d"))
+}
+
+// A failed unmount below containerd's directory keeps that directory only.
+func TestTeardownDestroyKeepsContainerdDataWhenItsMountsStay(t *testing.T) {
+	td, h, root := newTeardown(t)
+	put(t, root, "/var/lib/kubelet/x", "x")
+	put(t, root, "/var/lib/containerd/io/keep", "x")
+	require.NoError(t, os.WriteFile(td.MountInfo, []byte("2 1 0:30 / /var/lib/containerd/io rw - overlay overlay rw\n"), 0o644))
+
+	h.fail["umount -l /var/lib/containerd/io"] = errors.New("busy")
+
+	require.Error(t, td.Destroy().Do(t.Context()))
+	require.FileExists(t, filepath.Join(root, "/var/lib/containerd/io/keep"))
+	require.NoDirExists(t, filepath.Join(root, "/var/lib/kubelet"))
+}
+
+// With no readable mount table nothing proves a data directory has no mounts
+// below it, so both are kept.
+func TestTeardownDestroyKeepsMountableDirectoriesWhenTheMountTableIsUnreadable(t *testing.T) {
+	td, _, root := newTeardown(t)
+	put(t, root, "/var/lib/kubelet/x", "x")
+	put(t, root, "/var/lib/containerd/x", "x")
+	put(t, root, "/etc/cni/net.d/10-net.conflist", "x")
+
+	// A directory opens but cannot be read as a mount table.
+	require.NoError(t, os.MkdirAll(td.MountInfo, 0o755))
+
+	require.Error(t, td.Destroy().Do(t.Context()))
+	require.FileExists(t, filepath.Join(root, "/var/lib/kubelet/x"))
+	require.FileExists(t, filepath.Join(root, "/var/lib/containerd/x"))
+	require.NoDirExists(t, filepath.Join(root, "/etc/cni/net.d"))
+}

@@ -108,3 +108,43 @@ func TestUnmountBelowJoinsEveryFailure(t *testing.T) {
 	require.ErrorContains(t, err, "unmount /var/lib/kubelet/a")
 	require.ErrorContains(t, err, "unmount /var/lib/kubelet/b")
 }
+
+func TestUnmountBelowByPrefixAttributesFailuresToTheirPrefixInOnePass(t *testing.T) {
+	t.Parallel()
+
+	info := writeMountInfo(t,
+		mountLine("/var/lib/kubelet/pods/a"),
+		mountLine("/var/lib/containerd/io/rootfs"),
+		mountLine("/var/lib/kubelet/pods/a/volumes/v"),
+	)
+
+	var got []string
+
+	run := func(_ context.Context, _ *slog.Logger, name string, args ...string) (string, error) {
+		got = append(got, args[1])
+
+		if args[1] == "/var/lib/kubelet/pods/a" {
+			return "", errors.New("busy")
+		}
+
+		return "", nil
+	}
+
+	failed, err := UnmountBelowByPrefix(t.Context(), nil, run, info, KubeletDir, "/var/lib/containerd")
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"/var/lib/kubelet/pods/a/volumes/v",
+		"/var/lib/containerd/io/rootfs",
+		"/var/lib/kubelet/pods/a",
+	}, got, "one deepest-first pass across every prefix")
+	require.Contains(t, failed, KubeletDir)
+	assert.ErrorContains(t, failed[KubeletDir], "unmount /var/lib/kubelet/pods/a")
+	assert.NotContains(t, failed, "/var/lib/containerd", "a prefix whose mounts all came off is not reported")
+}
+
+func TestUnmountBelowByPrefixReportsAnUnreadableMountTable(t *testing.T) {
+	t.Parallel()
+
+	_, err := UnmountBelowByPrefix(t.Context(), nil, nil, t.TempDir(), KubeletDir)
+	require.Error(t, err)
+}
