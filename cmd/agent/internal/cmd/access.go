@@ -110,13 +110,22 @@ func runLogs(ctx context.Context, log *slog.Logger, resolve accessResolver, stdo
 	if err != nil {
 		return err
 	}
-	defer rc.Close() //nolint:errcheck // closing a read-only log stream
 
-	if _, err := io.Copy(stdout, rc); err != nil && ctx.Err() == nil {
-		return err
+	_, copyErr := io.Copy(stdout, rc)
+	closeErr := rc.Close()
+
+	// A stream the user ended with Ctrl-C was cut short on purpose.
+	if ctx.Err() != nil {
+		return nil
 	}
 
-	return nil
+	if copyErr != nil {
+		return copyErr
+	}
+
+	// The command that produced the stream may have failed, for example
+	// journalctl against a machine that is not running.
+	return closeErr
 }
 
 func newCmdExec(cmdCtx *CommandContext) *cobra.Command {

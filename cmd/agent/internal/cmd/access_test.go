@@ -21,9 +21,10 @@ import (
 // logsBackend wraps FakeBackend to return fixed log content and record options.
 type logsBackend struct {
 	*isolation.FakeBackend
-	content string
-	got     isolation.LogOptions
-	err     error
+	content  string
+	got      isolation.LogOptions
+	err      error
+	closeErr error
 }
 
 func (l *logsBackend) Logs(_ context.Context, _ isolation.NodeRoot, o isolation.LogOptions) (io.ReadCloser, error) {
@@ -32,8 +33,20 @@ func (l *logsBackend) Logs(_ context.Context, _ isolation.NodeRoot, o isolation.
 		return nil, l.err
 	}
 
+	if l.closeErr != nil {
+		return &failingCloser{Reader: strings.NewReader(l.content), err: l.closeErr}, nil
+	}
+
 	return io.NopCloser(strings.NewReader(l.content)), nil
 }
+
+// failingCloser is a log stream whose command exited non-zero.
+type failingCloser struct {
+	io.Reader
+	err error
+}
+
+func (f *failingCloser) Close() error { return f.err }
 
 func resolverFor(mode isolation.Mode, b isolation.Backend) accessResolver {
 	return func(*slog.Logger) (*nodeAccess, error) {
@@ -131,6 +144,30 @@ func TestLogsErrors(t *testing.T) {
 	boom := errors.New("no applied config")
 	err := runLogs(t.Context(), slog.Default(), func(*slog.Logger) (*nodeAccess, error) { return nil, boom }, io.Discard, isolation.LogOptions{})
 	require.ErrorIs(t, err, boom)
+}
+
+// journalctl against a stopped or unknown machine prints nothing and exits
+// non-zero. That must not look like an empty log.
+func TestLogsReportsAStreamThatEndedInFailure(t *testing.T) {
+	t.Parallel()
+
+	lb := &logsBackend{FakeBackend: &isolation.FakeBackend{}, closeErr: errors.New("journalctl: exit status 1: No journal files were found.")}
+
+	var out bytes.Buffer
+
+	err := runLogs(t.Context(), slog.Default(), resolverFor(isolation.ModeNSpawn, lb), &out, isolation.LogOptions{})
+	require.ErrorContains(t, err, "No journal files were found.")
+}
+
+func TestLogsCancelledByTheUserIsNotAFailure(t *testing.T) {
+	t.Parallel()
+
+	lb := &logsBackend{FakeBackend: &isolation.FakeBackend{}, closeErr: errors.New("signal: killed")}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	require.NoError(t, runLogs(ctx, slog.Default(), resolverFor(isolation.ModeNSpawn, lb), io.Discard, isolation.LogOptions{Follow: true}))
 }
 
 func TestBackendForMode(t *testing.T) {
