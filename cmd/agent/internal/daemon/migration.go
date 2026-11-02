@@ -147,15 +147,27 @@ var preflightMigrationTarget = func(ctx context.Context, log *slog.Logger, mode 
 		return fmt.Errorf("unsupported isolation mode %q", mode)
 	}
 
+	return runMigrationPreflight(ctx, mode, checks)
+}
+
+// runMigrationPreflight runs the target mode's checks and returns what stops
+// the migration. Bootstrap installs a missing nspawn tool, so the nspawn
+// runtime check only warns about one there. A migration installs nothing, so
+// for nspawn a warning is a failure: failing here leaves the node running,
+// while finding the tool missing at start would stop the source first and then
+// roll back.
+func runMigrationPreflight(ctx context.Context, mode isolation.Mode, checks []preflight.Checker) error {
+	failOnWarnings := mode == isolation.ModeNSpawn
+
 	report := preflight.Run(ctx, checks, preflight.Options{})
-	if !report.HasErrors() {
+	if !report.HasErrors() && (!failOnWarnings || !report.HasWarnings()) {
 		return nil
 	}
 
 	var msgs []string
 
 	for _, r := range report.Checks {
-		if r.Severity == preflight.SeverityError {
+		if r.Severity == preflight.SeverityError || failOnWarnings && r.Severity == preflight.SeverityWarning {
 			msgs = append(msgs, r.Name+": "+r.Message)
 		}
 	}
