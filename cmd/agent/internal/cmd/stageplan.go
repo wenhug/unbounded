@@ -56,6 +56,10 @@ var (
 // registerStagePlan makes factory the bootstrap plan for mode. Registering a
 // mode twice panics, since that is a programming error.
 func registerStagePlan(mode isolation.Mode, factory func() stagePlan) {
+	if factory == nil {
+		panic(fmt.Sprintf("cmd: bootstrap plan for isolation mode %q registered with a nil factory", mode))
+	}
+
 	stagePlanMu.Lock()
 	defer stagePlanMu.Unlock()
 
@@ -82,7 +86,12 @@ func newStagePlan(mode isolation.Mode) (stagePlan, error) {
 		return nil, fmt.Errorf("bootstrap is not implemented for isolation mode %q", mode)
 	}
 
-	return factory(), nil
+	plan := factory()
+	if plan == nil {
+		return nil, fmt.Errorf("bootstrap is not implemented for isolation mode %q: its plan factory built no plan", mode)
+	}
+
+	return plan, nil
 }
 
 // plan returns the bootstrap plan for the configured isolation mode, building

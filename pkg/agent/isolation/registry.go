@@ -18,8 +18,13 @@ var (
 
 // Register makes a backend available to New. It is meant to be called from the
 // backend package's init or from the composition root. Registering a mode twice
-// panics, since that is a programming error.
+// panics, and so does a nil factory, since both are programming errors that
+// would otherwise show up far from the call that is wrong.
 func Register(mode Mode, f Factory) {
+	if f == nil {
+		panic(fmt.Sprintf("isolation: backend %q registered with a nil factory", mode))
+	}
+
 	registryMu.Lock()
 	defer registryMu.Unlock()
 
@@ -59,7 +64,16 @@ func New(mode Mode, deps any) (Backend, error) {
 		return nil, err
 	}
 
-	return f(deps)
+	b, err := f(deps)
+	if err != nil {
+		return nil, err
+	}
+
+	if b == nil {
+		return nil, fmt.Errorf("isolation mode %q: the registered factory built no backend", mode)
+	}
+
+	return b, nil
 }
 
 // Registered returns nil when mode is a known mode with a registered backend,

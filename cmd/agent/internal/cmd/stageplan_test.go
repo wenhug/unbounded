@@ -137,6 +137,24 @@ func TestRegisterStagePlanAddsAModeWithoutEditingTheDispatcher(t *testing.T) {
 	})
 }
 
+func TestStagePlanFactoriesMustBuildAPlan(t *testing.T) {
+	const mode isolation.Mode = "nilplantest"
+
+	require.Panics(t, func() { registerStagePlan(mode, nil) })
+
+	registerStagePlan(mode, func() stagePlan { return nil })
+
+	t.Cleanup(func() {
+		stagePlanMu.Lock()
+		delete(stagePlanFactories, mode)
+		stagePlanMu.Unlock()
+	})
+
+	p, err := newStagePlan(mode)
+	require.ErrorContains(t, err, `isolation mode "nilplantest"`)
+	require.Nil(t, p)
+}
+
 func TestBuiltInPlansAreRegistered(t *testing.T) {
 	t.Parallel()
 

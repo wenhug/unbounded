@@ -79,6 +79,26 @@ func TestRegistry(t *testing.T) {
 	Register(mode, func(any) (Backend, error) { return nil, nil })
 }
 
+// A nil factory would be found at the first New, far from the Register call
+// that is wrong.
+func TestRegisterRejectsANilFactory(t *testing.T) {
+	require.Panics(t, func() { Register("container", nil) })
+	require.ErrorContains(t, Registered("container"), "no registered backend", "nothing was registered")
+}
+
+// A factory that returns neither a backend nor an error would make New hand
+// the caller a nil Backend to dereference.
+func TestNewRejectsAFactoryThatBuildsNothing(t *testing.T) {
+	const mode Mode = "container"
+
+	t.Cleanup(func() { Unregister(mode) })
+	Register(mode, func(any) (Backend, error) { return nil, nil })
+
+	b, err := New(mode, nil)
+	require.ErrorContains(t, err, "no backend")
+	require.Nil(t, b)
+}
+
 func TestNewRejectsUnknownMode(t *testing.T) {
 	if _, err := New("bogus", nil); err == nil {
 		t.Fatal("unknown mode should fail")

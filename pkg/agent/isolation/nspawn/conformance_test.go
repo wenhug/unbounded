@@ -204,3 +204,29 @@ func TestPrepareRefusesGrantsBecauseTheMachineDerivesItsOwn(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, prepared)
 }
+
+// A cancelled probe says nothing about the machine: it must not read as a node
+// that is down.
+func TestStatusOfACancelledProbeIsAnErrorNotAStoppedNode(t *testing.T) {
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "systemd-run"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	st, err := (&Backend{}).Status(ctx, Root("kube1"))
+	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, st.Running)
+}
+
+func TestStatusOfAMachineThatIsNotUpIsAStatusNotAnError(t *testing.T) {
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "systemd-run"), []byte("#!/bin/sh\necho 'Failed to connect to machine' >&2\nexit 1\n"), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st, err := (&Backend{}).Status(t.Context(), Root("kube1"))
+	require.NoError(t, err)
+	require.False(t, st.Running)
+	require.NotEmpty(t, st.Detail)
+}

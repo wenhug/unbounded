@@ -106,6 +106,11 @@ func callOp(ctx context.Context, op func(context.Context, isolation.NodeRoot) er
 // can be executed inside it.
 func (b *Backend) Status(ctx context.Context, r isolation.NodeRoot) (isolation.Status, error) {
 	if _, err := Exec(ctx, b.logger(), r.Slot(), "/bin/true"); err != nil {
+		// A probe the caller cancelled says nothing about the machine.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return isolation.Status{}, ctxErr
+		}
+
 		return isolation.Status{Detail: err.Error()}, nil //nolint:nilerr // an unreachable machine is a status, not a failure
 	}
 
