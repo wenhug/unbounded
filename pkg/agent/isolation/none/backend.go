@@ -269,6 +269,12 @@ func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.
 		units.KubeletConfigPath = DefaultKubeletConfigPath
 	}
 
+	if !units.LocalDNS {
+		if err := b.retireLocalDNS(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	if _, err := WriteUnits(b.unitDir(), units); err != nil {
 		return nil, fmt.Errorf("write units: %w", err)
 	}
@@ -282,6 +288,27 @@ func (b *Backend) Prepare(ctx context.Context, n isolation.NodeSpec) (isolation.
 	}
 
 	return r, nil
+}
+
+// retireLocalDNS stops and disables a LocalDNS unit left by a configuration
+// that had LocalDNS on, before WriteUnits deletes its file. The stack is derived
+// from the unit files, so a deleted unit would never be stopped again and
+// CoreDNS would keep the node's listeners. A unit that cannot be stopped is not
+// deleted.
+func (b *Backend) retireLocalDNS(ctx context.Context) error {
+	if !b.unitExists(UnitLocalDNS) {
+		return nil
+	}
+
+	if err := b.systemctl(ctx, "stop", UnitLocalDNS); err != nil {
+		return fmt.Errorf("stop %s before removing it: %w", UnitLocalDNS, err)
+	}
+
+	if err := b.systemctl(ctx, "disable", UnitLocalDNS); err != nil {
+		return fmt.Errorf("disable %s before removing it: %w", UnitLocalDNS, err)
+	}
+
+	return nil
 }
 
 // Activate points the current link at the root's version and returns the

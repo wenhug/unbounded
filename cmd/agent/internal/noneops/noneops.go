@@ -32,6 +32,7 @@ import (
 	"sync"
 
 	"github.com/Azure/unbounded/cmd/agent/internal/hostnode"
+	"github.com/Azure/unbounded/internal/fsutil"
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
 	"github.com/Azure/unbounded/pkg/agent/isolation"
@@ -292,13 +293,20 @@ func (n *Node) writeSupervisor() error {
 		return nil
 	}
 
+	return n.writeSupervisorWith(rootfs.LocalDNSSupervisorScript(filepath.Join(n.p.Layout.BinDir(), "coredns")))
+}
+
+// writeSupervisorWith replaces the supervisor script with a new file. The
+// version being prepared can be the active one, whose supervisor a running
+// LocalDNS unit is reading; truncating it in place would change what that
+// shell executes, while a rename leaves the open file as it was.
+func (n *Node) writeSupervisorWith(script []byte) error {
 	path := n.gs.RootFS.Root().Path(goalstates.LocalDNSSupervisorPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create LocalDNS supervisor directory: %w", err)
 	}
 
-	script := rootfs.LocalDNSSupervisorScript(filepath.Join(n.p.Layout.BinDir(), "coredns"))
-	if err := os.WriteFile(path, script, 0o755); err != nil { //nolint:gosec // the supervisor must be executable
+	if err := fsutil.WriteFileAtomic(path, script, 0o755); err != nil {
 		return fmt.Errorf("write LocalDNS supervisor: %w", err)
 	}
 

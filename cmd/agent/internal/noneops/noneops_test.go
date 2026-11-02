@@ -6,6 +6,7 @@ package noneops
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -793,4 +794,44 @@ func TestPrepareNamesAMissingConfiguredToolkit(t *testing.T) {
 	_, err := node.Prepare(t.Context())
 	require.ErrorContains(t, err, tk.CTKPath)
 	require.Empty(t, f.h.calls, "nothing is written or started")
+}
+
+// A config-only repave prepares the version that is already active, so the
+// supervisor script may be running. Truncating it in place changes what the
+// running shell reads; the replacement must be a new file.
+func TestPrepareReplacesARunningSupervisorWithoutTruncatingIt(t *testing.T) {
+	f := newFixture(t, true, nil)
+
+	_, err := f.node.Prepare(t.Context())
+	require.NoError(t, err)
+
+	v, _ := f.node.Version()
+	sup := filepath.Join(f.node.p.Layout.VersionDir(v), "libexec", "unbounded-localdns-supervisor")
+
+	old, err := os.Open(sup)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = old.Close() })
+
+	want, err := io.ReadAll(old)
+	require.NoError(t, err)
+	require.NotEmpty(t, want)
+
+	// Different content, so that an in-place rewrite would show.
+	require.NoError(t, f.node.writeSupervisorWith([]byte("#!/bin/sh\necho replaced\n")))
+
+	_, err = old.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
+	still, err := io.ReadAll(old)
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(still), "the open script is untouched")
+
+	now, err := os.ReadFile(sup)
+	require.NoError(t, err)
+	require.Contains(t, string(now), "replaced")
+
+	info, err := os.Stat(sup)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&0o111, "still executable")
 }
