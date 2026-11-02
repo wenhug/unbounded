@@ -462,5 +462,49 @@ class MigrationDeclaresTheSpecTests(unittest.TestCase):
             e2e.validate_spec_declares_migrated_mode("container")
 
 
+class NSpawnRuntimeTests(unittest.TestCase):
+    def test_the_rollback_suite_refuses_then_installs_the_runtime_before_the_rollback_check(self):
+        steps = e2e.SUITES["isolation-rollback"]
+        refuse = steps.index("validate-migration-needs-nspawn-runtime")
+        install = steps.index("install-nspawn-runtime")
+        rollback = steps.index("validate-migration-rollback-config")
+        self.assertLess(refuse, install)
+        self.assertLess(install, rollback)
+
+    def test_a_host_that_has_the_runtime_has_nothing_to_refuse(self):
+        with patch.object(e2e, "container_host_lacks_nspawn_runtime", return_value=False), \
+                patch.object(e2e, "create_machine_operation") as created:
+            e2e.validate_migration_needs_nspawn_runtime()
+        created.assert_not_called()
+
+    def test_refusal_for_another_reason_fails(self):
+        operation = {"status": {"message": "something unrelated"}}
+        with patch.object(e2e, "container_host_lacks_nspawn_runtime", return_value=True), \
+                patch.object(e2e, "isolation_node_marker", return_value="kube1"), \
+                patch.object(e2e, "create_machine_operation"), \
+                patch.object(e2e, "wait_for_machine_operation_failed", return_value=operation):
+            with self.assertRaises(SystemExit):
+                e2e.validate_migration_needs_nspawn_runtime()
+
+    def test_the_expected_refusal_passes_when_the_node_is_untouched(self):
+        operation = {"status": {"message": "host cannot run isolation mode nspawn: nspawn-runtime: ... machinectl"}}
+        with patch.object(e2e, "container_host_lacks_nspawn_runtime", return_value=True), \
+                patch.object(e2e, "isolation_node_marker", return_value="kube1"), \
+                patch.object(e2e, "create_machine_operation"), \
+                patch.object(e2e, "wait_for_node_ready"), \
+                patch.object(e2e, "wait_for_machine_operation_failed", return_value=operation):
+            e2e.validate_migration_needs_nspawn_runtime()
+
+    def test_a_refusal_that_changed_the_node_fails(self):
+        operation = {"status": {"message": "host cannot run isolation mode nspawn: machinectl"}}
+        markers = iter(["kube1", "kube2"])
+        with patch.object(e2e, "container_host_lacks_nspawn_runtime", return_value=True), \
+                patch.object(e2e, "isolation_node_marker", side_effect=lambda: next(markers)), \
+                patch.object(e2e, "create_machine_operation"), \
+                patch.object(e2e, "wait_for_machine_operation_failed", return_value=operation):
+            with self.assertRaises(SystemExit):
+                e2e.validate_migration_needs_nspawn_runtime()
+
+
 if __name__ == "__main__":
     unittest.main()

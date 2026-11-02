@@ -53,6 +53,9 @@ Subcommands (called as individual workflow steps):
     validate-isolation-status          Verify status.observedIsolation and the IsolationDrift condition.
     reconcile-machine-isolation-spec   Set spec.isolation to the applied mode and verify drift clears.
     declare-isolation-mismatch         Set spec.isolation to an unapplied mode and verify drift appears.
+    validate-migration-needs-nspawn-runtime
+                                       Verify a move to nspawn is refused while the host lacks machinectl.
+    install-nspawn-runtime             Install systemd-container on the host.
     validate-isolation-preflight       Run preflight with --isolation and verify the mode's own check ran.
     validate-isolation-uninstall       Run the uninstall script and verify the node stack is gone.
     validate-migration-unsupported-pair Request an unsupported in-place migration and verify it is rejected.
@@ -6520,6 +6523,45 @@ def validate_migration_rollback(node_config: NodeConfig, target: str) -> None:
     log(f"Isolation migration rollback to {source} PASSED")
 
 
+def container_host_lacks_nspawn_runtime() -> bool:
+    """Report whether the host has no machinectl, as a container host does until
+    systemd-container is installed."""
+    return ssh_capture_quiet("command -v machinectl").returncode != 0
+
+
+def validate_migration_needs_nspawn_runtime() -> None:
+    """Assert a move to nspawn is refused before anything changes when the host
+    lacks the nspawn runtime. Bootstrap installs it, a migration does not, so
+    the preflight must stop the migration rather than let it stop the source,
+    fail to start the target and roll back."""
+    if not container_host_lacks_nspawn_runtime():
+        log("The host already has the nspawn runtime; nothing to refuse")
+        return
+    name = f"e2e-isolation-needs-runtime-{int(time.time())}"
+    before = isolation_node_marker()
+    create_machine_operation(name, AGENT_MACHINE_NAME, "IsolationMigrate",
+                             {"targetMode": "nspawn", "strategy": "inPlace"})
+    operation = wait_for_machine_operation_failed(name, timeout_secs=60)
+    message = operation.get("status", {}).get("message", "")
+    if "cannot run isolation mode nspawn" not in message or "machinectl" not in message:
+        die(f"the migration was refused for the wrong reason: {message!r}")
+    if isolation_node_marker() != before:
+        die("a refused IsolationMigrate changed the node stack")
+    wait_for_node_ready(AGENT_MACHINE_NAME)
+    log("A migration to nspawn was refused before the node was touched: the nspawn runtime is missing")
+
+
+def install_nspawn_runtime() -> None:
+    """Install systemd-container on the host, the documented prerequisite for
+    moving a container host back to nspawn in place."""
+    if not container_host_lacks_nspawn_runtime():
+        return
+    ssh_cmd("sudo DEBIAN_FRONTEND=noninteractive apt-get install -y systemd-container")
+    if container_host_lacks_nspawn_runtime():
+        die("machinectl is still missing after installing systemd-container")
+    log("Installed systemd-container")
+
+
 def validate_migration_rejected(target: str, strategy: str) -> None:
     """Assert an unsupported pair is rejected without touching the node. In-place
     to or from none is not supported (pkg/agent/isolation/migrate.Plan)."""
@@ -7388,12 +7430,14 @@ SUITES: dict[str, list[str]] = {
         "reconcile-machine-isolation-spec", "reset-agent",
     ],
     # A failed in-place migration restores the source and the shared host
-    # configuration; an unsupported pair is rejected without touching the node.
+    # configuration; an unsupported pair is rejected without touching the node,
+    # and so is a move to nspawn on a host without the nspawn runtime.
     # Run with ISOLATION_MODE=container: only a container host keeps its
     # configuration at the shared host paths the step compares.
     "isolation-rollback": [
         "run-agent", "wait-for-node", "validate-isolation-mode", "validate-workload",
-        "validate-migration-unsupported-pair", "validate-migration-rollback-config",
+        "validate-migration-unsupported-pair", "validate-migration-needs-nspawn-runtime",
+        "install-nspawn-runtime", "validate-migration-rollback-config",
         "validate-isolation-status", "reset-agent",
     ],
 }
@@ -7497,6 +7541,8 @@ COMMANDS: dict[str, Command] = {
     "validate-isolation-status": _without_node_config(validate_isolation_status),
     "reconcile-machine-isolation-spec": _without_node_config(reconcile_machine_isolation_spec),
     "declare-isolation-mismatch": _without_node_config(declare_isolation_mismatch),
+    "validate-migration-needs-nspawn-runtime": _without_node_config(validate_migration_needs_nspawn_runtime),
+    "install-nspawn-runtime": _without_node_config(install_nspawn_runtime),
     "validate-isolation-preflight": _without_node_config(validate_isolation_preflight),
     "validate-isolation-uninstall": _without_node_config(validate_isolation_uninstall),
     "collect-isolation-evidence": _without_node_config(collect_isolation_evidence),
