@@ -89,7 +89,7 @@ Cordon and drain the node first; the agent does not.
 | Bootstrap | Unpack rootfs to a slot, render nspawn config, start machine, start stack inside | Install versioned artifacts, write units, start units | Unpack rootfs to a slot, generate an OCI bundle, write unit, start container, start stack inside |
 | Start | `machinectl start`, then in-machine units | Start host units in order | Start container unit, then in-container units |
 | Stop | Stop kubelet and containerd in the machine, stop the machine | Stop host units in reverse order | Stop in-container units, stop the container |
-| Soft reboot (`NodeReboot`) | Restart the machine unit | Restart containerd, then kubelet | Restart the container unit |
+| Soft reboot (`NodeReboot`) | Restart the machine unit | Restart LocalDNS (when enabled), then containerd, then kubelet, and wait for LocalDNS and kubelet; the host does not reboot | Restart the container unit |
 | Repave and upgrade | Blue/green into the alternate slot | Flip `current`, automatic rollback on failure, brief downtime | Blue/green into the alternate slot |
 | Reset and delete | Stop slots, remove config, remove machine, clean bpffs, host-global cleanup | Stop units, remove versioned directories and units, host-global cleanup | Stop container, remove bundle, rootfs, and unit, host-global cleanup |
 | Health | Machine registered, kubelet healthy, LocalDNS | Units active, kubelet healthy, LocalDNS | Container running, kubelet healthy, LocalDNS |
