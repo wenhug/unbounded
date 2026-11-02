@@ -71,6 +71,10 @@ func resumePending(ctx context.Context, log *slog.Logger, env migrationEnv) (boo
 		}
 
 		if !j.Terminal() {
+			if errors.Is(outcome, ErrMigrationHandedOff) {
+				return false, fmt.Errorf("an earlier isolation migration (%s) is still in progress; request this one again when it has finished", j.Operation)
+			}
+
 			return false, fmt.Errorf("an earlier isolation migration (%s) was interrupted and has been resolved (%v); request this one again",
 				j.Operation, outcomeText(outcome))
 		}
@@ -79,6 +83,19 @@ func resumePending(ctx context.Context, log *slog.Logger, env migrationEnv) (boo
 	}
 
 	return false, nil
+}
+
+// journalForOperation returns the journal, in any state, that belongs to the
+// named operation. The in-place journal is looked at first; an operation has at
+// most one.
+func journalForOperation(operation string) (migrate.Journal, bool) {
+	for _, store := range []migrate.JournalStore{inPlaceJournalStore(), reprovisionJournalFor()} {
+		if j, err := store.Load(); err == nil && j.Operation == operation {
+			return j, true
+		}
+	}
+
+	return migrate.Journal{}, false
 }
 
 func outcomeText(err error) string {

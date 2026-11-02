@@ -268,9 +268,18 @@ func (t *machineOperationTarget) reconcileIsolationMigrate(ctx context.Context, 
 		return finishFailedMachineOperation(ctx, store, op, err)
 	}
 
-	strategy, err := migrate.Plan(active.Mode, req.Target, req.Strategy)
-	if err != nil {
-		return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{Phase: v1alpha3.OperationPhaseFailed, Reason: "UnsupportedMigration", Message: err.Error()})
+	var strategy migrate.Strategy
+
+	if j, started := journalForOperation(op.Name); started {
+		// This operation already ran. The node may be in the requested mode now,
+		// which Plan would reject as "already in that mode"; the migration code
+		// resumes or reports it from the journal instead.
+		strategy = j.Strategy
+	} else {
+		strategy, err = migrate.Plan(active.Mode, req.Target, req.Strategy)
+		if err != nil {
+			return ctrl.Result{}, store.Finish(ctx, op, daemon.MachineOperationResult[int64]{Phase: v1alpha3.OperationPhaseFailed, Reason: "UnsupportedMigration", Message: err.Error()})
+		}
 	}
 
 	env := migrationEnv{Operation: op.Name}

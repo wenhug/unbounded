@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha3 "github.com/Azure/unbounded/api/machina/v1alpha3"
 	"github.com/Azure/unbounded/cmd/agent/internal/installstate"
@@ -360,4 +363,67 @@ func TestResetIncludesTheHandoffCleanupExceptForTheHandoffsOwnReset(t *testing.T
 
 	assert.Contains(t, resetResources(log).Name(), "remove-reprovision-handoff")
 	assert.NotContains(t, resetNodeResources(log).Name(), "remove-reprovision-handoff")
+}
+
+// Two outcomes are pending: reporting the first must not clear the second's
+// journal. If the second report then fails, the journal is all that is left of
+// its outcome.
+func TestRecoverIsolationMigration_ClearsOnlyTheJournalItReported(t *testing.T) {
+	newMigHarness(t, isolation.ModeNSpawn)
+
+	writeJournal(t, migrate.StepRolledBack, func(j *migrate.Journal) { j.Message = "readiness timed out" })
+	require.NoError(t, reprovisionJournalFor().Save(migrate.Journal{
+		Operation: "op-2", Strategy: migrate.Reprovision, From: isolation.ModeNSpawn, To: isolation.ModeNone,
+		Step: migrate.StepBootstrapped,
+	}))
+
+	machine := &v1alpha3.Machine{ObjectMeta: metav1.ObjectMeta{Name: "test-machine", Generation: 4}}
+	op := func(name string) *v1alpha3.MachineOperation {
+		return &v1alpha3.MachineOperation{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       v1alpha3.MachineOperationSpec{MachineRef: "test-machine", OperationKind: v1alpha3.OperationIsolationMigrate},
+			Status:     v1alpha3.MachineOperationStatus{Phase: v1alpha3.OperationPhaseInProgress},
+		}
+	}
+
+	c := fake.NewClientBuilder().WithScheme(fakeScheme()).
+		WithStatusSubresource(&v1alpha3.Machine{}, &v1alpha3.MachineOperation{}).
+		WithObjects(machine, op("op-1"), op("op-2")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*v1alpha3.MachineOperation); ok && key.Name == "op-2" {
+					return errors.New("API server unavailable")
+				}
+
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+
+	recoverIsolationMigration(context.Background(), discardLogger(), c, recoveryStore(t), "test-machine")
+
+	assert.Equal(t, v1alpha3.OperationPhaseFailed, getOp(t, c).Status.Phase, "the first outcome was reported")
+
+	_, err := inPlaceJournalStore().Load()
+	assert.ErrorIs(t, err, migrate.ErrNoJournal, "and its journal is gone")
+
+	_, err = reprovisionJournalFor().Load()
+	assert.NoError(t, err, "the second report failed, so its journal stays for the next start")
+}
+
+// A reprovision that is still running is not "resolved", and the message must
+// not say it is.
+func TestResumePending_ARunningReprovisionIsReportedAsStillRunning(t *testing.T) {
+	newMigHarness(t, isolation.ModeNSpawn)
+
+	require.NoError(t, os.MkdirAll(reprovisionDir(), 0o700))
+	require.NoError(t, reprovisionJournalFor().Save(migrate.Journal{
+		Operation: "op-1", Strategy: migrate.Reprovision, From: isolation.ModeNSpawn, To: isolation.ModeNone,
+		Step: migrate.StepBootstrapping,
+	}))
+
+	handled, err := resumePending(context.Background(), discardLogger(), migrationEnv{Operation: "op-2"})
+	require.Error(t, err)
+	assert.False(t, handled)
+	assert.Contains(t, err.Error(), "still in progress")
+	assert.NotContains(t, err.Error(), "resolved")
 }

@@ -76,7 +76,8 @@ func recoverIsolationMigration(
 		}
 
 		log.Info("isolation migration resolved", "operation", j.Operation, "outcome", outcomeText(outcome))
-		clearReportedJournals(log)
+		// Only this journal: another may be pending, and its report can still fail.
+		clearJournals(log, j)
 	}
 }
 

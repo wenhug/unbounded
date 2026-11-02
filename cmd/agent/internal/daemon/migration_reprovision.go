@@ -47,10 +47,12 @@ import (
 // The unit and ReprovisionDir are not touched by the reset, so a crash or a
 // reboot at any point leaves the handoff to continue. When the runs are used
 // up, the handoff records StepFailed in the journal, removes the unit and the
-// staged binary and configuration, and stops. The host is then reset and has
-// no daemon, so the operation is reported Failed by the first daemon that
-// starts on the host afterward (see recoverIsolationMigration), for example
-// after the operator runs the install script again.
+// staged binary and configuration, and stops. When the bootstrap was what kept
+// failing, the host is reset and has no daemon, so the operation is reported
+// Failed by the first daemon that starts on the host afterward (see
+// recoverIsolationMigration), for example after the operator runs the install
+// script again. When the reset itself never completed, the old node may still
+// be partly in place, and the journal says so.
 
 // Seams for the host-mutating parts, replaced in tests.
 var (

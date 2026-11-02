@@ -137,3 +137,31 @@ func TestNspawnNodeOperator_MigrateIsolationFailsWithoutTargetBackend(t *testing
 		migrate.Request{Target: isolation.ModeContainer}, migrate.InPlace, migrationEnv{})
 	require.ErrorContains(t, err, "no registered backend")
 }
+
+// The daemon can be asked again after the migration finished (it restarted
+// between the migration and the report). The journal of this operation says it
+// succeeded; the migration code must be consulted, not Plan's "already in mode".
+func TestReconcileIsolationMigrate_AFinishedMigrationIsReportedNotRejected(t *testing.T) {
+	newMigHarness(t, isolation.ModeContainer)
+	writeJournal(t, migrate.StepComplete, func(j *migrate.Journal) {
+		j.From, j.To = isolation.ModeNSpawn, isolation.ModeContainer
+	})
+
+	op := &fakeNodeOperator{active: &ActiveMachine{Name: "kube2", Config: baseConfig(), Mode: isolation.ModeContainer}}
+
+	updated := runIsolationMigrate(t, map[string]string{"targetMode": "container"}, op)
+
+	assert.Equal(t, v1alpha3.OperationPhaseComplete, updated.Status.Phase)
+	assert.Equal(t, 1, op.migrateCalls, "the migration code resolves it from the journal")
+}
+
+func TestReconcileIsolationMigrate_ARepeatedRequestForTheCurrentModeIsStillRejected(t *testing.T) {
+	newMigHarness(t, isolation.ModeContainer)
+
+	op := &fakeNodeOperator{active: &ActiveMachine{Name: "kube2", Config: baseConfig(), Mode: isolation.ModeContainer}}
+
+	updated := runIsolationMigrate(t, map[string]string{"targetMode": "container"}, op)
+
+	assert.Equal(t, v1alpha3.OperationPhaseFailed, updated.Status.Phase)
+	assert.Zero(t, op.migrateCalls)
+}
