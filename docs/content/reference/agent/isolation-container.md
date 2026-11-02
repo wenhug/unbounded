@@ -87,12 +87,12 @@ configuration are not used by this mode.
 | Stop | Stop the in-container units, then the container. |
 | Soft reboot (`NodeReboot`) | Restart the container unit, which reruns the lifecycle hooks. The host does not reboot. |
 | Repave and upgrade | Blue/green. The alternate slot is built beside the running one, then the old container is stopped, host networking is cleaned, the shared kubelet state is reset (pod mounts unmounted, previous kubelet credentials removed when a bootstrap token is used), and the new container is started and waited on. The kubelet, containerd, CNI and LocalDNS configuration files both slots share on the host are saved first (in `/etc/unbounded/agent/container-upgrade-config`). If the new slot does not come up it is removed, the saved files are put back, and the old container is started again; the error says whether that worked. The applied config moves to the new slot only after it is healthy, then the old slot is removed. |
-| Reset and delete | Stop the containers, remove the bundle, rootfs, and unit of each slot, the shared kubelet and CNI directories and the host runtime, then the host-global cleanup in the usual order. |
+| Reset and delete | Stop the containers, remove the bundle, rootfs, and unit of each slot, the shared kubelet and CNI directories and the host runtime, then the host-global cleanup in the usual order. A container that is still alive after a failed stop keeps its bundle and rootfs, and the error says so. If a pod mount below `/var/lib/kubelet` cannot be unmounted the kubelet directory is kept, so a volume mounted there is never deleted through the mount. |
 | Health | The container is running, kubelet is healthy, and LocalDNS answers when enabled. |
 | Exec and logs | `unbounded-agent exec` runs through `runc exec`. `unbounded-agent logs` runs `journalctl` in the container. See [Running commands and reading logs]({{< relref "reference/agent/isolation" >}}#running-commands-and-reading-logs). |
 | GPU and devices | The grants become OCI mounts and devices; the container runs with every device allowed. NVIDIA libraries and the CDI spec are wired by the `node-lifecycle` hooks, as `nspawn-lifecycle` does for an `nspawn` machine (experimental, see below). See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
 | LocalDNS | CoreDNS runs in the container and the LocalDNS network unit is unchanged. |
-| Uninstall | The uninstall script reads the mode from the applied config and runs the `container` cleanup. |
+| Uninstall | The uninstall script reads the mode from the applied config and runs the `container` cleanup. It is not a reset; see [What the uninstall script removes](#what-the-uninstall-script-removes). |
 
 ## Limits
 
@@ -109,12 +109,52 @@ configuration are not used by this mode.
   to it needs a new rootfs. A host that reports NVIDIA devices with incomplete
   driver state fails the start, as in `nspawn`. See
   [NVIDIA]({{< relref "reference/gpu/nvidia" >}}).
-- **Runtime.** The OCI runtime is `runc`.
+- **Runtime.** The OCI runtime is `runc`. Starting a node whose runtime is missing
+  fails with an error that names it.
+- **Read-only binds.** A read-only bind (the kernel modules directory, a read-only
+  mount grant, a library path) uses the `rro` option, which makes its submounts
+  read-only too, when the installed runc is 1.1 or newer and the kernel is 5.12 or
+  newer. Otherwise it uses `ro`, and submounts of the bound directory stay
+  writable. The choice is made when the bundle is rendered, which happens before
+  every start.
+- **Bind targets.** Targets are cleaned (`..` and repeated slashes removed) before
+  the conflict check, and a target at or under `/proc` or `/sys` is refused: the
+  container mounts those itself.
+- **Restarts.** The supervising unit sets no start limit, so a container that
+  keeps failing keeps being restarted, with a growing delay on systemd 254 or
+  newer and every second before that.
 - **Provisioning.** Whether Azure Container Linux accepts user-supplied Ignition
   when AKS provisions the node is unverified.
 - **Migration.** Migration to and from `nspawn` can be in place; any move
   involving `none` is a reprovision. See
   [Migrating Between Modes]({{< relref "reference/agent/isolation-migration" >}}).
+
+## What the uninstall script removes
+
+The uninstall script is not a reset. `unbounded-agent reset` is the only way to a
+clean host.
+
+For a `container` node the script stops and removes every
+`unbounded-node-*.service` unit and removes the active slot's root filesystem,
+`/var/lib/unbounded/containers/<slot>`. For every mode it also removes the
+WireGuard and tunnel interfaces and keys, the nftables flush service,
+`/etc/unbounded/kube`, the Kubernetes sysctl file and the Docker `daemon.json`, unmasks Docker, restores swap from the saved `/etc/fstab.bak`,
+and removes policy routing rules, `/usr/local/bin/unbounded-agent*` and
+`/etc/unbounded/agent`.
+
+It leaves, for a `container` node:
+
+- The OCI bundles under `/var/lib/unbounded/containers/bundles` and the other
+  slot's root filesystem, if one exists.
+- The runtime, `/opt/unbounded/runtime/runc`.
+- The shared directories `/var/lib/kubelet`, `/etc/cni/net.d`, `/opt/cni/bin` and
+  `/var/lib/unbounded/container-images`.
+- `unbounded-agent-daemon.service` (it is not stopped) and the agent files under
+  `/opt/unbounded/agent`.
+- Runtime state of a container that did not stop (the script does not run
+  `runc delete`).
+
+Use `unbounded-agent reset` to remove all of these.
 
 ## Troubleshooting
 

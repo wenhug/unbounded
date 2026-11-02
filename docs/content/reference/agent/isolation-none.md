@@ -29,7 +29,9 @@ a host to or from `none` is a reprovision; see
   not yet been validated on a read-only `/usr` host.
 - Units start after `network-online.target`.
 
-Preflight reads and mutates nothing on the host.
+Preflight does not change the node. Its writability check creates and removes a
+small temporary file in `/etc`, `/var` and the node base directory (or the
+nearest existing parent of it).
 
 ## Selecting the mode
 
@@ -68,13 +70,40 @@ The same-path contract holds, as in every mode; see
 | Start | Enable and start LocalDNS (and wait for it), then containerd (and import preloaded images), then kubelet. |
 | Stop | Stop kubelet, then containerd, then LocalDNS. Every unit is attempted even if one fails. |
 | Soft reboot (`NodeReboot`) | Restart LocalDNS, containerd, then kubelet, wait for LocalDNS and for kubelet to be active. The host does not reboot. |
-| Repave and upgrade | The new version is installed beside the running one. Then the units stop, host networking is cleaned as for an `nspawn` repave, kubelet's old credentials are removed so it bootstraps again, `current` flips, the units start, and the agent waits for LocalDNS and kubelet. If any step after the flip fails, the link is flipped back and the previous version is started. The node is briefly down. The caller drains and deletes the Node first, as for `nspawn`. |
-| Reset and delete | Same order as `nspawn`: stop the units, remove WireGuard keys, remove the configuration the agent wrote at shared paths, end leftover container shims, remove the units, drop-ins and `/opt/unbounded/node`, unmount and remove `/var/lib/kubelet`, `/var/lib/containerd`, `/etc/cni/net.d` and `/opt/cni/bin`, then the host-global cleanup. |
+| Repave and upgrade | The new version is installed beside the running one. Then the units stop, host networking is cleaned as for an `nspawn` repave, kubelet's old credentials are removed so it bootstraps again, `current` flips, the units start, and the agent waits for LocalDNS and kubelet. If any step after the flip fails, the link is flipped back and the previous version is started. The node is briefly down. The caller drains and deletes the Node first, as for `nspawn`. A reconfiguration that turns LocalDNS off stops and disables its unit before the unit file is removed. |
+| Reset and delete | Same order as `nspawn`: stop the units, remove WireGuard keys, remove the configuration the agent wrote at shared paths, end leftover container shims and every process left in the pods' cgroup (`kubepods.slice`, or `kubepods` with the cgroupfs driver), remove the units, drop-ins and `/opt/unbounded/node`, unmount and remove `/var/lib/kubelet`, `/var/lib/containerd`, `/etc/cni/net.d` and `/opt/cni/bin`, then the host-global cleanup. A data directory with a mount that cannot be unmounted is kept and the failure is reported, so a volume mounted below it is never deleted through the mount. |
 | Health | Both units are active, kubelet is healthy, and LocalDNS answers when enabled. |
 | Exec and logs | `unbounded-agent exec` runs on the host. `unbounded-agent logs` reads the journal of the agent-owned units; `--unit kubelet` and `--unit containerd` select them. See [Running commands and reading logs]({{< relref "reference/agent/isolation" >}}#running-commands-and-reading-logs). |
-| GPU and devices | Native. Nothing is bind-mounted because the stack sees the host directly. NVIDIA GPUs need the NVIDIA Container Toolkit on the host; before each start the agent selects CDI mode and regenerates `/etc/cdi/nvidia.yaml`. Every device and mount request is either honored or refused, never ignored. See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
+| GPU and devices | Native. Nothing is bind-mounted because the stack sees the host directly. NVIDIA GPUs need the NVIDIA Container Toolkit on the host; before each start the agent selects CDI mode and regenerates `/etc/cdi/nvidia.yaml`. Every device and mount request is either honored or refused: a device or mount at a path other than its own, and a library path, are refused. The one exception is `ReadOnly` on a mount: the stack runs on the host and nothing is mounted, so it cannot be enforced, and the grant is accepted with a logged warning. See [NVIDIA]({{< relref "reference/gpu/nvidia" >}}) and [AMD]({{< relref "reference/gpu/amd" >}}). |
 | LocalDNS | CoreDNS runs as the `unbounded-localdns.service` host unit and the LocalDNS network unit is unchanged. The host's own `/etc/resolv.conf` is not rewritten; kubelet uses its dedicated resolver file. |
-| Uninstall | The uninstall script reads the mode from the applied config and runs the `none` cleanup. |
+| Uninstall | The uninstall script reads the mode from the applied config and runs the `none` cleanup. It is not a reset; see [What the uninstall script removes](#what-the-uninstall-script-removes). |
+
+## What the uninstall script removes
+
+The uninstall script is not a reset. `unbounded-agent reset` is the only way to a
+clean host.
+
+For a `none` node the script stops `unbounded-kubelet.service`,
+`unbounded-containerd.service` and `unbounded-localdns.service`, then removes
+those units and `unbounded-localdns-network.service`, their drop-in
+directories, `/etc/cdi/nvidia.yaml` and `/opt/unbounded/node`. For every mode it
+also removes the WireGuard and tunnel interfaces and keys, the nftables flush
+service, `/etc/unbounded/kube`, the Kubernetes sysctl file and the Docker
+`daemon.json`, unmasks Docker, restores swap from the saved `/etc/fstab.bak`,
+and removes policy routing rules, `/usr/local/bin/unbounded-agent*` and
+`/etc/unbounded/agent`.
+
+It leaves, for a `none` node:
+
+- `/var/lib/kubelet`, including the bootstrap kubeconfig and the kubelet's client
+  credentials, and `/var/lib/containerd`.
+- `/etc/containerd`, `/etc/kubernetes`, `/etc/cni/net.d`, `/opt/cni/bin`,
+  `/etc/modules-load.d/unbounded-kubernetes.conf` and `/etc/unbounded/localdns`.
+- Running pods and their containerd shims.
+- `unbounded-agent-daemon.service` (it is not stopped) and the agent files under
+  `/opt/unbounded/agent`.
+
+Use `unbounded-agent reset` to remove all of these.
 
 ## Limits
 
@@ -92,8 +121,10 @@ The same-path contract holds, as in every mode; see
   byte for byte, before the previous version starts again. If they cannot be put
   back the error says so and the saved copy is kept.
 - **Pods outlive the units.** containerd runs with `KillMode=process`, so a plain
-  unit stop leaves pods running. Reset ends the shims; an upgrade does not need
-  to because the operator drains the Node first.
+  unit stop leaves pods running, and ending a shim reparents the pod's processes
+  instead of stopping them. Reset ends the shims and then kills the pods' whole
+  cgroup (`cgroup.kill`; on a kernel without it, each process listed in the
+  cgroup). An upgrade does not need to because the operator drains the Node first.
 - **NVIDIA GPUs.** The host driver and the NVIDIA Container Toolkit must be
   installed on the host; the agent does not install them in this mode. The
   toolkit paths are configurable, and the agent selects CDI mode and regenerates
