@@ -155,3 +155,51 @@ func TestPostStartSkipsAfterStartWhenTheStackNeverRuns(t *testing.T) {
 
 	require.Error(t, l.PostStart(context.Background(), "kube1"))
 }
+
+// The hook has its own time budget. Running it in what was left of the
+// readiness wait made a hook that needed longer than that remainder fail, and
+// the unit restart the container.
+func TestPostStartAfterStartIsNotLimitedByTheReadinessBudget(t *testing.T) {
+	l := newLifecycle(&fakeController{})
+	l.ReadyTimeout = 20 * time.Millisecond
+
+	l.AfterStart = func(ctx context.Context, _ string) error {
+		select {
+		case <-time.After(80 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	require.NoError(t, l.PostStart(context.Background(), "kube1"))
+}
+
+func TestPostStartAfterStartIsBoundedByItsOwnTimeout(t *testing.T) {
+	l := newLifecycle(&fakeController{})
+	l.AfterStartTimeout = 20 * time.Millisecond
+
+	l.AfterStart = func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
+
+	err := l.PostStart(context.Background(), "kube1")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorContains(t, err, "kube1")
+}
+
+func TestPostStartAfterStartStopsWhenTheCallerCancels(t *testing.T) {
+	l := newLifecycle(&fakeController{})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	l.AfterStart = func(ctx context.Context, _ string) error {
+		cancel()
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
+
+	require.ErrorIs(t, l.PostStart(ctx, "kube1"), context.Canceled)
+}

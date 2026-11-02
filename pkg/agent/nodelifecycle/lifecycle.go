@@ -44,6 +44,11 @@ type Lifecycle struct {
 	AfterStart func(ctx context.Context, slot string) error
 	// ReadyTimeout bounds PostStart's wait for the stack to be running.
 	ReadyTimeout time.Duration
+	// AfterStartTimeout bounds AfterStart on its own, apart from the readiness
+	// wait: the hook then is not limited to what remained of ReadyTimeout.
+	// Zero means three minutes, which fits the supervising unit's start timeout
+	// after a readiness wait of up to two.
+	AfterStartTimeout time.Duration
 	// PollInterval is the wait between readiness checks.
 	PollInterval time.Duration
 }
@@ -98,7 +103,9 @@ func (l *Lifecycle) PostStart(ctx context.Context, slot string) error {
 		interval = time.Second
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	parent := ctx
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	var last string
@@ -108,7 +115,9 @@ func (l *Lifecycle) PostStart(ctx context.Context, slot string) error {
 		if err == nil && running {
 			l.Log.Info("node stack is running", "slot", slot)
 
-			return l.afterStart(ctx, slot)
+			// The hook gets the caller's context and its own bound, not the
+			// readiness context, which may be nearly spent.
+			return l.afterStart(parent, slot)
 		}
 
 		last = detail
@@ -128,6 +137,14 @@ func (l *Lifecycle) afterStart(ctx context.Context, slot string) error {
 	if l.AfterStart == nil {
 		return nil
 	}
+
+	timeout := l.AfterStartTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Minute
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	if err := l.AfterStart(ctx, slot); err != nil {
 		return fmt.Errorf("after start of %s: %w", slot, err)
