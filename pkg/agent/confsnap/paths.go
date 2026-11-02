@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
+	"github.com/Azure/unbounded/pkg/agent/isolation/none"
 )
 
 // SharedPaths returns the host configuration paths that the node stacks of
@@ -27,6 +28,8 @@ func SharedPaths() []string {
 		goalstates.KubeletPKIDir,
 		goalstates.KubeletStaticPodManifestsDir,
 		goalstates.KubeletServiceDropInDir,
+		// The none mode writes the kubelet's drop-ins next to its own unit.
+		none.DropInDir(goalstates.SystemdSystemDir, none.UnitKubelet),
 		goalstates.CNIConfigDir,
 		filepath.Dir(goalstates.LocalDNSResolvConfPath),
 	}

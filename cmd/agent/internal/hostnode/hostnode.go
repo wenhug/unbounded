@@ -17,7 +17,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/Azure/unbounded/internal/executil"
 	"github.com/Azure/unbounded/pkg/agent/config"
 	"github.com/Azure/unbounded/pkg/agent/confsnap"
 	"github.com/Azure/unbounded/pkg/agent/goalstates"
@@ -180,6 +182,9 @@ type Snapshot struct {
 	dir      string
 	hostRoot string
 	restored bool
+	// reload makes systemd read the unit files and drop-ins again after they
+	// were restored. Nil when the snapshot is not of the real root.
+	reload func() error
 }
 
 // TakeSnapshot saves the shared configuration files below hostRoot into dir.
@@ -188,14 +193,38 @@ func TakeSnapshot(log *slog.Logger, dir, hostRoot string) (*Snapshot, error) {
 		return nil, fmt.Errorf("save shared configuration: %w", err)
 	}
 
-	return &Snapshot{log: log, dir: dir, hostRoot: hostRoot}, nil
+	s := &Snapshot{log: log, dir: dir, hostRoot: hostRoot}
+	if hostRoot == "" {
+		s.reload = func() error { return reloadSystemd(log) }
+	}
+
+	return s, nil
 }
 
-// Restore puts the saved files back. A failure keeps the snapshot so it can be
-// tried again.
+// reloadSystemd asks the real systemd to read unit files and drop-ins again.
+func reloadSystemd(log *slog.Logger) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	if _, err := executil.OutputCmd(ctx, log, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w", err)
+	}
+
+	return nil
+}
+
+// Restore puts the saved files back and, on the real root, has systemd read
+// the restored unit definitions. A failure keeps the snapshot so it can be tried
+// again.
 func (s *Snapshot) Restore() error {
 	if err := confsnap.Restore(s.dir, s.hostRoot); err != nil {
 		return fmt.Errorf("restore shared configuration: %w", err)
+	}
+
+	if s.reload != nil {
+		if err := s.reload(); err != nil {
+			return fmt.Errorf("reload systemd after restoring the shared configuration: %w", err)
+		}
 	}
 
 	s.restored = true

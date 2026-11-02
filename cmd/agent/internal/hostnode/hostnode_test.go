@@ -189,6 +189,61 @@ func TestSnapshotRestoresTheSharedConfigurationAndDiscards(t *testing.T) {
 	assert.NoDirExists(t, dir)
 }
 
+// Restoring drop-ins changes unit definitions systemd has loaded, so the
+// previous version would start on the new ones until a reload.
+func TestSnapshotRestoreReloadsSystemdAfterTheFilesAreBack(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	file := filepath.Join(root, goalstates.KubeletConfigurationPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+	require.NoError(t, os.WriteFile(file, []byte("old"), 0o600))
+
+	s, err := TakeSnapshot(quiet(), filepath.Join(root, "snapshot"), root)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(file, []byte("new"), 0o600))
+
+	var sawRestored string
+
+	s.reload = func() error {
+		data, rerr := os.ReadFile(file)
+		require.NoError(t, rerr)
+
+		sawRestored = string(data)
+
+		return nil
+	}
+
+	require.NoError(t, s.Restore())
+	assert.Equal(t, "old", sawRestored, "the reload runs once the files are back")
+	assert.True(t, s.Restored())
+}
+
+func TestSnapshotRestoreKeepsTheCopyWhenTheReloadFails(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "etc/containerd"), 0o755))
+
+	s, err := TakeSnapshot(quiet(), filepath.Join(root, "snapshot"), root)
+	require.NoError(t, err)
+
+	s.reload = func() error { return errors.New("systemd is busy") }
+
+	require.ErrorContains(t, s.Restore(), "systemd is busy")
+	assert.False(t, s.Restored(), "a restore that could not be applied is tried again")
+	assert.DirExists(t, filepath.Join(root, "snapshot"))
+}
+
+func TestSnapshotUnderATestRootDoesNotReloadTheRealSystemd(t *testing.T) {
+	t.Parallel()
+
+	s, err := TakeSnapshot(quiet(), filepath.Join(t.TempDir(), "snapshot"), t.TempDir())
+	require.NoError(t, err)
+	assert.Nil(t, s.reload, "only a snapshot of the real root reloads systemd")
+}
+
 func TestTakeSnapshotReportsAFileItCannotSave(t *testing.T) {
 	t.Parallel()
 

@@ -228,7 +228,13 @@ func TestSharedPathsAreAbsoluteCleanAndDistinct(t *testing.T) {
 		seen[p] = true
 	}
 
-	for _, want := range []string{"/etc/containerd/config.toml", "/var/lib/kubelet/config.yaml", "/var/lib/kubelet/pki", "/etc/cni/net.d"} {
+	// The none mode writes the kubelet's drop-ins (node IP, labels, taints,
+	// kubeconfig arguments) to its own unit's directory, not kubelet.service.d.
+	// A rollback that leaves them restarts the old version with the new ones.
+	for _, want := range []string{
+		"/etc/containerd/config.toml", "/var/lib/kubelet/config.yaml", "/var/lib/kubelet/pki", "/etc/cni/net.d",
+		"/etc/systemd/system/kubelet.service.d", "/etc/systemd/system/unbounded-kubelet.service.d",
+	} {
 		assert.True(t, seen[want], "%s must be covered", want)
 	}
 }
