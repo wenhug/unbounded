@@ -506,5 +506,46 @@ class NSpawnRuntimeTests(unittest.TestCase):
                 e2e.validate_migration_needs_nspawn_runtime()
 
 
+class DelayedTargetFaultTests(unittest.TestCase):
+    def test_the_fault_waits_for_the_target_machine(self):
+        calls = []
+        answers = iter([1, 1, 0])
+
+        def ssh(command):
+            calls.append(command)
+            if "machinectl show" in command:
+                return unittest.mock.Mock(returncode=next(answers))
+            return unittest.mock.Mock(returncode=0)
+
+        fault = e2e.DelayedTargetFault("kube2")
+        with patch.object(e2e, "ssh_capture_quiet", side_effect=ssh):
+            fault._run()
+        self.assertTrue(fault.injected.is_set())
+        self.assertIn("kube2-applied-config.json", calls[-1])
+        self.assertIn("mkdir", calls[-1])
+        self.assertEqual(sum("machinectl show" in c for c in calls), 3, "polled until the machine ran")
+
+    def test_it_gives_up_without_a_machine(self):
+        clock = iter(range(0, 100000, 400))
+        fault = e2e.DelayedTargetFault("kube2", timeout_secs=600)
+        with patch.object(e2e.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(e2e, "ssh_capture_quiet", return_value=unittest.mock.Mock(returncode=1)):
+            fault._run()
+        self.assertFalse(fault.injected.is_set())
+
+    def test_stop_removes_the_directory_only_when_it_was_placed(self):
+        calls = []
+        with patch.object(e2e, "ssh_capture_quiet", side_effect=lambda c: calls.append(c)):
+            idle = e2e.DelayedTargetFault("kube2")
+            idle.stop()
+            self.assertEqual(calls, [])
+
+            placed = e2e.DelayedTargetFault("kube2")
+            placed.injected.set()
+            placed.stop()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("rmdir", calls[0])
+
+
 if __name__ == "__main__":
     unittest.main()

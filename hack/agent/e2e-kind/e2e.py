@@ -6434,6 +6434,41 @@ def alternate_nspawn_slot() -> str:
     return next(name for name in NSPAWN_MACHINE_NAMES if name != active)
 
 
+class DelayedTargetFault:
+    """Place the migration target fault once the target machine is running, so
+    the failure is at the persist step, after the target started and the source
+    stopped, instead of in the target's own pre-start hook."""
+
+    def __init__(self, slot: str, timeout_secs: int = 600) -> None:
+        self.slot = slot
+        self.path = f"/etc/unbounded/agent/{slot}-applied-config.json"
+        self.timeout_secs = timeout_secs
+        self.injected = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        deadline = time.monotonic() + self.timeout_secs
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            if ssh_capture_quiet(f"sudo machinectl show {self.slot}").returncode == 0:
+                ssh_capture_quiet(f"sudo mkdir -p {shlex.quote(self.path)}")
+                self.injected.set()
+                return
+            self._stop.wait(1)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=30)
+        if self.injected.is_set():
+            # The rollback removes the failed target slot's applied config, which
+            # removes the empty directory standing in for it.
+            ssh_capture_quiet(f"sudo rmdir {shlex.quote(self.path)} 2>/dev/null || true")
+
+
 def inject_migration_target_fault() -> str:
     """Make the target of an in-place migration fail after the source has been
     stopped, so the rollback path runs. A directory where the alternate slot's
@@ -6503,14 +6538,24 @@ def validate_migration_rollback(node_config: NodeConfig, target: str) -> None:
     operation reports the failure."""
     source = applied_isolation()
     name = f"e2e-isolation-rollback-{int(time.time())}"
-    fault = inject_migration_target_fault()
+    # An nspawn target reads its own applied config in its pre-start hook, so a
+    # fault placed there up front keeps the machine from ever starting and the
+    # migration waits on it. Place it once the machine runs instead.
+    delayed = target == "nspawn" and not os.environ.get("MIGRATION_FAULT_CMD")
+    injector = DelayedTargetFault(alternate_nspawn_slot()) if delayed else None
+    fault = "" if delayed else inject_migration_target_fault()
     try:
         run_quiet([KUBECTL, "delete", _machine_operation_resource(), name, "--ignore-not-found"], check=False)
+        if injector:
+            injector.start()
         create_machine_operation(name, AGENT_MACHINE_NAME, "IsolationMigrate",
                                  {"targetMode": target, "strategy": "inPlace"})
         operation = wait_for_machine_operation_failed(name, timeout_secs=MIGRATION_TIMEOUT_SECS)
     finally:
-        clear_migration_target_fault(fault)
+        if injector:
+            injector.stop()
+        else:
+            clear_migration_target_fault(fault)
     status = operation.get("status", {})
     assert_rollback_ran(status.get("message", ""), source, custom_fault=bool(os.environ.get("MIGRATION_FAULT_CMD")))
     set_effective_isolation(source)
