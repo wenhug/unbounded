@@ -90,8 +90,9 @@ applied config and in `status.observedIsolation`, a workload and DNS run, and
 - T02: nspawn to container (in place), container to none, none to container,
   container to nspawn (in place), nspawn to none, none to nspawn, nspawn to
   container and back by reprovision. All six ordered pairs.
-- T03: `IsolationDrift` is True while `spec.isolation` differs from the applied
-  mode and False after it is set to the applied mode.
+- T03: after a migration the agent has set `spec.isolation` to the new mode and
+  `IsolationDrift` is False. `IsolationDrift` is True while an edited
+  `spec.isolation` differs from the applied mode and False after it is set back.
 - T04: starts in container mode, the only mode that keeps its configuration at
   the shared host paths. An unsupported in-place pair (container to none) is
   rejected and the node is untouched. An in-place container to nspawn

@@ -420,5 +420,47 @@ class UninstallSlotTests(unittest.TestCase):
         self.assertEqual(seen["slot"], "kube2")
 
 
+class MigrationDeclaresTheSpecTests(unittest.TestCase):
+    def test_the_drift_suite_creates_the_mismatch_itself(self):
+        """A migration sets spec.isolation, so the drift suite edits the spec to
+        an unapplied mode to make the condition appear, then sets it back."""
+        steps = e2e.SUITES["isolation-drift"]
+        self.assertIn("declare-isolation-mismatch", e2e.COMMANDS)
+
+        for index, step in enumerate(steps):
+            if step == "declare-isolation-mismatch":
+                self.assertEqual(steps[index + 1], "reconcile-machine-isolation-spec")
+
+    def test_the_mismatch_is_a_mode_other_than_the_applied_one(self):
+        for applied, other in (("none", "nspawn"), ("container", "nspawn"), ("nspawn", "none")):
+            calls = []
+            view = {"spec": other, "observed": applied,
+                    "drift": {"status": "True", "reason": "AppliedModeDiffers"}}
+            with patch.object(e2e, "ISOLATION_MODE", applied), patch.object(e2e, "kubectl", side_effect=lambda a: calls.append(a)), \
+                    patch.object(e2e, "validate_isolation_status"), patch.object(e2e, "machine_isolation_view", return_value=view):
+                e2e.declare_isolation_mismatch()
+            self.assertIn(f'"isolation": "{other}"', calls[0][-1], applied)
+
+    def test_a_drift_that_does_not_appear_fails(self):
+        view = {"spec": "nspawn", "observed": "none", "drift": {"status": "False", "reason": "AppliedModeMatches"}}
+        with patch.object(e2e, "ISOLATION_MODE", "none"), patch.object(e2e, "kubectl"), \
+                patch.object(e2e, "validate_isolation_status"), patch.object(e2e, "machine_isolation_view", return_value=view):
+            with self.assertRaises(SystemExit):
+                e2e.declare_isolation_mismatch()
+
+    def test_a_spec_the_agent_did_not_set_fails_the_migration_check(self):
+        clock = iter(range(0, 10000, 100))
+        view = {"spec": "", "observed": "container", "drift": {"status": "True", "reason": "AppliedModeDiffers"}}
+        with patch.object(e2e.time, "sleep"), patch.object(e2e.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(e2e, "machine_isolation_view", return_value=view):
+            with self.assertRaises(SystemExit):
+                e2e.validate_spec_declares_migrated_mode("container")
+
+    def test_a_declared_spec_passes(self):
+        view = {"spec": "container", "observed": "container", "drift": {"status": "False", "reason": "AppliedModeMatches"}}
+        with patch.object(e2e, "machine_isolation_view", return_value=view):
+            e2e.validate_spec_declares_migrated_mode("container")
+
+
 if __name__ == "__main__":
     unittest.main()

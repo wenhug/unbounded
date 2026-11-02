@@ -149,12 +149,13 @@ CATALOG: tuple[Scenario, ...] = (
     ),
     Scenario(
         "T03", "Machine status and drift across migrations", "transitions", "isolation-drift", "",
-        "Check status.observedIsolation and the IsolationDrift condition before and after migrating, then set "
-        "spec.isolation to the applied mode and check the drift clears.",
-        "observedIsolation follows the applied mode; IsolationDrift is True while spec.isolation differs and False "
-        "once it matches.",
+        "Check status.observedIsolation and the IsolationDrift condition after each migration, where the agent "
+        "declares the new mode in spec.isolation. Then edit spec.isolation to an unapplied mode and check the drift "
+        "appears, and set it back and check it clears.",
+        "observedIsolation follows the applied mode; a migration leaves spec.isolation at the new mode and "
+        "IsolationDrift False; IsolationDrift is True while spec.isolation differs and False once it matches.",
         tags=("nspawn", "none", "transition"),
-        notes="Setting spec.isolation changes the Machine spec; watch for side effects on generated agent config.",
+        notes="The agent patches spec.isolation after a migration and the harness edits it; watch for side effects on generated agent config.",
     ),
     Scenario(
         "T04", "Failed migration: rollback and config restore", "transitions", "isolation-rollback", "container",

@@ -208,7 +208,7 @@ node themselves.
 | `isolation-matrix` | unset | Every ordered pair of modes, in place where supported and by reprovision otherwise. |
 | `isolation-roundtrip` | unset | `nspawn` to `none` and back by reprovision, checking mode, status, `exec` and `logs`, a workload and a soft reboot at each stop. |
 | `isolation-container-reprovision` | unset | `nspawn` to `container` by reprovision alone, the pair the matrix reaches last. |
-| `isolation-drift` | unset | The `IsolationDrift` condition in both directions. |
+| `isolation-drift` | unset | The `IsolationDrift` condition in both directions: a spec edit to an unapplied mode makes it appear, setting it back clears it, and a migration declares the new mode itself. |
 | `isolation-rollback` | `container` | A failed in-place migration restores the source and the shared host configuration byte for byte. It must start in `container` mode: an `nspawn` host keeps its configuration inside the machine, so there is nothing at the shared host paths to compare. |
 
 ```sh

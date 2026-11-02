@@ -52,6 +52,7 @@ Subcommands (called as individual workflow steps):
     migrate-to-<mode>-<strategy>       Run an IsolationMigrate operation and verify the result.
     validate-isolation-status          Verify status.observedIsolation and the IsolationDrift condition.
     reconcile-machine-isolation-spec   Set spec.isolation to the applied mode and verify drift clears.
+    declare-isolation-mismatch         Set spec.isolation to an unapplied mode and verify drift appears.
     validate-isolation-preflight       Run preflight with --isolation and verify the mode's own check ran.
     validate-isolation-uninstall       Run the uninstall script and verify the node stack is gone.
     validate-migration-unsupported-pair Request an unsupported in-place migration and verify it is rejected.
@@ -6471,6 +6472,7 @@ def migrate_isolation(node_config: NodeConfig, target: str, strategy: str) -> No
     set_effective_isolation(target)
     wait_for_node()
     validate_isolation_mode()
+    validate_spec_declares_migrated_mode(target)
     node = json.loads(kubectl_capture(["get", "node", AGENT_MACHINE_NAME, "-o", "json"]))
     _assert_expected_node_config(node, node_config)
     validate_workload()
@@ -6615,6 +6617,39 @@ def reconcile_machine_isolation_spec() -> None:
     if view["spec"] != mode or view["drift"].get("status") != "False":
         die(f"IsolationDrift did not clear after spec.isolation={mode}: {view}")
     log(f"IsolationDrift cleared with spec.isolation={mode}")
+
+
+def declare_isolation_mismatch() -> None:
+    """Set the Machine's spec.isolation to a mode other than the applied one, as
+    an operator who edits the spec without migrating does, and assert
+    IsolationDrift turns True. A migration declares the new mode itself, so this
+    is the only way a suite creates a drift."""
+    applied = isolation_mode()
+    other = "nspawn" if applied != "nspawn" else "none"
+    kubectl(["patch", "machine", AGENT_MACHINE_NAME, "--type=merge", "-p",
+             json.dumps({"spec": {"isolation": other}})])
+    validate_isolation_status()
+    view = machine_isolation_view()
+    if view["spec"] != other or view["drift"].get("status") != "True" \
+            or view["drift"].get("reason") != "AppliedModeDiffers":
+        die(f"IsolationDrift did not turn True with spec.isolation={other} and {applied} applied: {view}")
+    log(f"IsolationDrift is True with spec.isolation={other} and {applied} applied; nothing moved")
+
+
+def validate_spec_declares_migrated_mode(target: str) -> None:
+    """Assert the agent set spec.isolation to the mode a migration moved the node
+    to, and that IsolationDrift is False. The agent patches the Machine after
+    the migration (in place) or when the new daemon reports it (reprovision)."""
+    deadline = time.monotonic() + 120
+    while True:
+        view = machine_isolation_view()
+        if view["spec"] == target and view["drift"] and view["drift"].get("status") == "False":
+            break
+        if time.monotonic() > deadline:
+            die(f"spec.isolation is {view['spec']!r} after migrating to {target}; the agent should declare the "
+                f"new mode (drift: {view['drift']})")
+        time.sleep(5)
+    log(f"The agent declared spec.isolation={target} and IsolationDrift is False")
 
 
 def parse_preflight_report(text: str) -> dict[str, Any]:
@@ -7343,10 +7378,14 @@ SUITES: dict[str, list[str]] = {
         "migrate-to-container-reprovision", "validate-isolation-status", "validate-isolation-exec-logs",
         "validate-workload", "reset-agent",
     ],
+    # A migration declares the new mode in spec.isolation, so drift is created
+    # on purpose: edit the spec to a mode that is not applied (drift appears),
+    # then set it back (drift clears), around two migrations.
     "isolation-drift": [
         "run-agent", "wait-for-node", "validate-isolation-status", "migrate-to-none-reprovision",
-        "validate-isolation-status", "reconcile-machine-isolation-spec", "migrate-to-nspawn-reprovision",
-        "validate-isolation-status", "reconcile-machine-isolation-spec", "reset-agent",
+        "validate-isolation-status", "declare-isolation-mismatch", "reconcile-machine-isolation-spec",
+        "migrate-to-nspawn-reprovision", "validate-isolation-status", "declare-isolation-mismatch",
+        "reconcile-machine-isolation-spec", "reset-agent",
     ],
     # A failed in-place migration restores the source and the shared host
     # configuration; an unsupported pair is rejected without touching the node.
@@ -7457,6 +7496,7 @@ COMMANDS: dict[str, Command] = {
     "validate-migration-rollback-config": validate_migration_rollback_config,
     "validate-isolation-status": _without_node_config(validate_isolation_status),
     "reconcile-machine-isolation-spec": _without_node_config(reconcile_machine_isolation_spec),
+    "declare-isolation-mismatch": _without_node_config(declare_isolation_mismatch),
     "validate-isolation-preflight": _without_node_config(validate_isolation_preflight),
     "validate-isolation-uninstall": _without_node_config(validate_isolation_uninstall),
     "collect-isolation-evidence": _without_node_config(collect_isolation_evidence),
