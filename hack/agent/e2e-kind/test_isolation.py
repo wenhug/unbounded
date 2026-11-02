@@ -237,5 +237,18 @@ class UninstallSuiteTests(unittest.TestCase):
                 e2e.validate_uninstall_removed_node_stack("kube1", "script output")
 
 
+class ActiveSlotTests(unittest.TestCase):
+    def test_a_container_host_names_its_slot_from_the_unit(self):
+        units = unittest.mock.Mock(returncode=0, stdout="unbounded-node-kube2.service loaded active running x\n")
+        with patch.object(e2e, "ISOLATION_MODE", "container"), patch.object(e2e, "ssh_capture_quiet", return_value=units):
+            self.assertEqual(e2e.active_node_slot(), "kube2")
+            self.assertEqual(e2e.alternate_nspawn_slot(), "kube1")
+
+    def test_none_always_uses_kube1(self):
+        with patch.object(e2e, "ISOLATION_MODE", "none"):
+            self.assertEqual(e2e.active_node_slot(), "kube1")
+            self.assertEqual(e2e.alternate_nspawn_slot(), "kube2")
+
+
 if __name__ == "__main__":
     unittest.main()

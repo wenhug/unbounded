@@ -6373,9 +6373,24 @@ def migration_message(target: str, strategy: str) -> str:
     return f"IsolationMigrate to {target} completed ({strategy})"
 
 
+def active_node_slot() -> str:
+    """Return the slot the node stack of the mode under test runs in. Only
+    nspawn and container have more than one slot; none always uses kube1."""
+    mode = isolation_mode()
+    if mode == "nspawn":
+        return active_nspawn_machine()
+    if mode == "container":
+        units = ssh_capture_quiet(f"sudo systemctl list-units --no-legend --state=active '{CONTAINER_UNIT_GLOB}'")
+        slots = container_slots_from_units(units.stdout)
+        if len(slots) != 1:
+            die(f"container mode must run exactly one {CONTAINER_UNIT_GLOB} unit, found {slots}")
+        return slots[0]
+    return "kube1"
+
+
 def alternate_nspawn_slot() -> str:
     """Return the slot an in-place migration prepares its target in."""
-    active = active_nspawn_machine()
+    active = active_node_slot()
     return next(name for name in NSPAWN_MACHINE_NAMES if name != active)
 
 
