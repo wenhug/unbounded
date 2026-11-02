@@ -34,6 +34,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -134,10 +136,22 @@ func New(p Params) *Node {
 		helper = goalstates.ResolveHostPaths().NSpawnLifecycleBinary
 	}
 
+	// The real runtime is checked before a start. A caller that points the
+	// runtime elsewhere (a test, a tool) supplies its own and is not checked.
+	var checkRuntime func(string) error
+	if p.RuntimePath == "" {
+		checkRuntime = func(path string) error {
+			_, err := os.Stat(filepath.Join(p.HostRoot, path))
+
+			return err
+		}
+	}
+
 	return &Node{p: p, slot: slot, backend: &container.Backend{
 		Log:           p.Log,
 		Layout:        p.Layout,
 		RuntimePath:   p.RuntimePath,
+		CheckRuntime:  checkRuntime,
 		HelperPath:    helper,
 		SystemdDir:    p.SystemdDir,
 		Host:          p.Host,

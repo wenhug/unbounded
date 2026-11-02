@@ -57,6 +57,10 @@ type Backend struct {
 	// RuntimePath is the runc executable (only runc is supported). Empty means
 	// DefaultRuntimePath.
 	RuntimePath string
+	// CheckRuntime verifies the runtime executable exists before the unit is
+	// started, so a missing runtime is a clear error instead of a unit systemd
+	// quietly skips. Nil skips the check; the agent sets it.
+	CheckRuntime func(path string) error
 	// HelperPath is the agent binary providing node-lifecycle hooks.
 	HelperPath string
 	// SystemdDir is where the unit is written. Empty means SystemdDir.
@@ -420,6 +424,12 @@ func (b *Backend) RewriteUnit(ctx context.Context, slot string) error {
 func (b *Backend) Start(ctx context.Context, r isolation.NodeRoot) error {
 	if err := ValidSlot(r.Slot()); err != nil {
 		return err
+	}
+
+	if b.CheckRuntime != nil {
+		if err := b.CheckRuntime(b.runtimePath()); err != nil {
+			return fmt.Errorf("container runtime %s is not installed: %w", b.runtimePath(), err)
+		}
 	}
 
 	if err := b.systemctl(ctx, "enable", "--now", UnitName(r.Slot())); err != nil {

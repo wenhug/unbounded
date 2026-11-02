@@ -52,9 +52,9 @@ func RenderUnit(s UnitSpec) []byte {
 
 	fmt.Fprintf(&b, `[Unit]
 Description=Unbounded node container (%[1]s)
-ConditionPathExists=%[2]s
 Wants=network-online.target
 %[5]sAfter=%[3]s
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

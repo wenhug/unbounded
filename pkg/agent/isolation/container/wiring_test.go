@@ -477,3 +477,49 @@ func TestDestroyRemovesTheRootfsWhenTheContainerIsGoneAfterAFailedStop(t *testin
 		require.NoDirExists(t, b.Layout.RootfsDir("kube1"), name)
 	}
 }
+
+// Restart=always with RestartSec=1 trips systemd's default start limit after
+// five fast failures, leaving the unit failed and the node down. A missing
+// runtime must also not make systemd skip the unit and report success.
+func TestUnitHasNoStartLimitAndNoRuntimeCondition(t *testing.T) {
+	unit := string(RenderUnit(UnitSpec{Slot: "kube1", RuntimePath: rt, BundleDir: "/b"}))
+
+	require.Contains(t, unit, "StartLimitIntervalSec=0\n")
+	require.NotContains(t, unit, "ConditionPathExists")
+
+	unitSection, serviceSection, found := strings.Cut(unit, "[Service]")
+	require.True(t, found)
+	require.Contains(t, unitSection, "StartLimitIntervalSec=0", "it is a [Unit] setting")
+	require.NotContains(t, serviceSection, "StartLimitIntervalSec")
+}
+
+func TestStartFailsClearlyWhenTheRuntimeIsMissing(t *testing.T) {
+	b, st, _ := newBackend(t)
+	ctx := context.Background()
+
+	r, err := b.Prepare(ctx, isolation.NodeSpec{Slot: "kube1"})
+	require.NoError(t, err)
+	st.reset()
+
+	var checked []string
+
+	b.CheckRuntime = func(path string) error {
+		checked = append(checked, path)
+
+		return os.ErrNotExist
+	}
+
+	err = b.Start(ctx, r)
+	require.ErrorContains(t, err, "container runtime "+rt+" is not installed")
+	require.Equal(t, []string{rt}, checked)
+	require.Empty(t, st.calls, "nothing is enabled or started without a runtime")
+
+	b.CheckRuntime = func(string) error { return nil }
+
+	require.NoError(t, b.Start(ctx, r))
+	require.Contains(t, st.calls, "systemctl enable --now "+UnitName("kube1"))
+
+	b.CheckRuntime = nil
+
+	require.NoError(t, b.Start(ctx, r), "no check configured means no check")
+}

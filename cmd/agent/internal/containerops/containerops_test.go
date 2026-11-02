@@ -913,3 +913,23 @@ func TestUpgradeSnapshotDirDefaultsBelowTheHostRoot(t *testing.T) {
 
 	require.Equal(t, filepath.Join(f.dir, "host", goalstates.AgentConfigDir, "container-upgrade-config"), n.configSnapshotDir())
 }
+
+// With the default runtime path the node checks the runtime before a start, so
+// a host without it gets a clear error; a caller that overrides the path is
+// not checked.
+func TestNodeChecksTheDefaultRuntimeBeforeStarting(t *testing.T) {
+	root := t.TempDir()
+
+	n := New(Params{Overrides: Overrides{}, Hooks: hostnode.Hooks{HostRoot: root}})
+	check := n.Backend().CheckRuntime
+	require.NotNil(t, check)
+	require.ErrorIs(t, check(container.DefaultRuntimePath), os.ErrNotExist)
+
+	full := filepath.Join(root, container.DefaultRuntimePath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, []byte("x"), 0o755))
+	require.NoError(t, check(container.DefaultRuntimePath))
+
+	custom := New(Params{Overrides: Overrides{RuntimePath: "/elsewhere/runc"}})
+	require.Nil(t, custom.Backend().CheckRuntime)
+}

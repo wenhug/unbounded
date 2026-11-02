@@ -1,9 +1,9 @@
 [Unit]
 Description=Unbounded node container (kube2)
-ConditionPathExists=/opt/unbounded/runtime/runc
 Wants=network-online.target
 Requires=unbounded-localdns-network.service
 After=network-online.target local-fs.target unbounded-localdns-network.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
