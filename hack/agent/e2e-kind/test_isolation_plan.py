@@ -115,6 +115,13 @@ class CatalogTests(unittest.TestCase):
         for suite in {s.suite for s in plan.CATALOG if s.suite}:
             self.assertIn(suite, text)
 
+    def test_the_rollback_scenario_starts_in_container_mode(self):
+        """The shared-configuration digest is only meaningful on a host that keeps its
+        configuration at the shared host paths, which an nspawn host does not."""
+        t04 = next(s for s in plan.CATALOG if s.id == "T04")
+        self.assertEqual(t04.suite, "isolation-rollback")
+        self.assertEqual(t04.isolation_mode, "container")
+
     def test_text_rules(self):
         for scenario in plan.CATALOG:
             blob = " ".join([scenario.title, scenario.description, scenario.expected, scenario.notes])

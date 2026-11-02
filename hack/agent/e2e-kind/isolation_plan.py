@@ -114,20 +114,20 @@ CATALOG: tuple[Scenario, ...] = (
     ),
     Scenario(
         "U01", "Default (no flag): uninstall script", "uninstall", "isolation-uninstall", "",
-        "Run the generated uninstall script on a default host, then bootstrap the host again.",
-        "The nspawn machine and agent files are removed; a fresh bootstrap succeeds.",
+        "Run the generated uninstall script on a default host and check what it removes. It is not a reset; `unbounded-agent reset` is the only way back to a clean host and the operations scenarios cover it.",
+        "The nspawn machine of the active slot is gone once the script has run.",
         tags=("nspawn",),
     ),
     Scenario(
         "U02", "none: uninstall script", "uninstall", "isolation-uninstall", "none",
-        "Run the generated uninstall script on a none host, then bootstrap the host again.",
-        "Agent-owned units, /opt/unbounded/node, LocalDNS units and drop-ins are removed; a fresh bootstrap succeeds.",
+        "Run the generated uninstall script on a none host and check what it removes. It is not a reset; `unbounded-agent reset` is the only way back to a clean host and the operations scenarios cover it.",
+        "Agent-owned units, /opt/unbounded/node, LocalDNS units and drop-ins are removed.",
         tags=("none",),
     ),
     Scenario(
         "U03", "container: uninstall script", "uninstall", "isolation-uninstall", "container",
-        "Run the generated uninstall script on a container host, then bootstrap the host again.",
-        "The unbounded-node-<slot>.service unit and /var/lib/unbounded/containers are removed; a fresh bootstrap succeeds.",
+        "Run the generated uninstall script on a container host and check what it removes. It is not a reset; `unbounded-agent reset` is the only way back to a clean host and the operations scenarios cover it.",
+        "The unbounded-node-<slot>.service unit and the slot's root filesystem are removed.",
         tags=("container", "provisional"),
     ),
     Scenario(
@@ -157,13 +157,16 @@ CATALOG: tuple[Scenario, ...] = (
         notes="Setting spec.isolation changes the Machine spec; watch for side effects on generated agent config.",
     ),
     Scenario(
-        "T04", "Failed migration: rollback and config restore", "transitions", "isolation-rollback", "",
-        "Reject an unsupported in-place pair, then fail an in-place nspawn to container migration after the source "
-        "stopped and check the source runs again and the shared host configuration is byte for byte unchanged.",
-        "The operation fails with a message, the source mode is recorded and running, shared config digests match.",
+        "T04", "Failed migration: rollback and config restore", "transitions", "isolation-rollback", "container",
+        "Reject an unsupported in-place pair (container to none), then fail an in-place container to nspawn "
+        "migration after the source stopped and check the source runs again and the shared host configuration is "
+        "byte for byte unchanged.",
+        "The operation fails with a persist error and a rollback to container, the source mode is recorded and "
+        "running, shared config digests match.",
         tags=("nspawn", "container", "transition", "provisional"),
-        notes="The fault is harness-only (a directory in place of the target's applied config). Reprovision "
-              "rollback has no harness fault and is covered by unit tests only.",
+        notes="Starts in container mode because only a container host keeps its configuration at the shared host "
+              "paths the digest compares. The fault is harness-only (a directory in place of the target's applied "
+              "config). Reprovision rollback has no harness fault and is covered by unit tests only.",
     ),
     Scenario(
         "A01", "container on Azure Container Linux", "operations", "isolation-operations", "container",

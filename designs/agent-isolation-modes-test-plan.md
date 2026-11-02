@@ -50,7 +50,7 @@ Each scenario is one e2e suite, run with the stated `ISOLATION_MODE`.
 | T01 | Round trip: nspawn to none and back | unset | `isolation-roundtrip` | - |
 | T02 | Every ordered pair of modes | unset | `isolation-matrix` | - |
 | T03 | Machine status and drift across migrations | unset | `isolation-drift` | - |
-| T04 | Failed migration: rollback and config restore | unset | `isolation-rollback` | - |
+| T04 | Failed migration: rollback and config restore | container | `isolation-rollback` | - |
 | A01 | container on Azure Container Linux | container | `isolation-operations` | `HOST_BASE_OS=acl` |
 | G01 | GPU workloads in none and container mode | none | none | GPU hardware |
 
@@ -92,11 +92,12 @@ applied config and in `status.observedIsolation`, a workload and DNS run, and
   container and back by reprovision. All six ordered pairs.
 - T03: `IsolationDrift` is True while `spec.isolation` differs from the applied
   mode and False after it is set to the applied mode.
-- T04: an unsupported in-place pair (nspawn to none) is rejected and the node is
-  untouched. An in-place nspawn to container migration is failed after the
-  source stopped; the source runs again, the recorded mode is unchanged and a
-  digest of the shared host configuration (containerd, kubelet, CNI, PKI) is
-  identical before and after.
+- T04: starts in container mode, the only mode that keeps its configuration at
+  the shared host paths. An unsupported in-place pair (container to none) is
+  rejected and the node is untouched. An in-place container to nspawn
+  migration is failed after the source stopped; the source runs again, the
+  recorded mode is unchanged and a digest of the shared host configuration
+  (containerd, kubelet, CNI, PKI) is identical before and after.
 
 ## 4. Evidence and report
 
