@@ -257,6 +257,52 @@ func TestReprovisionGivesUpWhenTheResetNeverWorks(t *testing.T) {
 	assert.Contains(t, h.journal(t).Message, "busy")
 }
 
+// The wording tells an operator whether the old node is still there: a reset
+// that never completed leaves it partly intact, a failed bootstrap leaves a
+// reset host.
+func TestReprovisionGiveUpMessageSaysWhetherTheHostWasReset(t *testing.T) {
+	t.Run("the reset never completed", func(t *testing.T) {
+		h := newReprovisionHarness(t, migrate.StepReprovisioning)
+		h.resetErrs = []error{errors.New("busy"), errors.New("busy"), errors.New("busy")}
+
+		for range 3 {
+			require.Error(t, h.runner.run(t.Context(), h.store))
+		}
+
+		require.NoError(t, h.runner.run(t.Context(), h.store))
+
+		msg := h.journal(t).Message
+		assert.Contains(t, msg, "reset did not complete")
+		assert.NotContains(t, msg, "was reset and is not bootstrapped")
+	})
+
+	t.Run("the bootstrap never completed", func(t *testing.T) {
+		h := newReprovisionHarness(t, migrate.StepReprovisioning)
+		h.startErr = errors.New("kubelet did not join")
+
+		for range 3 {
+			require.Error(t, h.runner.run(t.Context(), h.store))
+		}
+
+		require.NoError(t, h.runner.run(t.Context(), h.store))
+		assert.Contains(t, h.journal(t).Message, "the host was reset and is not bootstrapped")
+	})
+}
+
+// The daemon the bootstrap installed reports the operation and removes the
+// handoff directory. The handoff that is still finishing must not put it back.
+func TestReprovisionDoesNotRecreateTheHandoffDirectoryTheDaemonRemoved(t *testing.T) {
+	h := newReprovisionHarness(t, migrate.StepReprovisioning)
+	dir := filepath.Dir(h.store.Path)
+
+	h.runner.start = func(context.Context) error {
+		return os.RemoveAll(dir)
+	}
+
+	require.NoError(t, h.runner.run(t.Context(), h.store))
+	assert.NoDirExists(t, dir)
+}
+
 func TestReprovisionGaveUpFinishesAnInterruptedCleanup(t *testing.T) {
 	h := newReprovisionHarness(t, migrate.StepFailed)
 

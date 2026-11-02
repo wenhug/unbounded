@@ -174,9 +174,16 @@ func (r *reprovisionRunner) run(ctx context.Context, store migrate.JournalStore)
 	j.Step = migrate.StepBootstrapped
 	j.Message = ""
 
+	// The daemon the bootstrap installed may already have reported and removed
+	// the directory, which is the success it was waiting for. Saving would put a
+	// lone journal back, so only a directory that is still there is written to.
+	if _, err := os.Stat(filepath.Dir(store.Path)); err != nil {
+		r.log.Info("the handoff directory is already gone; the reprovision was reported")
+
+		return nil
+	}
+
 	if err := store.Save(j); err != nil {
-		// The daemon the bootstrap installed may already have reported and
-		// removed the directory; that is the success it was waiting for.
 		r.log.Warn("could not record that the bootstrap finished", "error", err)
 	}
 
@@ -209,9 +216,14 @@ func (r *reprovisionRunner) giveUp(ctx context.Context, store migrate.JournalSto
 		last = "no error was recorded"
 	}
 
+	state := "the host was reset and is not bootstrapped"
+	if j.Step == migrate.StepReprovisioning {
+		state = "the reset did not complete, so the old node may still be partly in place"
+	}
+
 	j.Step = migrate.StepFailed
-	j.Message = fmt.Sprintf("reprovision to isolation mode %s gave up after %d attempts; the host was reset and is not bootstrapped: %s",
-		j.To, j.Attempts, last)
+	j.Message = fmt.Sprintf("reprovision to isolation mode %s gave up after %d attempts; %s: %s",
+		j.To, j.Attempts, state, last)
 
 	if err := store.Save(j); err != nil {
 		return err
